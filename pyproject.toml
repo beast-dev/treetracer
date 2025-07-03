@@ -1,0 +1,28 @@
+[project]
+name = "treetracer"
+version = "0.1.0"
+description = "An app to visualize phylogenetic tree topology convergence"
+readme = "README.md"
+authors = [
+    { email = "samuel.hong@kuleuven.be" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "dash",
+    "dash-mantine-components",
+    "dendropy>=5.0.8",
+    "duckdb>=1.3.1",
+    "pandas",
+    "plotly",
+    "psutil>=7.0.0",
+]
+
+[project.scripts]
+treetracer = "treetracer:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.setuptools.package-data]
+"treetracer" = ["assets/*"]

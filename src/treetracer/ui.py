@@ -83,7 +83,7 @@ upload_button = dcc.Upload(
     children=html.Div(
         [
             dmc.Button(
-                "Upload Tree Traces",
+                "Upload MDS results",
                 justify="center",
                 fullWidth=True,
             )

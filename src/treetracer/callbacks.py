@@ -28,6 +28,17 @@ def parse_uploaded_file(content, filename):
     except Exception as e:
         return None, f"Error parsing {filename}: {str(e)}"
 
+def parse_uploaded_distmat(content, filename):
+    """Parse uploaded file content into DataFrame."""
+    try:
+        content_type, content_string = content.split(",")
+        decoded = base64.b64decode(content_string)
+        df = pd.read_csv(io.StringIO(decoded.decode("utf-8")), sep="\t", index_col=0)
+        #print(df.index)
+        return df, None
+    except Exception as e:
+        return None, f"Error parsing {filename}: {str(e)}"
+
 
 def transform_dataframe(df, filename):
     """Transform DataFrame with required columns and calculations."""
@@ -220,13 +231,16 @@ def register_callbacks(app):
                 continue
 
             if filename not in stored_distmats:
-                df, parse_error = parse_uploaded_file(content, filename)
+                df, parse_error = parse_uploaded_distmat(content, filename)
                 if parse_error:
                     error_message = parse_error
                     continue
 
-                # Store the dataframe as dict (or any processed form you want)
-                stored_distmats[filename] = df.to_dict('records')
+                # Store the dataframe as dict
+                #stored_distmats[filename] = df.to_dict('records')
+                stored_distmats[filename] = df.to_dict(orient='index')
+                #print(stored_distmats[filename].keys()) 
+
 
         alert_style = {"display": "block"} if error_message else {"display": "none"}
         return stored_distmats, error_message, alert_style
@@ -451,6 +465,7 @@ def register_callbacks(app):
         print("Getting distance matrix data...")
         distmat_df_data = distmat_data[filename]
         distmat_df = pd.DataFrame(distmat_df_data)
+        print(distmat_df.index)
         print(f"Distance matrix shape: {distmat_df.shape}")
         
         # Convert to numpy array for MDS (assuming it's a square distance matrix)
@@ -478,21 +493,27 @@ def register_callbacks(app):
         mds_filename = filename.replace('.tsv', '_MDS.tsv')
         print(f"Creating MDS file: {mds_filename}")
         
-        # Create MDS dataframe
-        mds_df = pd.DataFrame()
-        
-        # Add MDS coordinates as columns
-        for i in range(n_components):
-            mds_df[f'MDS{i+1}'] = embedding[:, i]
-        
-        # Add required columns to match trace file format
-        # Create a single group for all points
-        mds_df['group'] = 'MDS_group'
-        mds_df['group_col'] = 0
-        mds_df['file'] = mds_filename
-        mds_df['treenum'] = range(1, len(mds_df) + 1)
-        mds_df['size'] = 6
-        
+        # Extract tree names from the distance matrix
+        tree_names = distmat_df.index.astype(str).tolist()
+        print(tree_names)
+
+        # MDS result
+        mds_df = pd.DataFrame(embedding, columns=[f"MDS{i+1}" for i in range(n_components)])
+        mds_df["tree"] = tree_names
+
+        # CLEAN group column
+        mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("_")[0].strip())
+        mds_df["group"] = mds_df["group"].astype(str)  # enforce dtype
+
+        # Build group_col just for internal use
+        group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
+        mds_df["group_col"] = mds_df["group"].map(group_mapping)
+
+        # Add rest of fields
+        mds_df["file"] = mds_filename
+        mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
+        mds_df["size"] = 6
+
         print(f"Created MDS dataframe with shape: {mds_df.shape}")
         print(f"MDS dataframe columns: {list(mds_df.columns)}")
         

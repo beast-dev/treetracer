@@ -56,5 +56,5 @@ Load in trees file ----(Stage 1)---> Compute pairwise distances ----(Stage 2)---
 	- [x] Have MDS upload functionality
 	- [x] Have MDS computation functionality
 	- [x] Feed MDS results to plotting functionality
-	- [ ] Correctly format MDS results to reflect groups defined by pairwise distance matrix produced in Stage 1.
+	- [x] Correctly format MDS results to reflect groups defined by pairwise distance matrix produced in Stage 1. (Assumes group names stored before underscore in tree names)
 

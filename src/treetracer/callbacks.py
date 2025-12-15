@@ -525,10 +525,10 @@ def register_callbacks(app):
             "filename": mds_filename,
             "rows": len(mds_df),
             "dimensions": mdscols,
-            "groups": ['MDS_group'],
-            "MIN_TREENUM": 1,
-            "MAX_TREENUM": len(mds_df),
-            "date": None, 
+            "groups": mds_df["group"].unique().tolist(),
+            "MIN_TREENUM": int(mds_df["treenum"].min()),
+            "MAX_TREENUM": int(mds_df["treenum"].max()),
+            "date": None,
         }
         
         print(f"Created metadata: {mds_metadata}")
@@ -720,14 +720,23 @@ def register_callbacks(app):
         prevent_initial_call=True,
     )
     def update_graph_on_button_click(n_clicks, mds_selected, treenum_range, current_plot, plot_config):
+        print(f"DEBUG: Button clicked! n_clicks={n_clicks}")
+        print(f"DEBUG: treenum_range={treenum_range}")
+        print(f"DEBUG: mds_selected={mds_selected}")
+
         if not n_clicks or not plot_config or len(mds_selected) != 3:
+            print("DEBUG: Early return - validation failed")
             return no_update, no_update
 
         # Filter data based on current control values
         combined_df = pd.DataFrame(plot_config["combined_data"])
+        print(f"DEBUG: combined_df shape before filter: {combined_df.shape}")
+        print(f"DEBUG: treenum range in data: {combined_df['treenum'].min()} to {combined_df['treenum'].max()}")
+
         filtered_dff = combined_df[
             (combined_df["treenum"] >= treenum_range[0]) & (combined_df["treenum"] <= treenum_range[1])
         ]
+        print(f"DEBUG: filtered_dff shape after filter: {filtered_dff.shape}")
 
         x, y, z = mds_selected
 

@@ -83,7 +83,21 @@ upload_button = dcc.Upload(
     children=html.Div(
         [
             dmc.Button(
-                "Upload Tree Traces",
+                "Upload MDS results",
+                justify="center",
+                fullWidth=True,
+            )
+        ]
+    ),
+    multiple=True,
+)
+
+upload_distmat_button = dcc.Upload(
+    id="upload-distmat-button",
+    children=html.Div(
+        [
+            dmc.Button(
+                "Upload Distance Matrix",
                 justify="center",
                 fullWidth=True,
             )
@@ -110,15 +124,24 @@ def add_navbar():
             dmc.Stack(
                 [
                     upload_button,
+                    upload_distmat_button,
                     clear_data_button,
                     html.Div(id="upload-placeholder"),
                     # dcc.Store components for state management
                     dcc.Store(id="uploaded-files-store", storage_type="memory"),
                     dcc.Store(id="dataframes-store", storage_type="memory"),
+                    dcc.Store(id="distmat-store", storage_type="memory"),
                     dcc.Store(id="plot-config-store", storage_type="memory"),
                     # Add a div to display validation messages
                     dmc.Alert(
                         id="validation-alert",
+                        title="",
+                        color="red",
+                        withCloseButton=True,
+                        style={"display": "none"},
+                    ),
+                    dmc.Alert(
+                        id="distmat-validation-alert",
                         title="",
                         color="red",
                         withCloseButton=True,

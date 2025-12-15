@@ -39,9 +39,22 @@ uv run treetracer
 
 ## TODO
 
+Desired workflow:
+
+Load in trees file ----(Stage 1)---> Compute pairwise distances ----(Stage 2)---> Compute MDS ----(Done)---> Plot MDS
+
+
+(Stage 1): Pairwise distances:
 - [x] Load .trees files instead of MDS files and have TreeTracer compute the distance matrix in the app
 	- [x] Set up a local temporary database to store the trees file? (duckdb)
 	- [x] Set up the nexus parsing and storage
 	- [ ] Find fast RF distances compute packages?
 		- [ ] dendropy?
+
+(Stage 2): Multidimensional scaling:
+- [x] Load distance matrix instead of MDS files and have TreeTracer compute the MDS file in the app.
+	- [x] Have MDS upload functionality
+	- [x] Have MDS computation functionality
+	- [x] Feed MDS results to plotting functionality
+	- [x] Correctly format MDS results to reflect groups defined by pairwise distance matrix produced in Stage 1. (Assumes group names stored before underscore in tree names)
 

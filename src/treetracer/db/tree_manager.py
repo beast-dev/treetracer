@@ -23,17 +23,22 @@ class TreeManagerPandas:
     def __init__(self):
         self._trees = pd.DataFrame(columns=[
             'id', 'name', 'newick_offset', 'newick_length',
+            'line_offset', 'line_length',
             'file_source', 'group_name', 'metadata',
         ])
         self._trees = self._trees.astype({
             'id': 'int64',
             'newick_offset': 'int64',
             'newick_length': 'int32',
+            'line_offset': 'int64',
+            'line_length': 'int32',
         })
         self._current_max_id = 0
         self._source_files = {}       # file_source -> absolute file path
         self._source_handles = {}     # file_source -> open file handle
         self._pending_rows = []       # buffer for batch append
+        self._source_preambles = {}   # file_source -> bytes (everything before first tree line)
+        self._source_translate = {}   # file_source -> dict {number_str: taxon_name}
 
     # ------------------------------------------------------------------
     # Source file registration & newick I/O
@@ -62,8 +67,9 @@ class TreeManagerPandas:
         """Append tree metadata rows.
 
         Args:
-            raw_trees_data: List of tuples
+            raw_trees_data: List of tuples. Accepts two formats:
                 (name, newick_offset, newick_length, file_source, group_name, metadata)
+                (name, newick_offset, newick_length, line_offset, line_length, file_source, group_name, metadata)
 
         Returns:
             Number of trees inserted
@@ -71,7 +77,13 @@ class TreeManagerPandas:
         if not raw_trees_data:
             return 0
 
-        for name, newick_offset, newick_length, file_source, group_name, metadata in raw_trees_data:
+        for row in raw_trees_data:
+            if len(row) == 8:
+                name, newick_offset, newick_length, line_offset, line_length, file_source, group_name, metadata = row
+            else:
+                name, newick_offset, newick_length, file_source, group_name, metadata = row
+                line_offset = 0
+                line_length = 0
             self._current_max_id += 1
             metadata_json = json.dumps(metadata) if isinstance(metadata, dict) else metadata
             self._pending_rows.append({
@@ -79,6 +91,8 @@ class TreeManagerPandas:
                 'name': name,
                 'newick_offset': newick_offset,
                 'newick_length': newick_length,
+                'line_offset': line_offset,
+                'line_length': line_length,
                 'file_source': file_source,
                 'group_name': group_name,
                 'metadata': metadata_json,
@@ -98,6 +112,8 @@ class TreeManagerPandas:
         batch_df['id'] = batch_df['id'].astype('int64')
         batch_df['newick_offset'] = batch_df['newick_offset'].astype('int64')
         batch_df['newick_length'] = batch_df['newick_length'].astype('int32')
+        batch_df['line_offset'] = batch_df['line_offset'].astype('int64')
+        batch_df['line_length'] = batch_df['line_length'].astype('int32')
         batch_df['file_source'] = batch_df['file_source'].astype('category')
         batch_df['group_name'] = batch_df['group_name'].astype('category')
         if len(self._trees) == 0:
@@ -227,6 +243,88 @@ class TreeManagerPandas:
         }
 
     # ------------------------------------------------------------------
+    # Source file preamble & translate map
+    # ------------------------------------------------------------------
+
+    def set_source_preamble(self, file_source: str, preamble: bytes,
+                            translate_map: Dict[str, str]):
+        """Store the NEXUS preamble and Translate mapping for a file source.
+
+        Args:
+            file_source: File identifier
+            preamble: Raw bytes of everything before the first tree line
+            translate_map: Dict mapping number strings to taxon names
+        """
+        self._source_preambles[file_source] = preamble
+        self._source_translate[file_source] = translate_map
+
+    def get_source_preamble(self, file_source: str) -> Optional[bytes]:
+        """Get the stored preamble bytes for a file source."""
+        return self._source_preambles.get(file_source)
+
+    def get_translate_map(self, file_source: str) -> Optional[Dict[str, str]]:
+        """Get the stored Translate mapping for a file source."""
+        return self._source_translate.get(file_source)
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _read_tree_line(self, file_source: str, line_offset: int,
+                        line_length: int) -> bytes:
+        """Read a full tree line from the source file."""
+        fh = self._get_source_handle(file_source)
+        fh.seek(line_offset)
+        return fh.read(line_length)
+
+    def export_trees_nexus(self, output_path: str,
+                           sampled_trees: List[Dict[str, Any]]) -> int:
+        """Export sampled trees to a valid NEXUS .trees file.
+
+        Writes the original preamble (taxa block, trees block header,
+        Translate section) followed by the sampled tree lines verbatim,
+        then closes with 'End;'.
+
+        Args:
+            output_path: Path to write the output .trees file
+            sampled_trees: List of tree dicts as returned by get_trees_sample
+
+        Returns:
+            Number of trees written
+        """
+        if not sampled_trees:
+            return 0
+
+        # All trees in a sample should come from the same file_source
+        file_source = sampled_trees[0]['file_source']
+        preamble = self._source_preambles.get(file_source)
+        if preamble is None:
+            raise ValueError(f"No preamble stored for file_source '{file_source}'")
+
+        self.flush()
+
+        # Look up line_offset / line_length for each tree by ID,
+        # sorted by line_offset so trees appear in original MCMC order
+        tree_ids = [t['id'] for t in sampled_trees]
+        df = self._trees[self._trees['id'].isin(tree_ids)].sort_values('line_offset')
+
+        written = 0
+        with open(output_path, 'wb') as out:
+            out.write(preamble)
+            for _, row in df.iterrows():
+                line_bytes = self._read_tree_line(
+                    file_source, int(row['line_offset']), int(row['line_length'])
+                )
+                out.write(line_bytes)
+                # Ensure each tree line ends with newline
+                if not line_bytes.endswith(b'\n'):
+                    out.write(b'\n')
+                written += 1
+            out.write(b'End;\n')
+
+        return written
+
+    # ------------------------------------------------------------------
     # Clear / cleanup
     # ------------------------------------------------------------------
 
@@ -236,6 +334,8 @@ class TreeManagerPandas:
             if file_source in self._source_handles:
                 self._source_handles[file_source].close()
                 del self._source_handles[file_source]
+            self._source_preambles.pop(file_source, None)
+            self._source_translate.pop(file_source, None)
         else:
             self._trees = self._trees.iloc[0:0]
             self._current_max_id = 0
@@ -243,6 +343,8 @@ class TreeManagerPandas:
             for fh in self._source_handles.values():
                 fh.close()
             self._source_handles.clear()
+            self._source_preambles.clear()
+            self._source_translate.clear()
 
     def cleanup(self):
         """Close source file handles. No temp files to delete."""
@@ -251,6 +353,8 @@ class TreeManagerPandas:
         self._source_handles.clear()
         self._trees = self._trees.iloc[0:0]
         self._pending_rows = []
+        self._source_preambles.clear()
+        self._source_translate.clear()
 
 
 # Global singleton

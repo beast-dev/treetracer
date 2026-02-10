@@ -3,6 +3,9 @@
 Opens the file in binary mode and tracks the exact byte position of each newick
 string. Only the offset and length are passed to the tree manager -- the
 newick text is never held in Python memory beyond the current line.
+
+Also captures the NEXUS preamble (taxa block, Translate section) and parses
+the Translate mapping for later export.
 """
 
 import re
@@ -60,6 +63,42 @@ def parse_tree_line_metadata(left_part: str) -> Tuple[str, Dict[str, Any]]:
     return tree_name, metadata_dict
 
 
+def _parse_translate_block(preamble_text: str) -> Dict[str, str]:
+    """Parse the Translate section from preamble text.
+
+    Extracts the number-to-taxon-name mapping from lines like:
+        1 TaxonName,
+        2 AnotherTaxon,
+        ...
+        89 LastTaxon
+
+    Args:
+        preamble_text: Decoded preamble string
+
+    Returns:
+        Dict mapping number strings to taxon names (e.g. {'1': 'TaxonA', '2': 'TaxonB'})
+    """
+    translate_map = {}
+
+    # Find the Translate block
+    translate_match = re.search(r'Translate\s*\n(.*?)\n\s*;', preamble_text,
+                                re.DOTALL | re.IGNORECASE)
+    if not translate_match:
+        return translate_map
+
+    translate_body = translate_match.group(1)
+    for line in translate_body.split('\n'):
+        line = line.strip().rstrip(',')
+        if not line:
+            continue
+        # Split on first whitespace: "1 TaxonName"
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            translate_map[parts[0]] = parts[1]
+
+    return translate_map
+
+
 def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                                   batch_size: int = 200, transaction_size: int = 1000) -> int:
     """Stream a nexus file, storing newick byte offsets instead of strings.
@@ -67,6 +106,9 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
     Reads the file in binary mode to track precise byte positions. For each
     tree line, records where the newick string starts and how long it is in
     the original file. Only metadata and offsets are sent to the tree manager.
+
+    Also captures the preamble (everything before the first tree line) and
+    parses the Translate mapping, storing both in the tree manager.
 
     Args:
         nexus_file: Path to the nexus file
@@ -87,6 +129,8 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
     batch_data = []
     total_inserted = 0
     trees_in_current_transaction = 0
+    preamble_captured = False
+    preamble_bytes = b''
 
     start_time = time.time()
     base_filename = os.path.splitext(os.path.basename(nexus_file))[0]
@@ -105,7 +149,22 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
 
             stripped = raw_line.strip()
             if not stripped.startswith(b'tree '):
+                # Accumulate preamble lines until first tree line
+                if not preamble_captured:
+                    preamble_bytes += raw_line
                 continue
+
+            # First tree line: capture preamble
+            if not preamble_captured:
+                preamble_captured = True
+                preamble_text = preamble_bytes.decode('utf-8', errors='replace')
+                translate_map = _parse_translate_block(preamble_text)
+                if hasattr(db_manager, 'set_source_preamble'):
+                    db_manager.set_source_preamble(
+                        file_source, preamble_bytes, translate_map
+                    )
+                print(f"Captured preamble ({len(preamble_bytes)} bytes, "
+                      f"{len(translate_map)} taxa in Translate)")
 
             eq_pos = stripped.find(b' = ')
             if eq_pos <= 0:
@@ -125,11 +184,16 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
             leading_ws = len(raw_line) - len(raw_line.lstrip())
             newick_offset = line_start + leading_ws + newick_start_in_stripped
 
+            # Full tree line offset and length (for verbatim export)
+            line_offset = line_start
+            line_length = len(raw_line)
+
             group_name = base_filename
             metadata_for_db = metadata_dict if metadata_dict else {}
 
             batch_data.append((
                 tree_name, newick_offset, newick_length,
+                line_offset, line_length,
                 file_source, group_name, metadata_for_db
             ))
             tree_count += 1
@@ -149,7 +213,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                     commit_start = time.time()
                     db_manager.get_connection().execute("COMMIT")
                     commit_time = time.time() - commit_start
-                    print(f"  ✓ Committed transaction ({trees_in_current_transaction} trees in {commit_time:.2f}s)")
+                    print(f"  Committed transaction ({trees_in_current_transaction} trees in {commit_time:.2f}s)")
                     trees_in_current_transaction = 0
                     db_manager.get_connection().execute("BEGIN TRANSACTION")
 
@@ -164,7 +228,11 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
 
     if trees_in_current_transaction > 0:
         db_manager.get_connection().execute("COMMIT")
-        print(f"  ✓ Final commit ({trees_in_current_transaction} trees)")
+        print(f"  Final commit ({trees_in_current_transaction} trees)")
+
+    # Flush pending rows
+    if hasattr(db_manager, 'flush'):
+        db_manager.flush()
 
     total_time = time.time() - start_time
     print(f"Streaming complete: {total_inserted} trees in {total_time:.2f}s")

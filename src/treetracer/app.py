@@ -1,6 +1,6 @@
 import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer
-from .ui import add_header, add_navbar, add_main_body
+from .ui import add_header, add_navbar, add_main_body, add_footer
 from .callbacks import register_callbacks
 import sys
 import webbrowser
@@ -20,9 +20,10 @@ def create_dash_app():
             add_header(),
             add_navbar(),
             add_main_body(),
+            add_footer(),
         ],
         header={"height": 60},
-        # footer={"height": 60},
+        footer={"height": 0},
         navbar={
             "width": 300,
             "breakpoint": "sm",

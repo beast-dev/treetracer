@@ -17,6 +17,13 @@ def add_header():
                 ),
                 dmc.Image(src=logo_path, w=50, fit="contain"),
                 dmc.Title("TreeTracer", c="blue"),
+                dmc.Space(style={"flex": 1}),
+                dmc.ActionIcon(
+                    dmc.Text(">_", ff="monospace", fw=700, size="sm"),
+                    id="log-toggle-button",
+                    variant="subtle",
+                    size="lg",
+                ),
             ],
             h="100%",
             px="md",
@@ -132,6 +139,9 @@ def add_navbar():
                     dcc.Store(id="dataframes-store", storage_type="memory"),
                     dcc.Store(id="distmat-store", storage_type="memory"),
                     dcc.Store(id="plot-config-store", storage_type="memory"),
+                    # Log panel state
+                    dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
+                    dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),
                     # Add a div to display validation messages
                     dmc.Alert(
                         id="validation-alert",
@@ -153,4 +163,57 @@ def add_navbar():
             ),
         ],
         p="md",
+    )
+
+
+# Footer (log panel)
+
+
+def add_footer():
+    """Create a toggleable log/terminal output panel."""
+    return dmc.AppShellFooter(
+        id="log-footer",
+        style={"display": "none"},
+        children=[
+            dmc.Stack(
+                [
+                    dmc.Group(
+                        [
+                            dmc.Text("Log Output", fw=600, size="sm"),
+                            dmc.Button(
+                                "Clear",
+                                id="log-clear-button",
+                                variant="subtle",
+                                size="compact-sm",
+                            ),
+                        ],
+                        justify="space-between",
+                        px="sm",
+                        py="4px",
+                        style={
+                            "borderBottom": "1px solid var(--mantine-color-default-border)",
+                        },
+                    ),
+                    dmc.ScrollArea(
+                        id="log-scroll-area",
+                        h=200,
+                        children=[
+                            html.Div(
+                                id="log-content",
+                                style={
+                                    "fontFamily": "monospace",
+                                    "fontSize": "12px",
+                                    "padding": "8px",
+                                    "backgroundColor": "#1a1b1e",
+                                    "color": "#c9d1d9",
+                                    "minHeight": "200px",
+                                },
+                            )
+                        ],
+                        offsetScrollbars=True,
+                    ),
+                ],
+                gap=0,
+            )
+        ],
     )

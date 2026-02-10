@@ -198,3 +198,4 @@ cython_debug/
 .DS_Store
 src/.DS_Store
 /src/treetracer/db/old_tests
+*.trees

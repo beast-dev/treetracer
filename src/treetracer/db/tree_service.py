@@ -10,7 +10,7 @@ This module provides the main API for TreeTracer's tree processing functionality
 from typing import List, Dict, Any, Optional
 import time
 from .process_trees import process_nexus_trees_streaming
-from .db_manager import get_db_manager
+from .tree_manager import get_tree_manager
 
 
 class TreeService:
@@ -22,7 +22,7 @@ class TreeService:
     """
     
     def __init__(self):
-        self.db_manager = get_db_manager()
+        self.db_manager = get_tree_manager()
     
     def load_nexus_file(self, nexus_file_path: str, file_source: Optional[str] = None) -> Dict[str, Any]:
         """Load a nexus file into the database with optimized streaming.

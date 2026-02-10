@@ -30,8 +30,8 @@ def test_rf_computation():
     
     try:
         # Get database manager
-        from treetracer.db.db_manager import get_db_manager
-        db_manager = get_db_manager()
+        from treetracer.db.tree_manager import get_tree_manager
+        db_manager = get_tree_manager()
         
         # Process trees from nexus file
         tree_count = process_nexus_trees_streaming(

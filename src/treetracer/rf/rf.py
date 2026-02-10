@@ -14,13 +14,13 @@ from functools import partial
 # Handle imports for both direct execution and package import
 try:
     from ..db.tree_service import TreeService
-    from ..db.db_manager import get_db_manager
+    from ..db.tree_manager import get_tree_manager
 except ImportError:
     import sys
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
     from treetracer.db.tree_service import TreeService
-    from treetracer.db.db_manager import get_db_manager
+    from treetracer.db.tree_manager import get_tree_manager
 
 
 def _compute_rf_distance_worker(tree_pair_data: Tuple[str, str, int, int]) -> Tuple[int, int, float, float]:
@@ -75,7 +75,7 @@ class RobinsonFouldsCalculator:
     
     def __init__(self):
         self.tree_service = TreeService()
-        self.db_manager = get_db_manager()
+        self.db_manager = get_tree_manager()
         self._taxon_namespace = None
         
     def sample_trees_from_database(self, 
@@ -86,29 +86,7 @@ class RobinsonFouldsCalculator:
         """Sample trees from database for RF distance computation."""
         if use_last_trees:
             # Get the last N trees from the database (end of MCMC chain)
-            conn = self.db_manager.get_connection()
-            query = """
-                SELECT id, name, newick, file_source, group_name, metadata
-                FROM trees 
-                WHERE file_source = ?
-                ORDER BY id DESC
-                LIMIT ?
-            """
-            results = conn.execute(query, (file_source, sample_size)).fetchall()
-            
-            trees = []
-            for row in results:
-                trees.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'newick': row[2],
-                    'file_source': row[3],
-                    'group_name': row[4],
-                    'metadata': row[5]
-                })
-            
-            # Reverse to get chronological order
-            trees = trees[::-1]
+            trees = self.db_manager.get_last_trees(file_source, limit=sample_size)
             print(f"Retrieved last {len(trees)} trees from database (IDs: {[t['id'] for t in trees]})")
             
         else:
@@ -380,31 +358,22 @@ class RobinsonFouldsCalculator:
     
     def get_database_stats(self, file_source: Optional[str] = None) -> Dict[str, Any]:
         """Get database statistics for tree files."""
-        conn = self.db_manager.get_connection()
-        
+        stats = self.db_manager.get_database_stats()
+
         if file_source:
-            count_result = conn.execute(
-                "SELECT COUNT(*) FROM trees WHERE file_source = ?", 
-                (file_source,)
-            ).fetchone()
-            
+            tree_count = stats.get('trees_per_file', {}).get(file_source, 0)
             return {
                 'file_source': file_source,
-                'tree_count': count_result[0] if count_result else 0
+                'tree_count': tree_count
             }
         else:
-            file_stats = conn.execute("""
-                SELECT file_source, COUNT(*) as tree_count
-                FROM trees 
-                GROUP BY file_source
-                ORDER BY tree_count DESC
-            """).fetchall()
-            
-            total_trees = conn.execute("SELECT COUNT(*) FROM trees").fetchone()[0]
-            
+            trees_per_file = stats.get('trees_per_file', {})
             return {
-                'total_trees': total_trees,
-                'files': [{'file_source': row[0], 'tree_count': row[1]} for row in file_stats]
+                'total_trees': stats.get('total_trees', 0),
+                'files': [
+                    {'file_source': fs, 'tree_count': tc}
+                    for fs, tc in sorted(trees_per_file.items(), key=lambda x: -x[1])
+                ]
             }
     
     def clear_taxon_namespace(self):

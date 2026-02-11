@@ -69,7 +69,13 @@ def add_main_body():
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
             ),
-            dmc.TabsPanel(html.Div(id="data-info-display"), value="data"),
+            dmc.TabsPanel(
+                html.Div([
+                    html.Div(id="trees-info-display"),
+                    html.Div(id="data-info-display"),
+                ]),
+                value="data",
+            ),
             dmc.TabsPanel(html.Div(id="plot-display"), value="traces"),
             dmc.TabsPanel(add_about(), value="about"),
         ],
@@ -132,20 +138,13 @@ def add_navbar():
                 [
                     upload_button,
                     upload_distmat_button,
-                    dcc.Upload(
-                        id="upload-trees-button",
-                        children=html.Div(
-                            [
-                                dmc.Button(
-                                    "Load Trees",
-                                    justify="center",
-                                    fullWidth=True,
-                                    variant="filled",
-                                    color="green",
-                                )
-                            ]
-                        ),
-                        multiple=True,
+                    dmc.Button(
+                        "Load Trees",
+                        id="load-trees-button",
+                        justify="center",
+                        fullWidth=True,
+                        variant="filled",
+                        color="green",
                     ),
                     clear_data_button,
                     html.Div(id="upload-placeholder"),

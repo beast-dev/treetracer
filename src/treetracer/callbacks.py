@@ -7,8 +7,10 @@ import plotly.express as px
 import json
 import base64
 import io
-import tempfile
 import os
+import sys
+
+import subprocess
 import pandas as pd
 from sklearn.manifold import MDS
 import numpy as np
@@ -118,6 +120,36 @@ def create_plot_config(combined_df, file_data, selected_files):
         "groups": groups,
         "color_dict": color_dict
     }
+
+
+def _open_file_dialog():
+    """Open a native file picker and return the selected path.
+
+    Uses tkinter in a subprocess (avoids Dash's main-thread constraint).
+    Works on macOS, Linux, and Windows via Python's standard library.
+    """
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import tkinter as tk\n"
+                "from tkinter import filedialog\n"
+                "root = tk.Tk()\n"
+                "root.withdraw()\n"
+                "root.attributes('-topmost', True)\n"
+                "path = filedialog.askopenfilename(\n"
+                "    title='Select a .trees file',\n"
+                "    filetypes=[('Trees files', '*.trees'), ('All files', '*.*')])\n"
+                "print(path)\n"
+                "root.destroy()",
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def register_callbacks(app):
@@ -312,75 +344,114 @@ def register_callbacks(app):
         return stored_distmats, error_message, alert_style
 
 
-    # Callback to handle .trees file uploads
+    # Callback to load .trees files via native file dialog
     @callback(
         Output("tree-offset-store", "data"),
         Output("trees-validation-alert", "title"),
         Output("trees-validation-alert", "style"),
-        Input("upload-trees-button", "contents"),
-        State("upload-trees-button", "filename"),
-        State("upload-trees-button", "last_modified"),
+        Input("load-trees-button", "n_clicks"),
         State("tree-offset-store", "data"),
+        prevent_initial_call=True,
     )
-    def handle_trees_upload(contents, filenames, dates, stored_offsets):
-        if contents is None:
+    def handle_trees_load(n_clicks, stored_summaries):
+        if not n_clicks:
             return no_update, no_update, no_update
 
-        stored_offsets = stored_offsets or {}
-        error_message = ""
+        file_path = _open_file_dialog()
+        if not file_path:
+            return no_update, no_update, no_update
 
-        for content, filename, date in zip(contents, filenames, dates):
-            if not filename.endswith(".trees"):
-                error_message = f"Only .trees files are allowed. '{filename}' was rejected."
-                add_log(f"Validation error: {error_message}", "ERROR")
-                continue
+        stored_summaries = stored_summaries or {}
+        filename = os.path.basename(file_path)
 
-            if filename in stored_offsets:
-                add_log(f"File {filename} already loaded, skipping", "WARNING")
-                continue
+        if not file_path.endswith(".trees"):
+            msg = f"Only .trees files are allowed. '{filename}' was rejected."
+            add_log(msg, "ERROR")
+            return no_update, msg, {"display": "block"}
 
-            add_log(f"Loading trees file: {filename}")
+        if filename in stored_summaries:
+            add_log(f"File {filename} already loaded, skipping", "WARNING")
+            return no_update, no_update, no_update
 
-            try:
-                # Decode base64 content and write to temp file
-                content_type, content_string = content.split(",")
-                decoded = base64.b64decode(content_string)
 
-                tmp = tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".trees"
-                )
-                tmp.write(decoded)
-                tmp.close()
+        try:
+            tree_service = get_tree_service()
+            result = tree_service.load_nexus_file(
+                file_path, file_source=filename
+            )
 
-                # Load via TreeService
-                tree_service = get_tree_service()
-                result = tree_service.load_nexus_file(
-                    tmp.name, file_source=filename
-                )
-
-                if result["success"]:
-                    # Get the offset DataFrame from tree manager
-                    offset_df = tree_service.db_manager._trees
-                    file_offsets = offset_df[
-                        offset_df["file_source"] == filename
-                    ]
-                    stored_offsets[filename] = file_offsets.to_dict("records")
-                    add_log(
-                        f"Loaded {filename}: {result['trees_loaded']} trees"
+            if result["success"]:
+                # Store only lightweight summary, not every offset row
+                trees_per_group = {}
+                offset_df = tree_service.db_manager._trees
+                file_rows = offset_df[offset_df["file_source"] == filename]
+                if len(file_rows) > 0:
+                    trees_per_group = (
+                        file_rows.groupby("group_name", observed=True)
+                        .size()
+                        .to_dict()
                     )
-                else:
-                    error_message = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
-                    add_log(error_message, "ERROR")
-                    # Clean up temp file on failure
-                    os.unlink(tmp.name)
-            except Exception as e:
-                error_message = f"Error processing {filename}: {str(e)}"
-                add_log(error_message, "ERROR")
 
-        alert_style = (
-            {"display": "block"} if error_message else {"display": "none"}
-        )
-        return stored_offsets, error_message, alert_style
+                stored_summaries[filename] = {
+                    "total_trees": result["trees_loaded"],
+                    "groups": list(trees_per_group.keys()),
+                    "trees_per_group": trees_per_group,
+                    "path": file_path,
+                }
+                add_log(
+                    f"Loaded {filename}: {result['trees_loaded']} trees"
+                )
+                return stored_summaries, "", {"display": "none"}
+            else:
+                msg = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
+                add_log(msg, "ERROR")
+                return no_update, msg, {"display": "block"}
+        except Exception as e:
+            msg = f"Error processing {filename}: {str(e)}"
+            add_log(msg, "ERROR")
+            return no_update, msg, {"display": "block"}
+
+    # Callback to display loaded trees info in the Data tab
+    @callback(
+        Output("trees-info-display", "children"),
+        Input("tree-offset-store", "data"),
+    )
+    def display_trees_info(stored_summaries):
+        if not stored_summaries:
+            return html.Div()
+
+        cards = []
+        for filename, summary in stored_summaries.items():
+            total_trees = summary["total_trees"]
+            groups = summary["groups"]
+            trees_per_group = summary["trees_per_group"]
+
+            group_lines = [
+                dmc.Text(f"  {g}: {count} trees", size="sm")
+                for g, count in trees_per_group.items()
+            ]
+
+            cards.append(
+                dmc.Paper(
+                    children=[
+                        dmc.Text(f"Filename: {filename}", fw=500),
+                        dmc.Text("File Type: Nexus Trees", c="green"),
+                        dmc.Text(f"Total Trees: {total_trees}"),
+                        dmc.Text(f"Number of Groups: {len(groups)}"),
+                        dmc.Text("Groups: " + ", ".join(groups)),
+                        dmc.Space(h=5),
+                        dmc.Text("Trees per Group:", fw=500, size="sm"),
+                        *group_lines,
+                        dmc.Space(h=10),
+                    ],
+                    p="md",
+                    shadow="xs",
+                    withBorder=True,
+                    mt=10,
+                )
+            )
+
+        return html.Div(cards)
 
     # Callbacks to update the MultiSelect with uploaded filenames
 
@@ -661,7 +732,6 @@ def register_callbacks(app):
         Output("upload-data-button", "contents"),
         Output("upload-distmat-button", "contents"),
         Output("tree-offset-store", "data", allow_duplicate=True),
-        Output("upload-trees-button", "contents"),
     ],
     Input("clear-data-button", "n_clicks"),
     prevent_initial_call=True,
@@ -679,9 +749,8 @@ def register_callbacks(app):
                 None,
                 None,
                 {},
-                None,
             )
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
 
     # ------- PLOT CALLBACK

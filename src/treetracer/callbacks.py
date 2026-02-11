@@ -123,28 +123,25 @@ def create_plot_config(combined_df, file_data, selected_files):
 
 
 def _open_file_dialog():
-    """Open a native file picker and return the selected path.
-
-    Uses tkinter in a subprocess (avoids Dash's main-thread constraint).
-    Works on macOS, Linux, and Windows via Python's standard library.
-    """
+    """Open a native file picker and return the selected path."""
+    if sys.platform == "darwin":
+        cmd = [
+            "osascript", "-e",
+            'POSIX path of (choose file of type {"trees"} '
+            'with prompt "Select a .trees file")',
+        ]
+    else:
+        cmd = [
+            sys.executable, "-c",
+            "import tkinter as tk; from tkinter import filedialog; "
+            "root = tk.Tk(); root.withdraw(); "
+            "print(filedialog.askopenfilename("
+            "title='Select a .trees file', "
+            "filetypes=[('Trees files', '*.trees'), ('All files', '*.*')])); "
+            "root.destroy()",
+        ]
     try:
-        result = subprocess.run(
-            [
-                sys.executable, "-c",
-                "import tkinter as tk\n"
-                "from tkinter import filedialog\n"
-                "root = tk.Tk()\n"
-                "root.withdraw()\n"
-                "root.attributes('-topmost', True)\n"
-                "path = filedialog.askopenfilename(\n"
-                "    title='Select a .trees file',\n"
-                "    filetypes=[('Trees files', '*.trees'), ('All files', '*.*')])\n"
-                "print(path)\n"
-                "root.destroy()",
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     except Exception:
@@ -344,22 +341,34 @@ def register_callbacks(app):
         return stored_distmats, error_message, alert_style
 
 
+    # Instantly switch to Data tab when Load Trees is clicked
+    from dash import clientside_callback, ClientsideFunction
+    clientside_callback(
+        """function(n_clicks) { return "data"; }""",
+        Output("main-tabs", "value"),
+        Input("load-trees-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
     # Callback to load .trees files via native file dialog
     @callback(
         Output("tree-offset-store", "data"),
         Output("trees-validation-alert", "title"),
         Output("trees-validation-alert", "style"),
+        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("data-info-display", "children", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
         Input("load-trees-button", "n_clicks"),
         State("tree-offset-store", "data"),
         prevent_initial_call=True,
     )
     def handle_trees_load(n_clicks, stored_summaries):
         if not n_clicks:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         file_path = _open_file_dialog()
         if not file_path:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         stored_summaries = stored_summaries or {}
         filename = os.path.basename(file_path)
@@ -367,13 +376,14 @@ def register_callbacks(app):
         if not file_path.endswith(".trees"):
             msg = f"Only .trees files are allowed. '{filename}' was rejected."
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}
+            return no_update, msg, {"display": "block"}, no_update, no_update, no_update
 
         if filename in stored_summaries:
             add_log(f"File {filename} already loaded, skipping", "WARNING")
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
-        add_log(f"Loading trees file: {file_path}")
+        print(f"Loading {filename}...")
+        add_log(f"Loading {filename}...")
 
         try:
             tree_service = get_tree_service()
@@ -399,18 +409,63 @@ def register_callbacks(app):
                     "trees_per_group": trees_per_group,
                     "path": file_path,
                 }
+                print(f"Loaded {filename}: {result['trees_loaded']} trees")
                 add_log(
                     f"Loaded {filename}: {result['trees_loaded']} trees"
                 )
-                return stored_summaries, "", {"display": "none"}
+
+                # Check for taxa mismatch against previously loaded files
+                taxa_warning = None
+                new_translate = tree_service.db_manager.get_translate_map(filename)
+                if new_translate and stored_summaries:
+                    new_taxa = set(new_translate.values())
+                    mismatched_files = []
+                    for other_file in stored_summaries:
+                        if other_file == filename:
+                            continue
+                        other_translate = tree_service.db_manager.get_translate_map(other_file)
+                        if other_translate is None:
+                            continue
+                        other_taxa = set(other_translate.values())
+                        if new_taxa != other_taxa:
+                            mismatched_files.append(
+                                f"{other_file} has {len(other_taxa)} taxa"
+                            )
+
+                    if mismatched_files:
+                        taxa_warning = (
+                            f"{filename} has {len(new_taxa)} taxa but "
+                            + ", ".join(mismatched_files)
+                        )
+                        add_log(f"Taxa mismatch warning: {taxa_warning}", "WARNING")
+
+                if taxa_warning:
+                    notification = dmc.Notification(
+                        title="Trees Loaded — Taxa Mismatch",
+                        message=f"Loaded {result['trees_loaded']} trees from {filename}. WARNING: {taxa_warning}",
+                        color="yellow",
+                        action="show",
+                        autoClose=8000,
+                        id="load-notification",
+                    )
+                else:
+                    notification = dmc.Notification(
+                        title="Trees Loaded",
+                        message=f"Loaded {result['trees_loaded']} trees from {filename}.",
+                        color="green",
+                        action="show",
+                        autoClose=4000,
+                        id="load-notification",
+                    )
+                return stored_summaries, "", {"display": "none"}, no_update, html.Div(), notification
             else:
                 msg = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
                 add_log(msg, "ERROR")
-                return no_update, msg, {"display": "block"}
+                return no_update, msg, {"display": "block"}, no_update, no_update, no_update
         except Exception as e:
             msg = f"Error processing {filename}: {str(e)}"
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}
+            return no_update, msg, {"display": "block"}, no_update, no_update, no_update
 
     # Callback to display loaded trees info in the Data tab
     @callback(
@@ -444,6 +499,29 @@ def register_callbacks(app):
                         dmc.Text("Trees per Group:", fw=500, size="sm"),
                         *group_lines,
                         dmc.Space(h=10),
+                        dmc.Group([
+                            dmc.NumberInput(
+                                id={"type": "downsample-input", "index": filename},
+                                value=1000,
+                                min=1,
+                                step=1,
+                                style={"width": "120px"},
+                            ),
+                            dmc.Button(
+                                "Downsample Trees",
+                                id={"type": "downsample-btn", "index": filename},
+                                variant="filled",
+                                color="orange",
+                                size="sm",
+                            ),
+                            dmc.Button(
+                                "Reset",
+                                id={"type": "reset-trees-btn", "index": filename},
+                                variant="outline",
+                                color="red",
+                                size="sm",
+                            ),
+                        ]),
                     ],
                     p="md",
                     shadow="xs",
@@ -453,6 +531,157 @@ def register_callbacks(app):
             )
 
         return html.Div(cards)
+
+    # Callback to downsample trees for a given file
+    @callback(
+        Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input({"type": "downsample-btn", "index": ALL}, "n_clicks"),
+        State({"type": "downsample-input", "index": ALL}, "value"),
+        State("tree-offset-store", "data"),
+        prevent_initial_call=True,
+    )
+    def downsample_trees(n_clicks_list, n_value_list, stored_summaries):
+        if not any(n_clicks_list):
+            return no_update, no_update, no_update
+
+        from dash import ctx
+        triggered_id = ctx.triggered_id
+        if not triggered_id:
+            return no_update, no_update, no_update
+
+        filename = triggered_id["index"]
+
+        # Find the matching value from the ALL list
+        n_value = None
+        for i, inp in enumerate(ctx.inputs_list[0]):
+            if inp["id"]["index"] == filename:
+                n_value = n_value_list[i]
+                break
+
+        if not n_value:
+            return no_update, no_update, no_update
+
+        n = int(n_value)
+
+        # Check if requested sample size exceeds available trees
+        stored_summaries = stored_summaries or {}
+        current_total = stored_summaries.get(filename, {}).get("total_trees", 0)
+        if n >= current_total:
+            msg = f"Requested {n} trees but {filename} only has {current_total}. No downsampling performed."
+            print(msg)
+            add_log(msg, "WARNING")
+            notification = dmc.Notification(
+                title="Downsample Skipped",
+                message=msg,
+                color="yellow",
+                action="show",
+                autoClose=8000,
+                id="downsample-skip-notification",
+            )
+            return no_update, no_update, notification
+
+        print(f"Downsampling {filename} to {n} trees...")
+        add_log(f"Downsampling {filename} to {n} trees...")
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.downsample_trees(filename, n)
+
+        # Recompute summary from the DataFrame
+        offset_df = tree_service.db_manager._trees
+        file_rows = offset_df[offset_df["file_source"] == filename]
+        trees_per_group = {}
+        if len(file_rows) > 0:
+            trees_per_group = (
+                file_rows.groupby("group_name", observed=True)
+                .size()
+                .to_dict()
+            )
+
+        if filename in stored_summaries:
+            stored_summaries[filename]["total_trees"] = len(file_rows)
+            stored_summaries[filename]["groups"] = list(trees_per_group.keys())
+            stored_summaries[filename]["trees_per_group"] = trees_per_group
+
+        print(f"Downsampled {filename} to {len(file_rows)} trees")
+        add_log(f"Downsampled {filename} to {len(file_rows)} trees")
+        notification = dmc.Notification(
+            title="Trees Downsampled",
+            message=f"Downsampled {filename} to {len(file_rows)} trees.",
+            color="orange",
+            action="show",
+            autoClose=4000,
+            id="downsample-notification",
+        )
+        return stored_summaries, no_update, notification
+
+    # Callback to reset trees to original file contents
+    @callback(
+        Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input({"type": "reset-trees-btn", "index": ALL}, "n_clicks"),
+        State("tree-offset-store", "data"),
+        prevent_initial_call=True,
+    )
+    def reset_trees(n_clicks_list, stored_summaries):
+        if not any(n_clicks_list):
+            return no_update, no_update, no_update
+
+        from dash import ctx
+        triggered_id = ctx.triggered_id
+        if not triggered_id:
+            return no_update, no_update, no_update
+
+        filename = triggered_id["index"]
+        stored_summaries = stored_summaries or {}
+        if filename not in stored_summaries:
+            return no_update, no_update, no_update
+
+        file_path = stored_summaries[filename].get("path")
+        if not file_path:
+            return no_update, no_update, no_update
+
+        print(f"Resetting {filename}...")
+        add_log(f"Resetting {filename}...")
+
+        tree_service = get_tree_service()
+
+        # Clear existing trees for this file and reload from disk
+        tree_service.db_manager.clear_trees(file_source=filename)
+        result = tree_service.load_nexus_file(file_path, file_source=filename)
+
+        if not result["success"]:
+            add_log(f"Reset failed for {filename}: {result.get('error')}", "ERROR")
+            return no_update, no_update, no_update
+
+        # Recompute summary
+        offset_df = tree_service.db_manager._trees
+        file_rows = offset_df[offset_df["file_source"] == filename]
+        trees_per_group = {}
+        if len(file_rows) > 0:
+            trees_per_group = (
+                file_rows.groupby("group_name", observed=True)
+                .size()
+                .to_dict()
+            )
+
+        stored_summaries[filename]["total_trees"] = len(file_rows)
+        stored_summaries[filename]["groups"] = list(trees_per_group.keys())
+        stored_summaries[filename]["trees_per_group"] = trees_per_group
+
+        print(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
+        add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
+        notification = dmc.Notification(
+            title="Trees Reset",
+            message=f"Reloaded {len(file_rows)} trees from {filename}.",
+            color="red",
+            action="show",
+            autoClose=4000,
+            id="reset-notification",
+        )
+        return stored_summaries, no_update, notification
 
     # Callbacks to update the MultiSelect with uploaded filenames
 
@@ -733,6 +962,7 @@ def register_callbacks(app):
         Output("upload-data-button", "contents"),
         Output("upload-distmat-button", "contents"),
         Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
     ],
     Input("clear-data-button", "n_clicks"),
     prevent_initial_call=True,
@@ -740,18 +970,27 @@ def register_callbacks(app):
     def clear_uploads(n_clicks):
         if n_clicks:
             add_log("Data cleared")
+            notification = dmc.Notification(
+                title="Data Cleared",
+                message="All uploaded files and plots have been cleared.",
+                color="blue",
+                action="show",
+                autoClose=4000,
+                id="clear-notification",
+            )
             return (
                 [],
                 {},
                 {},
                 {},
-                html.Div("Files cleared."),
-                html.Div("Files cleared."),
+                html.Div(),
+                html.Div(),
                 None,
                 None,
                 {},
+                notification,
             )
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
 
     # ------- PLOT CALLBACK

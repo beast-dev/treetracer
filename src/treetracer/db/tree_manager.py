@@ -325,6 +325,20 @@ class TreeManagerPandas:
         return written
 
     # ------------------------------------------------------------------
+    # Downsample
+    # ------------------------------------------------------------------
+
+    def downsample_trees(self, file_source: str, n: int):
+        """Randomly keep only n trees for the given file_source, dropping the rest."""
+        self.flush()
+        mask = self._trees['file_source'] == file_source
+        file_df = self._trees[mask]
+        if len(file_df) <= n:
+            return  # nothing to do
+        keep = file_df.sample(n=n)
+        self._trees = pd.concat([self._trees[~mask], keep], ignore_index=True)
+
+    # ------------------------------------------------------------------
     # Clear / cleanup
     # ------------------------------------------------------------------
 

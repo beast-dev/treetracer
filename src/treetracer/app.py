@@ -32,7 +32,10 @@ def create_dash_app():
         padding="md",
         id="appshell",
     )
-    app.layout = dmc.MantineProvider(layout)
+    app.layout = dmc.MantineProvider([
+        dmc.NotificationProvider(position="top-right"),
+        layout,
+    ])
     return app
 
 

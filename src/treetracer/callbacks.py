@@ -373,6 +373,7 @@ def register_callbacks(app):
             add_log(f"File {filename} already loaded, skipping", "WARNING")
             return no_update, no_update, no_update
 
+        add_log(f"Loading trees file: {file_path}")
 
         try:
             tree_service = get_tree_service()

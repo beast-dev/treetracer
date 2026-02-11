@@ -71,7 +71,11 @@ def add_main_body():
             ),
             dmc.TabsPanel(
                 html.Div([
-                    html.Div(id="trees-info-display"),
+                    dcc.Loading(
+                        html.Div(id="trees-info-display"),
+                        type="circle",
+                        parent_style={"minHeight": "200px"},
+                    ),
                     html.Div(id="data-info-display"),
                 ]),
                 value="data",
@@ -79,13 +83,17 @@ def add_main_body():
             dmc.TabsPanel(html.Div(id="plot-display"), value="traces"),
             dmc.TabsPanel(add_about(), value="about"),
         ],
+        id="main-tabs",
         color="blue.2",  # default is blue
         orientation="horizontal",  # or "vertical"
         variant="pills",  # or "outline" or "pills"
         value="about",
         autoContrast=True,
     )
-    return dmc.AppShellMain(tabs)
+    return dmc.AppShellMain([
+        html.Div(id="notifications-container"),
+        tabs,
+    ])
 
 
 # Sidebar

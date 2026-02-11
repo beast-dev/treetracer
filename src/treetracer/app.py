@@ -52,7 +52,7 @@ def main():
         # VERY IMPORTANT: This call starts the server and keeps the process running.
         # Use debug=True for development. Set host='0.0.0.0' if you need to access
         # it from other devices on your network (e.g., Docker, WSL).
-        app.run(debug=False, host="127.0.0.1", port=8050)
+        app.run(debug=True, host="127.0.0.1", port=8050)
 
     except Exception as e:
         print(f"ERROR: An unexpected error occurred: {e}", file=sys.stderr)

@@ -132,6 +132,21 @@ def add_navbar():
                 [
                     upload_button,
                     upload_distmat_button,
+                    dcc.Upload(
+                        id="upload-trees-button",
+                        children=html.Div(
+                            [
+                                dmc.Button(
+                                    "Load Trees",
+                                    justify="center",
+                                    fullWidth=True,
+                                    variant="filled",
+                                    color="green",
+                                )
+                            ]
+                        ),
+                        multiple=True,
+                    ),
                     clear_data_button,
                     html.Div(id="upload-placeholder"),
                     # dcc.Store components for state management
@@ -139,6 +154,7 @@ def add_navbar():
                     dcc.Store(id="dataframes-store", storage_type="memory"),
                     dcc.Store(id="distmat-store", storage_type="memory"),
                     dcc.Store(id="plot-config-store", storage_type="memory"),
+                    dcc.Store(id="tree-offset-store", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),
@@ -152,6 +168,13 @@ def add_navbar():
                     ),
                     dmc.Alert(
                         id="distmat-validation-alert",
+                        title="",
+                        color="red",
+                        withCloseButton=True,
+                        style={"display": "none"},
+                    ),
+                    dmc.Alert(
+                        id="trees-validation-alert",
                         title="",
                         color="red",
                         withCloseButton=True,

@@ -88,7 +88,7 @@ class TreeManagerPandas:
             metadata_json = json.dumps(metadata) if isinstance(metadata, dict) else metadata
             self._pending_rows.append({
                 'id': self._current_max_id,
-                'name': name,
+                'name': group_name+"/"+name ,
                 'newick_offset': newick_offset,
                 'newick_length': newick_length,
                 'line_offset': line_offset,

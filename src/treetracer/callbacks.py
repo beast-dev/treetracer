@@ -589,19 +589,17 @@ def register_callbacks(app):
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-rf-output", "children"),
         Output("distmat-store", "data", allow_duplicate=True),
-        Output("uploaded-files-store", "data", allow_duplicate=True),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
         State("tree-offset-store", "data"),
         State("distmat-store", "data"),
-        State("uploaded-files-store", "data"),
         prevent_initial_call=True,
     )
     def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries,
-                          stored_distmats, stored_files):
+                          stored_distmats):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         # Determine which files are selected
         selected_files = [
@@ -612,8 +610,8 @@ def register_callbacks(app):
 
         add_log(f"Compute RF requested for {len(selected_files)} file(s): {', '.join(selected_files)}")
 
-        if len(selected_files) < 2:
-            msg = "At least 2 files must be selected to compute RF distances."
+        if len(selected_files) < 1:
+            msg = "At least 1 file must be selected to compute RF distances."
             add_log(msg, "WARNING")
             return dmc.Notification(
                 title="Selection Error",
@@ -622,7 +620,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -646,7 +644,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=8000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update
 
         # --- All taxa counts match — run RF computation ---
         n_taxa = unique_counts.pop()
@@ -679,7 +677,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update
 
         # Build names, newicks, translate maps, and map indices
         names = [t["name"] for t in sampled_trees]
@@ -727,7 +725,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=8000,
                 id="compute-rf-notification",
-            ), dmc.Text(msg, c="red"), no_update, no_update
+            ), dmc.Text(msg, c="red"), no_update
 
         # Convert to dict-of-dicts and store in distmat-store
         distmat_dict = matrix_to_dict(result_names, matrix)
@@ -736,21 +734,6 @@ def register_callbacks(app):
         stored_distmats = stored_distmats or {}
         stored_distmats[rf_filename] = distmat_dict
         add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
-
-        # Also register the filename in uploaded-files-store so it
-        # appears in the file multiselect for downstream MDS
-        stored_files = (stored_files or [])[:]
-        existing_filenames = [item["filename"] for item in stored_files]
-        if rf_filename not in existing_filenames:
-            # Minimal metadata so the multiselect picks it up
-            stored_files.append({
-                "filename": rf_filename,
-                "rows": len(result_names),
-                "dimensions": [],
-                "groups": [],
-                "MIN_TREENUM": 0,
-                "MAX_TREENUM": 0,
-            })
 
         notification = dmc.Notification(
             title="RF Distances Computed",
@@ -768,7 +751,7 @@ def register_callbacks(app):
             fw=500,
         )
 
-        return notification, output_text, stored_distmats, stored_files
+        return notification, output_text, stored_distmats
 
     # Callback to downsample trees for a given file
     @callback(
@@ -1147,7 +1130,7 @@ def register_callbacks(app):
         mds_df["tree"] = tree_names
 
         # CLEAN group column
-        mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("_")[0].strip())
+        mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("/")[0].strip())
         mds_df["group"] = mds_df["group"].astype(str)  # enforce dtype
 
         # Build group_col just for internal use

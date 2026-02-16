@@ -584,6 +584,192 @@ def register_callbacks(app):
 
         return table, False
 
+    # Callback to validate taxa and trigger RF computation
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Output("compute-rf-output", "children"),
+        Output("distmat-store", "data", allow_duplicate=True),
+        Output("uploaded-files-store", "data", allow_duplicate=True),
+        Input("compute-rf-button", "n_clicks"),
+        State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
+        State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
+        State("tree-offset-store", "data"),
+        State("distmat-store", "data"),
+        State("uploaded-files-store", "data"),
+        prevent_initial_call=True,
+    )
+    def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries,
+                          stored_distmats, stored_files):
+        if not n_clicks or not stored_summaries:
+            return no_update, no_update, no_update, no_update
+
+        # Determine which files are selected
+        selected_files = [
+            id_item["index"]
+            for id_item, checked in zip(id_list, checked_list)
+            if checked
+        ]
+
+        add_log(f"Compute RF requested for {len(selected_files)} file(s): {', '.join(selected_files)}")
+
+        if len(selected_files) < 2:
+            msg = "At least 2 files must be selected to compute RF distances."
+            add_log(msg, "WARNING")
+            return dmc.Notification(
+                title="Selection Error",
+                message=msg,
+                color="yellow",
+                action="show",
+                autoClose=6000,
+                id="compute-rf-notification",
+            ), no_update, no_update, no_update
+
+        # Collect taxa counts for selected files
+        taxa_counts = {}
+        for filename in selected_files:
+            summary = stored_summaries.get(filename, {})
+            taxa_counts[filename] = summary.get("n_taxa", 0)
+
+        add_log(f"Taxa counts: {taxa_counts}")
+
+        unique_counts = set(taxa_counts.values())
+        if len(unique_counts) > 1:
+            details = "; ".join(
+                f"{fname}: {count} taxa" for fname, count in taxa_counts.items()
+            )
+            msg = f"Selected files have different numbers of taxa ({details}). All files must share the same taxa set to compute RF distances."
+            add_log(f"Taxa mismatch — aborting RF computation: {details}", "ERROR")
+            return dmc.Notification(
+                title="Taxa Mismatch",
+                message=msg,
+                color="red",
+                action="show",
+                autoClose=8000,
+                id="compute-rf-notification",
+            ), no_update, no_update, no_update
+
+        # --- All taxa counts match — run RF computation ---
+        n_taxa = unique_counts.pop()
+        add_log(f"Taxa validation passed: all {len(selected_files)} files have {n_taxa} taxa")
+
+        tree_service = get_tree_service()
+
+        # Compute total trees across selected files
+        total_trees = sum(
+            stored_summaries[f].get("total_trees", 0) for f in selected_files
+        )
+        add_log(f"Fetching all {total_trees} trees from {len(selected_files)} files...")
+
+        # Fetch all trees from selected files
+        sample = tree_service.get_sample_for_analysis(
+            file_sources=selected_files,
+            sample_size=total_trees,
+            strategy="random",
+        )
+        sampled_trees = sample["trees"]
+        add_log(f"Retrieved {len(sampled_trees)} trees for RF computation")
+
+        if len(sampled_trees) < 2:
+            msg = "Not enough trees retrieved for RF computation."
+            add_log(msg, "ERROR")
+            return dmc.Notification(
+                title="RF Error",
+                message=msg,
+                color="red",
+                action="show",
+                autoClose=6000,
+                id="compute-rf-notification",
+            ), no_update, no_update, no_update
+
+        # Build names, newicks, translate maps, and map indices
+        names = [t["name"] for t in sampled_trees]
+        newicks = tree_service.prepare_trees_for_rf_analysis(sampled_trees)
+
+        # Collect unique translate maps and build per-tree map indices
+        translate_maps = []
+        file_to_map_idx = {}
+        for fname in selected_files:
+            tmap = tree_service.db_manager.get_translate_map(fname)
+            if tmap is not None:
+                file_to_map_idx[fname] = len(translate_maps)
+                translate_maps.append(tmap)
+
+        map_indices = [
+            file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
+        ]
+
+        add_log(
+            f"Starting RF computation: {len(names)} trees, "
+            f"{len(translate_maps)} translate map(s), {n_taxa} taxa"
+        )
+
+        try:
+            import time as _time
+            t0 = _time.time()
+
+            from .rf.rf import rf_distance_from_newicks, matrix_to_dict
+
+            result_names, matrix = rf_distance_from_newicks(
+                names, newicks, translate_maps, map_indices, rooted=False,
+            )
+            elapsed = _time.time() - t0
+            add_log(
+                f"RF computation complete: {len(result_names)} trees, "
+                f"{elapsed:.2f}s"
+            )
+        except Exception as e:
+            msg = f"RF computation failed: {e}"
+            add_log(msg, "ERROR")
+            return dmc.Notification(
+                title="RF Computation Error",
+                message=msg,
+                color="red",
+                action="show",
+                autoClose=8000,
+                id="compute-rf-notification",
+            ), dmc.Text(msg, c="red"), no_update, no_update
+
+        # Convert to dict-of-dicts and store in distmat-store
+        distmat_dict = matrix_to_dict(result_names, matrix)
+        rf_filename = "RF_distances.tsv"
+
+        stored_distmats = stored_distmats or {}
+        stored_distmats[rf_filename] = distmat_dict
+        add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
+
+        # Also register the filename in uploaded-files-store so it
+        # appears in the file multiselect for downstream MDS
+        stored_files = (stored_files or [])[:]
+        existing_filenames = [item["filename"] for item in stored_files]
+        if rf_filename not in existing_filenames:
+            # Minimal metadata so the multiselect picks it up
+            stored_files.append({
+                "filename": rf_filename,
+                "rows": len(result_names),
+                "dimensions": [],
+                "groups": [],
+                "MIN_TREENUM": 0,
+                "MAX_TREENUM": 0,
+            })
+
+        notification = dmc.Notification(
+            title="RF Distances Computed",
+            message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
+            color="green",
+            action="show",
+            autoClose=6000,
+            id="compute-rf-notification",
+        )
+
+        output_text = dmc.Text(
+            f"RF distance matrix computed: {len(result_names)} trees, {elapsed:.2f}s. "
+            f"Available as '{rf_filename}' in the file selector.",
+            c="green",
+            fw=500,
+        )
+
+        return notification, output_text, stored_distmats, stored_files
+
     # Callback to downsample trees for a given file
     @callback(
         Output("tree-offset-store", "data", allow_duplicate=True),

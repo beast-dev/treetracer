@@ -93,6 +93,12 @@ def add_main_body():
                         size="md",
                         disabled=True,
                     ),
+                    dmc.Space(h=10),
+                    dcc.Loading(
+                        html.Div(id="compute-rf-output"),
+                        type="circle",
+                        parent_style={"minHeight": "50px"},
+                    ),
                 ], style={"padding": "10px"}),
                 value="compute",
             ),

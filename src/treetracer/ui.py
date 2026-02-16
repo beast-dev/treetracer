@@ -63,6 +63,7 @@ def add_main_body():
             dmc.TabsList(
                 [
                     dmc.TabsTab("Data", value="data"),
+                    dmc.TabsTab("Compute", value="compute"),
                     dmc.TabsTab("Traces", value="traces"),
                     dmc.TabsTab("About", value="about"),
                 ],
@@ -79,6 +80,21 @@ def add_main_body():
                     html.Div(id="data-info-display"),
                 ]),
                 value="data",
+            ),
+            dmc.TabsPanel(
+                html.Div([
+                    html.Div(id="compute-trees-table"),
+                    dmc.Space(h=10),
+                    dmc.Button(
+                        "Compute RF Distances",
+                        id="compute-rf-button",
+                        variant="filled",
+                        color="green",
+                        size="md",
+                        disabled=True,
+                    ),
+                ], style={"padding": "10px"}),
+                value="compute",
             ),
             dmc.TabsPanel(html.Div(id="plot-display"), value="traces"),
             dmc.TabsPanel(add_about(), value="about"),

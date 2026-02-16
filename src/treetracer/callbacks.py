@@ -403,8 +403,12 @@ def register_callbacks(app):
                         .to_dict()
                     )
 
+                # Fetch translate map early so we can store n_taxa
+                new_translate = tree_service.db_manager.get_translate_map(filename)
+
                 stored_summaries[filename] = {
                     "total_trees": result["trees_loaded"],
+                    "n_taxa": len(new_translate) if new_translate else 0,
                     "groups": list(trees_per_group.keys()),
                     "trees_per_group": trees_per_group,
                     "path": file_path,
@@ -416,7 +420,6 @@ def register_callbacks(app):
 
                 # Check for taxa mismatch against previously loaded files
                 taxa_warning = None
-                new_translate = tree_service.db_manager.get_translate_map(filename)
                 if new_translate and stored_summaries:
                     new_taxa = set(new_translate.values())
                     mismatched_files = []
@@ -531,6 +534,55 @@ def register_callbacks(app):
             )
 
         return html.Div(cards)
+
+    # Callback to render the Compute tab table
+    @callback(
+        Output("compute-trees-table", "children"),
+        Output("compute-rf-button", "disabled"),
+        Input("tree-offset-store", "data"),
+    )
+    def render_compute_table(stored_summaries):
+        if not stored_summaries:
+            return html.Div(
+                dmc.Text("No .trees files loaded yet.", c="dimmed"),
+                style={"padding": "20px"},
+            ), True
+
+        rows = []
+        for filename, summary in stored_summaries.items():
+            rows.append(
+                dmc.TableTr([
+                    dmc.TableTd(filename),
+                    dmc.TableTd(str(summary.get("n_taxa", "—"))),
+                    dmc.TableTd(str(summary.get("total_trees", 0))),
+                    dmc.TableTd(
+                        dmc.Checkbox(
+                            id={"type": "compute-tree-checkbox", "index": filename},
+                            checked=True,
+                        )
+                    ),
+                ])
+            )
+
+        table = dmc.Table(
+            [
+                dmc.TableThead(
+                    dmc.TableTr([
+                        dmc.TableTh("File"),
+                        dmc.TableTh("Taxa"),
+                        dmc.TableTh("Trees"),
+                        dmc.TableTh("Select"),
+                    ])
+                ),
+                dmc.TableTbody(rows),
+            ],
+            striped=True,
+            highlightOnHover=True,
+            withTableBorder=True,
+            withColumnBorders=True,
+        )
+
+        return table, False
 
     # Callback to downsample trees for a given file
     @callback(

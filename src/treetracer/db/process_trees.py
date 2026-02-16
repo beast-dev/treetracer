@@ -178,7 +178,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
 
             # Calculate newick byte offset and length in the original file
             newick_start_in_stripped = eq_pos + 3
-            newick_bytes = stripped[newick_start_in_stripped:].rstrip(b';')
+            newick_bytes = stripped[newick_start_in_stripped:]
             newick_length = len(newick_bytes)
 
             leading_ws = len(raw_line) - len(raw_line.lstrip())

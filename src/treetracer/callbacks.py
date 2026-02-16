@@ -1293,6 +1293,17 @@ def register_callbacks(app):
                     ],
                     style={"width": "60%", "padding": "5px"},
                 ),
+                # show lines checkbox
+                html.Div(
+                    [
+                        dmc.Checkbox(
+                            label="Show lines",
+                            id="show-lines-checkbox",
+                            checked=True,
+                        ),
+                    ],
+                    style={"width": "10%", "padding": "5px", "display": "flex", "align-items": "center"},
+                ),
                 # plot button
                 html.Div(
                     [
@@ -1305,7 +1316,7 @@ def register_callbacks(app):
                             style={"margin-top": "20px"},
                         ),
                     ],
-                    style={"width": "20%", "padding": "5px", "text-align": "center"},
+                    style={"width": "10%", "padding": "5px", "text-align": "center"},
                 ),
             ],
             style={"display": "flex", "align-items": "center", "padding": "5px 0"},
@@ -1350,12 +1361,13 @@ def register_callbacks(app):
         [
             State(component_id="dimensions-box", component_property="value"),
             State(component_id="treenum-slider", component_property="value"),
+            State("show-lines-checkbox", "checked"),
             State("plot-container", "children"),
             State("plot-config-store", "data")
         ],
         prevent_initial_call=True,
     )
-    def update_graph_on_button_click(n_clicks, mds_selected, treenum_range, current_plot, plot_config):
+    def update_graph_on_button_click(n_clicks, mds_selected, treenum_range, show_lines, current_plot, plot_config):
         if not n_clicks or not plot_config or len(mds_selected) != 3:
             return no_update, no_update
 
@@ -1372,7 +1384,8 @@ def register_callbacks(app):
         # Create new plot with filtered data
         fig = make_plot_grid()
         add_trace_multiplot(
-            fig, filtered_dff, x, y, z, plot_config["groups"], plot_config["color_dict"]
+            fig, filtered_dff, x, y, z, plot_config["groups"], plot_config["color_dict"],
+            show_lines=show_lines,
         )
 
         # Try to preserve visibility settings if updating existing plot

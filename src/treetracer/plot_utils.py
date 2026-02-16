@@ -17,7 +17,9 @@ def make_plot_grid():
     return f
 
 
-def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT):
+def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
+    mode_2d = "lines+markers" if show_lines else "markers"
+    mode_3d = "lines+markers" if show_lines else "markers"
     for i, gr in enumerate(GROUPS):
         group_data = df[df["group"] == gr]
         fig.add_trace(
@@ -25,9 +27,11 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT):
                 x=group_data[x],
                 y=group_data[y],
                 z=group_data[z],
+                mode=mode_3d,
                 name=gr,
                 showlegend=True,
                 marker=dict(color=COLOR_DICT[gr], size=4),
+                line=dict(color=COLOR_DICT[gr], width=1),
                 legendgroup=gr,
                 hovertemplate=f"{gr}<br>Tree: %{{customdata[0]}}<extra></extra>",
                 customdata=group_data[["treenum"]].values,
@@ -39,10 +43,11 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT):
             go.Scatter(
                 x=group_data[x],
                 y=group_data[y],
-                mode="markers",
+                mode=mode_2d,
                 name=gr,
                 showlegend=False,  # Show legend for proper sync
                 marker=dict(color=COLOR_DICT[gr]),
+                line=dict(color=COLOR_DICT[gr], width=1),
                 legendgroup=gr,  # Add legend group for synchronization
                 hovertemplate=f"{gr}<br>Tree: %{{customdata[0]}}<extra></extra>",
                 customdata=group_data[["treenum"]].values,
@@ -54,10 +59,11 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT):
             go.Scatter(
                 x=group_data[x],
                 y=group_data[z],
-                mode="markers",
+                mode=mode_2d,
                 name=gr,
                 showlegend=False,  # Show legend for proper sync
                 marker=dict(color=COLOR_DICT[gr]),
+                line=dict(color=COLOR_DICT[gr], width=1),
                 legendgroup=gr,  # Add legend group for synchronization
                 hovertemplate=f"{gr}<br>Tree: %{{customdata[0]}}<extra></extra>",
                 customdata=group_data[["treenum"]].values,
@@ -69,10 +75,11 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT):
             go.Scatter(
                 x=group_data[y],
                 y=group_data[z],
-                mode="markers",
+                mode=mode_2d,
                 name=gr,
                 showlegend=False,  # Hide duplicate legends
                 marker=dict(color=COLOR_DICT[gr]),
+                line=dict(color=COLOR_DICT[gr], width=1),
                 legendgroup=gr,  # Add legend group
                 hovertemplate=f"{gr}<br>Tree: %{{customdata[0]}}<extra></extra>",
                 customdata=group_data[["treenum"]].values,

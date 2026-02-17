@@ -48,8 +48,8 @@ Load in trees file ----(Stage 1)---> Compute pairwise distances ----(Stage 2)---
 - [x] Load .trees files instead of MDS files and have TreeTracer compute the distance matrix in the app
 	- [x] Set up a local temporary database to store the trees file? (duckdb)
 	- [x] Set up the nexus parsing and storage
-	- [ ] Find fast RF distances compute packages?
-		- [ ] dendropy?
+	- [x] Find fast RF distances compute packages?
+		- [x] Using Joon's rust package
 
 (Stage 2): Multidimensional scaling:
 - [x] Load distance matrix instead of MDS files and have TreeTracer compute the MDS file in the app.

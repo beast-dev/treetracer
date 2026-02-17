@@ -1,125 +1,15 @@
-from dash import dcc, html, callback, Input, Output, State, no_update, ALL, MATCH
+from dash import dcc, html, callback, Input, Output, State, no_update, ALL
 from .plot_utils import make_plot_grid, add_trace_multiplot
 from .logger import add_log, get_logs, clear_logs
 from .db.tree_service import get_tree_service
 import dash_mantine_components as dmc
 import plotly.express as px
-import json
-import base64
-import io
 import os
 import sys
 
 import subprocess
 import pandas as pd
 from sklearn.manifold import MDS
-import numpy as np
-
-
-# Helper functions for single responsibilities
-def validate_file(filename):
-    """Validate if file is acceptable format."""
-    if not filename.endswith(".tsv"):
-        return f"Only TSV files are allowed. '{filename}' was rejected."
-    return None
-
-
-def parse_uploaded_file(content, filename):
-    """Parse uploaded file content into DataFrame."""
-    try:
-        content_type, content_string = content.split(",")
-        decoded = base64.b64decode(content_string)
-        df = pd.read_csv(io.StringIO(decoded.decode("utf-8")), sep="\t")
-        return df, None
-    except Exception as e:
-        return None, f"Error parsing {filename}: {str(e)}"
-
-def parse_uploaded_distmat(content, filename):
-    """Parse uploaded file content into DataFrame."""
-    try:
-        content_type, content_string = content.split(",")
-        decoded = base64.b64decode(content_string)
-        df = pd.read_csv(io.StringIO(decoded.decode("utf-8")), sep="\t", index_col=0)
-        #print(df.index)
-        return df, None
-    except Exception as e:
-        return None, f"Error parsing {filename}: {str(e)}"
-
-
-def transform_dataframe(df, filename):
-    """Transform DataFrame with required columns and calculations."""
-    # Column renaming
-    df.columns = [x.replace("V", "MDS") for x in df.columns]
-    mdscols = sorted([x for x in df.columns if "MDS" in x])
-    
-    # Group mapping
-    group_mapping = {val: idx for idx, val in enumerate(df["group"].unique())}
-    df["group_col"] = df["group"].map(group_mapping)
-    df["file"] = filename
-    
-    # Renumber trees
-    df["treenum"] = df.groupby("group").cumcount() + 1
-    df["size"] = 6
-    
-    return df, mdscols
-
-
-def create_file_metadata(df, filename, mdscols):
-    """Create metadata for uploaded file."""
-    return {
-        "filename": filename,
-        "rows": len(df),
-        "dimensions": mdscols,
-        "groups": df["group"].unique().tolist(),
-        "MIN_TREENUM": int(df["treenum"].min()),
-        "MAX_TREENUM": int(df["treenum"].max()),
-    }
-
-
-def combine_dataframes(file_data, dataframes_dict, selected_files):
-    """Combine multiple dataframes into one."""
-    combined_data = []
-    for item in file_data:
-        if item["filename"] in selected_files:
-            df_data = dataframes_dict.get(item["filename"])
-            if df_data:
-                combined_data.extend(df_data)
-    
-    if not combined_data:
-        return None
-    
-    combined_df = pd.DataFrame(combined_data)
-    if len(selected_files) > 1:
-        combined_df["group"] = combined_df["file"] + "/" + combined_df["group"]
-    
-    return combined_df
-
-
-def create_plot_config(combined_df, file_data, selected_files):
-    """Create plot configuration from combined data."""
-    # Get metadata from first selected file
-    mdscols = None
-    min_treenum = float('inf')
-    max_treenum = float('-inf')
-    
-    for item in file_data:
-        if item["filename"] in selected_files:
-            mdscols = item["dimensions"]
-            min_treenum = min(min_treenum, item["MIN_TREENUM"])
-            max_treenum = max(max_treenum, item["MAX_TREENUM"])
-    
-    groups = combined_df["group"].unique().tolist()
-    group_colors = px.colors.qualitative.Dark24[:len(groups)]
-    color_dict = {g: c for g, c in zip(groups, group_colors)}
-    
-    return {
-        "combined_data": combined_df.to_dict('records'),
-        "mdscols": mdscols,
-        "min_treenum": int(min_treenum),
-        "max_treenum": int(max_treenum),
-        "groups": groups,
-        "color_dict": color_dict
-    }
 
 
 def _open_file_dialog():
@@ -222,129 +112,10 @@ def register_callbacks(app):
                             style={"padding": "8px"})
         return no_update
 
-    # Callback to handle file uploads
-    @callback(
-    [
-        Output("uploaded-files-store", "data"),
-        Output("dataframes-store", "data"),
-        Output("validation-alert", "title"),
-        Output("validation-alert", "style"),
-    ],
-    Input("upload-data-button", "contents"),
-    State("upload-data-button", "filename"),
-    State("upload-data-button", "last_modified"),
-    State("uploaded-files-store", "data"),
-    State("dataframes-store", "data"),
-    #prevent_initial_call=True,
-    )
-    def update_uploaded_files(contents, filenames, dates, stored_files, stored_dataframes):
-        # Some debugging stuff
-        #print("Trace callback TRIGGERED")
-        #print(f"Contents: {contents is not None}")
-        #print(f"Filenames: {filenames}")
-        #print(f"Number of files: {len(filenames) if filenames else 0}")
-        
-        if contents is None:
-            return no_update, no_update, no_update, no_update
-
-        # Initialize or get existing data
-        file_data = stored_files or []
-        dataframes_dict = stored_dataframes or {}
-        existing_filenames = [item["filename"] for item in file_data]
-        error_message = ""
-
-        # Some debugging stuff
-        #print(f"Existing filenames: {existing_filenames}")
-        #print(f"Processing {len(filenames)} files")
-
-        for i, (content, filename, date) in enumerate(zip(contents, filenames, dates)):
-            add_log(f"Processing file {i+1}: {filename}")
-
-            # Single responsibility: File validation
-            validation_error = validate_file(filename)
-            if validation_error:
-                add_log(f"Validation error: {validation_error}", "ERROR")
-                error_message = validation_error
-                continue
-
-            if filename not in existing_filenames:
-                # Single responsibility: File parsing
-                df, parse_error = parse_uploaded_file(content, filename)
-                if parse_error:
-                    add_log(f"Parse error for {filename}: {parse_error}", "ERROR")
-                    error_message = parse_error
-                    continue
-
-                # Single responsibility: Data transformation
-                df, mdscols = transform_dataframe(df, filename)
-
-                # Single responsibility: Data storage
-                dataframes_dict[filename] = df.to_dict('records')
-
-                # Single responsibility: Metadata creation
-                metadata = create_file_metadata(df, filename, mdscols)
-                metadata["date"] = date
-                file_data.append(metadata)
-                add_log(f"Loaded {filename}: {df.shape[0]} rows, {len(df['group'].unique())} groups")
-            else:
-                add_log(f"File {filename} already exists, skipping", "WARNING")
-
-        # Some debugging stuff
-        #print(f"Final file_data length: {len(file_data)}")
-        #print(f"Final dataframes_dict keys: {list(dataframes_dict.keys())}")
-
-        # Configure alert display
-        alert_style = {"display": "block"} if error_message else {"display": "none"}
-        return file_data, dataframes_dict, error_message, alert_style
-    
-    # Callback to handle distance matrix uploads
-    @callback(
-        Output("distmat-store", "data"),
-        Output("distmat-validation-alert", "title"),
-        Output("distmat-validation-alert", "style"),
-        Input("upload-distmat-button", "contents"),
-        State("upload-distmat-button", "filename"),
-        State("upload-distmat-button", "last_modified"),
-        State("distmat-store", "data"),
-        #prevent_initial_call=True,
-    )
-    def update_uploaded_distmat(contents, filenames, dates, stored_distmats):
-        # Some debugging stuff
-        #print("Distmat callback TRIGGERED")
-        if contents is None:
-            return no_update, no_update, no_update
-
-        stored_distmats = stored_distmats or {}
-        error_message = ""
-
-        for content, filename, date in zip(contents, filenames, dates):
-            validation_error = validate_file(filename)
-            if validation_error:
-                error_message = validation_error
-                continue
-
-            if filename not in stored_distmats:
-                add_log(f"Uploading distance matrix: {filename}")
-                df, parse_error = parse_uploaded_distmat(content, filename)
-                if parse_error:
-                    add_log(f"Parse error for {filename}: {parse_error}", "ERROR")
-                    error_message = parse_error
-                    continue
-
-                # Store the dataframe as dict
-                stored_distmats[filename] = df.to_dict(orient='index')
-                add_log(f"Loaded distance matrix {filename}: {df.shape[0]}x{df.shape[1]}")
-                #print(stored_distmats[filename].keys()) 
-
-
-        alert_style = {"display": "block"} if error_message else {"display": "none"}
-        return stored_distmats, error_message, alert_style
-
-
-    # Instantly switch to Data tab when Load Trees is clicked
-    from dash import clientside_callback, ClientsideFunction
+    # Instantly switch to Trees tab when Load Trees is clicked
+    from dash import clientside_callback
     clientside_callback(
-        """function(n_clicks) { return "data"; }""",
+        """function(n_clicks) { return "trees"; }""",
         Output("main-tabs", "value"),
         Input("load-trees-button", "n_clicks"),
         prevent_initial_call=True,
@@ -356,7 +127,6 @@ def register_callbacks(app):
         Output("trees-validation-alert", "title"),
         Output("trees-validation-alert", "style"),
         Output("trees-info-display", "children", allow_duplicate=True),
-        Output("data-info-display", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("load-trees-button", "n_clicks"),
         State("tree-offset-store", "data"),
@@ -364,11 +134,11 @@ def register_callbacks(app):
     )
     def handle_trees_load(n_clicks, stored_summaries):
         if not n_clicks:
-            return no_update, no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         file_path = _open_file_dialog()
         if not file_path:
-            return no_update, no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         stored_summaries = stored_summaries or {}
         filename = os.path.basename(file_path)
@@ -376,11 +146,11 @@ def register_callbacks(app):
         if not file_path.endswith(".trees"):
             msg = f"Only .trees files are allowed. '{filename}' was rejected."
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}, no_update, no_update, no_update
+            return no_update, msg, {"display": "block"}, no_update, no_update
 
         if filename in stored_summaries:
             add_log(f"File {filename} already loaded, skipping", "WARNING")
-            return no_update, no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         print(f"Loading {filename}...")
         add_log(f"Loading {filename}...")
@@ -460,17 +230,17 @@ def register_callbacks(app):
                         autoClose=4000,
                         id="load-notification",
                     )
-                return stored_summaries, "", {"display": "none"}, no_update, html.Div(), notification
+                return stored_summaries, "", {"display": "none"}, no_update, notification
             else:
                 msg = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
                 add_log(msg, "ERROR")
-                return no_update, msg, {"display": "block"}, no_update, no_update, no_update
+                return no_update, msg, {"display": "block"}, no_update, no_update
         except Exception as e:
             msg = f"Error processing {filename}: {str(e)}"
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}, no_update, no_update, no_update
+            return no_update, msg, {"display": "block"}, no_update, no_update
 
-    # Callback to display loaded trees info in the Data tab
+    # Callback to display loaded trees info in the Trees tab
     @callback(
         Output("trees-info-display", "children"),
         Input("tree-offset-store", "data"),
@@ -535,7 +305,7 @@ def register_callbacks(app):
 
         return html.Div(cards)
 
-    # Callback to render the Compute tab table
+    # Callback to render the Compute tab RF table
     @callback(
         Output("compute-trees-table", "children"),
         Output("compute-rf-button", "disabled"),
@@ -744,14 +514,17 @@ def register_callbacks(app):
             id="compute-rf-notification",
         )
 
-        output_text = dmc.Text(
-            f"RF distance matrix computed: {len(result_names)} trees, {elapsed:.2f}s. "
-            f"Available as '{rf_filename}' in the file selector.",
-            c="green",
-            fw=500,
+        output_indicator = dmc.Alert(
+            title="RF Distance Matrix",
+            children=dmc.Text(
+                f"{rf_filename}: {len(result_names)} x {len(result_names)} trees",
+                size="sm",
+            ),
+            color="green",
+            variant="light",
         )
 
-        return notification, output_text, stored_distmats
+        return notification, output_indicator, stored_distmats
 
     # Callback to downsample trees for a given file
     @callback(
@@ -904,339 +677,210 @@ def register_callbacks(app):
         )
         return stored_summaries, no_update, notification
 
-    # Callbacks to update the MultiSelect with uploaded filenames
+    # ------ MDS SECTION ON COMPUTE TAB ------
 
-    # Callback 1: Create the initial MultiSelect component
+    # Render available distance matrices as radio buttons
     @callback(
-        Output("upload-placeholder", "children"),
-        Input("uploaded-files-store", "data"),
+        Output("mds-distmat-selector", "children"),
+        Output("compute-mds-button", "disabled"),
         Input("distmat-store", "data"),
-        prevent_initial_call=True,
     )
-    def create_multiselect_component(file_data, distmat_data):
-        # Check if we have any files at all
-        if not file_data and not distmat_data:
-            return html.Div("No files uploaded yet.")
+    def render_mds_distmat_selector(distmat_data):
+        if not distmat_data:
+            return dmc.Text("No distance matrices available. Compute RF distances first.", c="dimmed"), True
 
-        # Get initial filenames
-        trace_filenames = [item["filename"] for item in file_data] if file_data else []
-        distmat_filenames = list(distmat_data.keys()) if distmat_data else []
-        all_filenames = trace_filenames + distmat_filenames
+        options = []
+        for name in distmat_data:
+            df = pd.DataFrame(distmat_data[name])
+            options.append({
+                "value": name,
+                "label": f"{name} ({df.shape[0]}x{df.shape[1]})",
+            })
 
-        if not all_filenames:
-            return html.Div("No files uploaded yet.")
-        
-        # Create the multiselect component
-        multiselect = dmc.MultiSelect(
-            id="files-multiselect",
-            label="Uploaded TSV Files",
-            description="Select files to process",
-            data=all_filenames,
-            value=[],
-            style={"width": "100%"},
-            hidePickedOptions=True,
-            searchable=True,
-        )
-        
-        return multiselect
+        radio_items = [
+            dmc.Radio(label=opt["label"], value=opt["value"])
+            for opt in options
+        ]
 
-    # Callback 2: Update MultiSelect data while preserving selections
+        return dmc.RadioGroup(
+            children=dmc.Stack(radio_items, gap="xs"),
+            id="mds-distmat-radio",
+            value=options[0]["value"] if options else None,
+            label="Select a distance matrix",
+        ), False
+
+    # Compute MDS from selected distance matrix
     @callback(
-    [Output("files-multiselect", "data"), Output("files-multiselect", "value")],
-    [Input("uploaded-files-store", "data"), Input("distmat-store", "data")],
-    State("files-multiselect", "value"),
-    prevent_initial_call=True,
-    )
-    def update_multiselect_data(file_data, distmat_data, current_value):
-        # Get all filenames
-        trace_filenames = [item["filename"] for item in file_data] if file_data else []
-        distmat_filenames = list(distmat_data.keys()) if distmat_data else []
-        all_filenames = trace_filenames + distmat_filenames
-
-        # If no files, return no_update to avoid errors
-        if not all_filenames:
-            return no_update, no_update
-
-        # Preserve current selections that are still valid
-        preserved_value = []
-        if current_value:
-            preserved_value = [f for f in current_value if f in all_filenames]
-
-        return all_filenames, preserved_value
-
-
-    # Callback to display information about selected files
-    @callback(
-        Output("data-info-display", "children", allow_duplicate=True),
-        Input("files-multiselect", "value"),
-        State("uploaded-files-store", "data"),
-        State("dataframes-store", "data"),
-        State("distmat-store", "data"), 
-        prevent_initial_call=True,
-    )
-    def display_file_info(selected_files, file_data, dataframes_dict, distmat_data):
-        if not selected_files:
-            return html.Div("No files selected.")
-        
-        file_info = []
-
-        for filename in selected_files:
-            # Check if it's a trace file (including MDS files)
-            trace_file = next((item for item in (file_data or []) if item["filename"] == filename), None)
-            
-            if trace_file:
-                # Handle trace files
-                df_data = dataframes_dict.get(filename)
-                if df_data is not None:
-                    # Check if this is an MDS file
-                    is_mds_file = filename.endswith('_MDS.tsv')
-                    file_type = "MDS Results" if is_mds_file else "Tree Traces"
-                    file_color = "purple" if is_mds_file else "blue"
-                    
-                    file_info.append(
-                        dmc.Paper(
-                            children=[
-                                dmc.Text(f"Filename: {filename}", fw=500),
-                                dmc.Text(f"File Type: {file_type}", c=file_color),
-                                dmc.Text(f"Number of Dimensions: {len(trace_file['dimensions'])}"),
-                                dmc.Text(f"Dimensions: {trace_file['dimensions']}"),
-                                dmc.Text(f"Number of Groups: {len(trace_file['groups'])}"),
-                                dmc.Text("Groups: " + ", ".join(trace_file["groups"])),
-                                dmc.Text(f"Tree Range: {trace_file['MIN_TREENUM']}-{trace_file['MAX_TREENUM']}"),
-                                dmc.Text(f"Total Number of Trees: {trace_file['rows']}"),
-                                dmc.Space(h=10),
-                            ],
-                            p="md",
-                            shadow="xs",
-                            withBorder=True,
-                            mt=10,
-                        )
-                    )
-            
-            elif distmat_data and filename in distmat_data:
-                # Handle distance matrix files (only show button if not already processed)
-                distmat_df_data = distmat_data[filename]
-                df = pd.DataFrame(distmat_df_data)
-                
-                # Check if MDS version already exists
-                mds_filename = filename.replace('.tsv', '_MDS.tsv')
-                mds_exists = any(item["filename"] == mds_filename for item in (file_data or []))
-                
-                button_content = []
-                if not mds_exists:
-                    button_content.append(
-                        dmc.Button(
-                            "Process Distance Matrix",
-                            id={"type": "process-distmat", "filename": filename},
-                            variant="filled",
-                            color="green",
-                            size="sm",
-                            fullWidth=True,
-                        )
-                    )
-                else:
-                    button_content.append(
-                        dmc.Text(f"✓ MDS computed as: {mds_filename}", c="green", fw=500)
-                    )
-                
-                file_info.append(
-                    dmc.Paper(
-                        children=[
-                            dmc.Text(f"Filename: {filename}", fw=500),
-                            dmc.Text(f"File Type: Distance Matrix", c="green"),
-                            dmc.Text(f"Shape: {df.shape[0]} x {df.shape[1]}"),
-                            dmc.Space(h=10),
-                        ] + button_content,
-                        p="md",
-                        shadow="xs",
-                        withBorder=True,
-                        mt=10,
-                    )
-                )
-
-        if not file_info:
-            return html.Div("Selected files not found in uploaded data.")
-        
-        return html.Div(file_info)
-
-    # Callback to compute MDS from distance matrix
-
-    @callback(
-    [
-        Output("uploaded-files-store", "data", allow_duplicate=True),
-        Output("dataframes-store", "data", allow_duplicate=True),
-        #Output("upload-placeholder", "children", allow_duplicate=True), 
-    ],
-    Input({"type": "process-distmat", "filename": ALL}, "n_clicks"),
-    [
+        Output("mds-result-store", "data"),
+        Output("compute-mds-output", "children"),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("compute-mds-button", "n_clicks"),
+        State("mds-distmat-radio", "value"),
         State("distmat-store", "data"),
-        State("uploaded-files-store", "data"),
-        State("dataframes-store", "data"),
-    ],
-    prevent_initial_call=True,
+        prevent_initial_call=True,
     )
-    def process_distance_matrix_mds(n_clicks_list, distmat_data, file_data, dataframes_dict):
-        # Check if any button was clicked
-        if not any(n_clicks_list) or not distmat_data:
-            return no_update, no_update
+    def handle_compute_mds(n_clicks, selected_distmat, distmat_data):
+        if not n_clicks or not selected_distmat or not distmat_data:
+            return no_update, no_update, no_update
 
-        # Find which button was clicked
-        from dash import ctx
-        if not ctx.triggered:
-            return no_update, no_update
+        if selected_distmat not in distmat_data:
+            return no_update, dmc.Text("Selected matrix not found.", c="red"), no_update
 
-        # Extract filename from the triggered button
-        triggered_id = ctx.triggered_id
-        if not triggered_id or "filename" not in triggered_id:
-            return no_update, no_update
+        add_log(f"Computing MDS from {selected_distmat}...")
 
-        filename = triggered_id["filename"]
-
-        # Get the distance matrix data
-        if filename not in distmat_data:
-            return no_update, no_update
-
-        distmat_df_data = distmat_data[filename]
+        distmat_df_data = distmat_data[selected_distmat]
         distmat_df = pd.DataFrame(distmat_df_data)
-        add_log(f"Distance matrix {filename}: {distmat_df.shape[0]}x{distmat_df.shape[1]}")
+        add_log(f"Distance matrix {selected_distmat}: {distmat_df.shape[0]}x{distmat_df.shape[1]}")
 
-        # Convert to numpy array for MDS (assuming it's a square distance matrix)
         distance_matrix = distmat_df.values
 
-        # Check if it's actually a square matrix
         if distance_matrix.shape[0] != distance_matrix.shape[1]:
-            add_log(f"Distance matrix is not square: {distance_matrix.shape}", "ERROR")
-            return no_update, no_update
+            msg = f"Distance matrix is not square: {distance_matrix.shape}"
+            add_log(msg, "ERROR")
+            return no_update, dmc.Text(msg, c="red"), no_update
 
-        # Perform MDS
         try:
-            n_components = min(3, distance_matrix.shape[0] - 1)
+            import time as _time
+            t0 = _time.time()
+            n_components = min(6, distance_matrix.shape[0] - 1)
             add_log(f"Computing MDS with {n_components} components...")
             mds = MDS(n_components=n_components, dissimilarity='precomputed', random_state=42, verbose=1)
             embedding = mds.fit_transform(distance_matrix)
-            add_log(f"MDS completed: {embedding.shape[0]} points in {embedding.shape[1]}D space")
+            elapsed = _time.time() - t0
+            add_log(f"MDS completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")
         except Exception as e:
-            add_log(f"MDS computation failed: {str(e)}", "ERROR")
-            return no_update, no_update
+            msg = f"MDS computation failed: {str(e)}"
+            add_log(msg, "ERROR")
+            return no_update, dmc.Text(msg, c="red"), no_update
 
-        # Create a new dataframe in the same format as trace files
-        mds_filename = filename.replace('.tsv', '_MDS.tsv')
-
-        # Extract tree names from the distance matrix
+        # Build MDS result dataframe
         tree_names = distmat_df.index.astype(str).tolist()
+        mdscols = [f"MDS{i+1}" for i in range(n_components)]
 
-        # MDS result
-        mds_df = pd.DataFrame(embedding, columns=[f"MDS{i+1}" for i in range(n_components)])
+        mds_df = pd.DataFrame(embedding, columns=mdscols)
         mds_df["tree"] = tree_names
-
-        # CLEAN group column
         mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("/")[0].strip())
-        mds_df["group"] = mds_df["group"].astype(str)  # enforce dtype
+        mds_df["group"] = mds_df["group"].astype(str)
 
-        # Build group_col just for internal use
         group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
         mds_df["group_col"] = mds_df["group"].map(group_mapping)
-
-        # Add rest of fields
-        mds_df["file"] = mds_filename
         mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
         mds_df["size"] = 6
 
-        # Get MDS columns for metadata
-        mdscols = [f'MDS{i+1}' for i in range(n_components)]
+        mds_filename = selected_distmat.replace('.tsv', '_MDS.tsv')
+        mds_df["file"] = mds_filename
 
-        # Create metadata for the MDS file
-        mds_metadata = {
+        # Build metadata
+        metadata = {
             "filename": mds_filename,
+            "source_distmat": selected_distmat,
             "rows": len(mds_df),
             "dimensions": mdscols,
             "groups": mds_df["group"].unique().tolist(),
             "MIN_TREENUM": int(mds_df["treenum"].min()),
             "MAX_TREENUM": int(mds_df["treenum"].max()),
-            "date": None,
         }
 
-        # Update stored data
-        updated_file_data = (file_data or []).copy()
-        updated_dataframes_dict = (dataframes_dict or {}).copy()
+        mds_result = {
+            "metadata": metadata,
+            "data": mds_df.to_dict("records"),
+        }
 
-        # Add to file data if not already present
-        existing_filenames = [item["filename"] for item in updated_file_data]
-        if mds_filename not in existing_filenames:
-            updated_file_data.append(mds_metadata)
+        add_log(f"Created MDS result '{mds_filename}': {len(mds_df)} trees, {len(mds_df['group'].unique())} groups")
 
-        # Add to dataframes dict
-        updated_dataframes_dict[mds_filename] = mds_df.to_dict('records')
+        n_groups = len(mds_df["group"].unique())
+        output_indicator = dmc.Alert(
+            title="MDS Embedding",
+            children=dmc.Text(
+                f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups",
+                size="sm",
+            ),
+            color="blue",
+            variant="light",
+        )
 
-        add_log(f"Created {mds_filename}: {len(mds_df)} trees, {len(mds_df['group'].unique())} groups")
-        return updated_file_data, updated_dataframes_dict
+        notification = dmc.Notification(
+            title="MDS Computed",
+            message=f"MDS embedding from {selected_distmat}: {len(mds_df)} points, {n_components} dimensions.",
+            color="green",
+            action="show",
+            autoClose=6000,
+            id="compute-mds-notification",
+        )
 
-    # Callback to clear uploaded files
+        return mds_result, output_indicator, notification
+
+    # ------ CLEAR DATA ------
+
     @callback(
-    [
-        Output("uploaded-files-store", "data", allow_duplicate=True),
         Output("distmat-store", "data", allow_duplicate=True),
-        Output("dataframes-store", "data", allow_duplicate=True),
         Output("plot-config-store", "data", allow_duplicate=True),
-        Output("data-info-display", "children", allow_duplicate=True),
+        Output("mds-result-store", "data", allow_duplicate=True),
         Output("plot-display", "children", allow_duplicate=True),
-        Output("upload-data-button", "contents"),
-        Output("upload-distmat-button", "contents"),
         Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("compute-rf-output", "children", allow_duplicate=True),
+        Output("compute-mds-output", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
-    ],
-    Input("clear-data-button", "n_clicks"),
-    prevent_initial_call=True,
+        Input("clear-data-button", "n_clicks"),
+        prevent_initial_call=True,
     )
     def clear_uploads(n_clicks):
         if n_clicks:
             add_log("Data cleared")
+            # Also clear the tree service database
+            try:
+                tree_service = get_tree_service()
+                tree_service.db_manager.clear_trees()
+            except Exception:
+                pass
             notification = dmc.Notification(
                 title="Data Cleared",
-                message="All uploaded files and plots have been cleared.",
+                message="All data and plots have been cleared.",
                 color="blue",
                 action="show",
                 autoClose=4000,
                 id="clear-notification",
             )
             return (
-                [],
                 {},
                 {},
+                None,
+                html.Div(),
                 {},
                 html.Div(),
                 html.Div(),
-                None,
-                None,
-                {},
                 notification,
             )
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
+    # ------- VISUALIZE TAB CALLBACKS ------
 
-    # ------- PLOT CALLBACK
-
-    # Callback to prepare plot data and store configuration
+    # Auto-generate plot config when MDS result changes
     @callback(
-        Output("plot-config-store", "data", allow_duplicate=True),
-        Input("files-multiselect", "value"),
-        State("uploaded-files-store", "data"),
-        State("dataframes-store", "data"),
-        prevent_initial_call=True,
+        Output("plot-config-store", "data"),
+        Input("mds-result-store", "data"),
     )
-    def prepare_plot_config(selected_files, file_data, dataframes_dict):
-        if not selected_files or not file_data:
+    def generate_plot_config_from_mds(mds_result):
+        if not mds_result or not mds_result.get("data"):
             return {}
 
-        # Single responsibility: Data combination
-        combined_df = combine_dataframes(file_data, dataframes_dict, selected_files)
-        if combined_df is None:
-            return {}
+        metadata = mds_result["metadata"]
+        combined_df = pd.DataFrame(mds_result["data"])
+        mdscols = metadata["dimensions"]
+        groups = combined_df["group"].unique().tolist()
+        group_colors = px.colors.qualitative.Dark24[:len(groups)]
+        color_dict = {g: c for g, c in zip(groups, group_colors)}
 
-        # Single responsibility: Plot configuration
-        return create_plot_config(combined_df, file_data, selected_files)
+        return {
+            "combined_data": mds_result["data"],
+            "mdscols": mdscols,
+            "min_treenum": metadata["MIN_TREENUM"],
+            "max_treenum": metadata["MAX_TREENUM"],
+            "groups": groups,
+            "color_dict": color_dict,
+        }
 
-    # Callback to display plots
+    # Display plots when plot config is ready
     @callback(
         Output("plot-display", "children", allow_duplicate=True),
         Input("plot-config-store", "data"),
@@ -1244,8 +888,8 @@ def register_callbacks(app):
     )
     def display_plots(plot_config):
         if not plot_config or not plot_config.get("combined_data"):
-            return html.Div("No files selected.")
-            
+            return html.Div("No MDS result available. Compute MDS in the Compute tab.")
+
         plot_div = []
         combined_df = pd.DataFrame(plot_config["combined_data"])
         mdscols = plot_config["mdscols"]
@@ -1253,8 +897,6 @@ def register_callbacks(app):
         MAX_TREENUM = plot_config["max_treenum"]
         groups = plot_config["groups"]
         color_dict = plot_config["color_dict"]
-
-# No default plot - will be populated by button click
 
         # Controls row with slider, checkbox, and plot button
         controls = html.Div(
@@ -1390,8 +1032,8 @@ def register_callbacks(app):
 
         # Try to preserve visibility settings if updating existing plot
         if (
-            current_plot 
-            and len(current_plot) > 0 
+            current_plot
+            and len(current_plot) > 0
             and hasattr(current_plot[0], 'children')
             and hasattr(current_plot[0].children, 'figure')
         ):
@@ -1407,8 +1049,8 @@ def register_callbacks(app):
 
         # Create the plot component
         plot_component = dcc.Graph(figure=fig, id="graph", style={"height": "calc(100vh - 250px)"})
-        
+
         # Update button text to indicate it's been used
         button_text = "Update Plot"
-        
+
         return [plot_component], button_text

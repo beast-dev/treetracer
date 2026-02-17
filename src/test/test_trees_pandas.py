@@ -13,10 +13,10 @@ import re
 import json
 import gc
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from db.tree_manager import TreeManagerPandas
-from db.process_trees import process_nexus_trees_streaming
+from treetracer.db.tree_manager import TreeManagerPandas
+from treetracer.db.process_trees import process_nexus_trees_streaming
 
 
 # ------------------------------------------------------------------

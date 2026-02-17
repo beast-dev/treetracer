@@ -13,10 +13,10 @@ import os
 import sys
 import re
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from db.tree_manager import TreeManagerPandas
-from db.process_trees import process_nexus_trees_streaming
+from treetracer.db.tree_manager import TreeManagerPandas
+from treetracer.db.process_trees import process_nexus_trees_streaming
 
 
 # ------------------------------------------------------------------
@@ -232,12 +232,15 @@ def main():
             check(info['taxa_count'] == len(translate_map),
                   f"Taxa count: {info['taxa_count']} (expected {len(translate_map)})")
 
-        # Verify exported tree names match sampled tree names
-        exported_names = set(info['tree_names'])
-        sampled_names = set(tree_names)
-        check(exported_names == sampled_names,
-              f"Exported tree names match sampled tree names "
-              f"({len(exported_names)} exported, {len(sampled_names)} sampled)")
+        # Verify exported tree names match sampled tree names.
+        # The manager prefixes names with "group/" so strip that for comparison.
+        exported_states = {re.search(r'STATE_\d+', n).group() for n in info['tree_names']
+                          if re.search(r'STATE_\d+', n)}
+        sampled_states = {re.search(r'STATE_\d+', n).group() for n in tree_names
+                         if re.search(r'STATE_\d+', n)}
+        check(exported_states == sampled_states,
+              f"Exported tree STATE ids match sampled tree STATE ids "
+              f"({len(exported_states)} exported, {len(sampled_states)} sampled)")
 
         # Verify trees are in MCMC order (STATE numbers should be ascending)
         state_numbers = []
@@ -283,14 +286,19 @@ def main():
         check(len(trees2) == sample_size,
               f"Re-sampled {len(trees2)} trees from re-loaded file")
 
-        # Compare newick strings: sort both by name for comparison
-        original_by_name = {t['name']: t['newick'] for t in trees}
-        reloaded_by_name = {t['name']: t['newick'] for t in trees2}
+        # Compare newick strings by STATE id (names have different group prefixes
+        # since the original file_source and export file_source differ).
+        def state_id(name):
+            m = re.search(r'STATE_\d+', name)
+            return m.group() if m else name
+
+        original_by_state = {state_id(t['name']): t['newick'] for t in trees}
+        reloaded_by_state = {state_id(t['name']): t['newick'] for t in trees2}
 
         matching_newicks = 0
-        for name in original_by_name:
-            if name in reloaded_by_name:
-                if original_by_name[name] == reloaded_by_name[name]:
+        for sid in original_by_state:
+            if sid in reloaded_by_state:
+                if original_by_state[sid] == reloaded_by_state[sid]:
                     matching_newicks += 1
 
         check(matching_newicks == sample_size,

@@ -2,7 +2,7 @@
 """Benchmark time and memory for RF distance computation at varying sample sizes.
 
 Run:
-    uv run python src/treetracer/rf/bench_rf.py
+    uv run python src/test/bench_rf.py
 """
 
 import os
@@ -10,7 +10,7 @@ import sys
 import time
 import tracemalloc
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from treetracer.rf.rf import rf_distance_from_newicks
 from treetracer.db.tree_manager import TreeManagerPandas
@@ -18,9 +18,9 @@ from treetracer.db.process_trees import process_nexus_trees_streaming
 
 
 def find_test_file():
-    db_dir = os.path.join(os.path.dirname(__file__), '..', 'db')
+    test_dir = os.path.dirname(os.path.abspath(__file__))
     for candidate in ('test_BIG.trees', 'test.trees'):
-        path = os.path.join(db_dir, candidate)
+        path = os.path.join(test_dir, candidate)
         if os.path.exists(path):
             return path
     return None

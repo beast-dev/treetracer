@@ -6,7 +6,7 @@ Tests both the newick path and the file path, validates correctness,
 and prints a timing summary.
 
 Run:
-    uv run python src/treetracer/rf/test_rf.py
+    uv run python src/test/test_rf.py
 """
 
 import os
@@ -16,7 +16,7 @@ import tempfile
 import time
 
 # Ensure package imports work when running as a script
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from treetracer.rf.rf import (
     rf_distance_from_newicks,
@@ -62,9 +62,9 @@ def extract_state_id(name):
 # ------------------------------------------------------------------
 
 def find_test_file():
-    db_dir = os.path.join(os.path.dirname(__file__), '..', 'db')
+    test_dir = os.path.dirname(os.path.abspath(__file__))
     for candidate in ('test_BIG.trees', 'test.trees'):
-        path = os.path.join(db_dir, candidate)
+        path = os.path.join(test_dir, candidate)
         if os.path.exists(path):
             return path
     return None

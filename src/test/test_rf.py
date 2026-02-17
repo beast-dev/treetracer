@@ -74,23 +74,32 @@ def find_test_file():
 # Tests
 # ------------------------------------------------------------------
 
-def test_basic_file_path(test_file):
-    """RF via file path — basic structural checks."""
-    section("TEST: rf_distance_from_file — basic")
-    names, matrix = rf_distance_from_file(test_file, burnin_trees=100)
-    n = len(names)
-    check(n > 0, f"Got {n} trees from file")
-    check(len(matrix) == n, f"Matrix has {n} rows")
-    check(all(len(row) == n for row in matrix), "All rows have correct length")
-    check(all(matrix[i][i] == 0 for i in range(n)), "Diagonal is zero")
-    check(
-        all(matrix[i][j] == matrix[j][i] for i in range(n) for j in range(i + 1, n)),
-        "Matrix is symmetric",
+def test_basic_file_path(mgr, file_source):
+    """RF via file path on a 100-tree subsample — basic structural checks."""
+    section("TEST: rf_distance_from_file — basic (100 trees)")
+    trees = mgr.get_trees_sample(
+        filters={'file_source': file_source}, limit=100, strategy='uniform',
     )
-    check(
-        all(matrix[i][j] >= 0 for i in range(n) for j in range(n)),
-        "All values non-negative",
-    )
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.trees', prefix='rf_basic_')
+    os.close(tmp_fd)
+    try:
+        mgr.export_trees_nexus(tmp_path, trees)
+        names, matrix = rf_distance_from_file(tmp_path)
+        n = len(names)
+        check(n > 0, f"Got {n} trees from file")
+        check(len(matrix) == n, f"Matrix has {n} rows")
+        check(all(len(row) == n for row in matrix), "All rows have correct length")
+        check(all(matrix[i][i] == 0 for i in range(n)), "Diagonal is zero")
+        check(
+            all(matrix[i][j] == matrix[j][i] for i in range(n) for j in range(i + 1, n)),
+            "Matrix is symmetric",
+        )
+        check(
+            all(matrix[i][j] >= 0 for i in range(n) for j in range(n)),
+            "All values non-negative",
+        )
+    finally:
+        os.unlink(tmp_path)
     return names, matrix
 
 
@@ -253,7 +262,7 @@ def main():
     print(f"  Loaded {count} trees")
 
     # Run tests
-    names, matrix = test_basic_file_path(test_file)
+    names, matrix = test_basic_file_path(mgr, file_source)
     test_helpers(names, matrix)
 
     sample_sizes = [100, 500, 1000]

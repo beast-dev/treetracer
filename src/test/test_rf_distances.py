@@ -89,7 +89,7 @@ def main():
     # ------------------------------------------------------------------
     # 2. Test & benchmark at increasing sample sizes
     # ------------------------------------------------------------------
-    sample_sizes = [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000]
+    sample_sizes = [100, 250, 500, 750, 1000, 1500]#, 2000, 2500, 3000]
     # Cap to available trees
     sample_sizes = [n for n in sample_sizes if n <= count]
 

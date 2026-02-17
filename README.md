@@ -41,7 +41,7 @@ uv run treetracer
 
 Desired workflow:
 
-Load in trees file ----(Stage 1)---> Compute pairwise distances ----(Stage 2)---> Compute MDS ----(Done)---> Plot MDS
+Load in trees file ----(DONE)---> Compute pairwise distances ----(DONE)---> Compute MDS ----(DONE)---> Plot MDS (DONE)
 
 
 (Stage 1): Pairwise distances:

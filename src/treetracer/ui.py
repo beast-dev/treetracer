@@ -62,9 +62,9 @@ def add_main_body():
         [
             dmc.TabsList(
                 [
-                    dmc.TabsTab("Data", value="data"),
+                    dmc.TabsTab("Trees", value="trees"),
                     dmc.TabsTab("Compute", value="compute"),
-                    dmc.TabsTab("Traces", value="traces"),
+                    dmc.TabsTab("Visualize", value="visualize"),
                     dmc.TabsTab("About", value="about"),
                 ],
                 grow=True,
@@ -77,32 +77,90 @@ def add_main_body():
                         type="circle",
                         parent_style={"minHeight": "200px"},
                     ),
-                    html.Div(id="data-info-display"),
                 ]),
-                value="data",
+                value="trees",
             ),
             dmc.TabsPanel(
                 html.Div([
+                    # RF Distances section
+                    dmc.Title("RF Distances", order=4),
                     html.Div(id="compute-trees-table"),
                     dmc.Space(h=10),
-                    dmc.Button(
-                        "Compute RF Distances",
-                        id="compute-rf-button",
-                        variant="filled",
-                        color="green",
-                        size="md",
-                        disabled=True,
-                    ),
+                    dmc.Group([
+                        dmc.Button(
+                            "Compute RF Distances",
+                            id="compute-rf-button",
+                            variant="filled",
+                            color="green",
+                            size="md",
+                            disabled=True,
+                        ),
+                        dmc.Group([
+                            dmc.Button(
+                                "Load RF Matrix",
+                                id="load-rf-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                            ),
+                            dmc.Button(
+                                "Export RF Matrix",
+                                id="export-rf-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                                disabled=True,
+                            ),
+                        ], gap="xs"),
+                    ], justify="space-between"),
                     dmc.Space(h=10),
                     dcc.Loading(
                         html.Div(id="compute-rf-output"),
                         type="circle",
                         parent_style={"minHeight": "50px"},
                     ),
+                    # MDS Embedding section
+                    dmc.Divider(my="lg"),
+                    dmc.Title("MDS Embedding", order=4),
+                    html.Div(id="mds-status-text"),
+                    dmc.Space(h=10),
+                    dmc.Group([
+                        dmc.Button(
+                            "Compute MDS",
+                            id="compute-mds-button",
+                            variant="filled",
+                            color="blue",
+                            size="md",
+                            disabled=True,
+                        ),
+                        dmc.Group([
+                            dmc.Button(
+                                "Load MDS",
+                                id="load-mds-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                            ),
+                            dmc.Button(
+                                "Export MDS",
+                                id="export-mds-button",
+                                variant="outline",
+                                color="blue",
+                                size="sm",
+                                disabled=True,
+                            ),
+                        ], gap="xs"),
+                    ], justify="space-between"),
+                    dmc.Space(h=10),
+                    dcc.Loading(
+                        html.Div(id="compute-mds-output"),
+                        type="circle",
+                        parent_style={"minHeight": "50px"},
+                    ),
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
-            dmc.TabsPanel(html.Div(id="plot-display"), value="traces"),
+            dmc.TabsPanel(html.Div(id="plot-display"), value="visualize"),
             dmc.TabsPanel(add_about(), value="about"),
         ],
         id="main-tabs",
@@ -121,35 +179,6 @@ def add_main_body():
 # Sidebar
 
 
-upload_button = dcc.Upload(
-    id="upload-data-button",
-    children=html.Div(
-        [
-            dmc.Button(
-                "Upload MDS results",
-                justify="center",
-                fullWidth=True,
-            )
-        ]
-    ),
-    multiple=True,
-)
-
-upload_distmat_button = dcc.Upload(
-    id="upload-distmat-button",
-    children=html.Div(
-        [
-            dmc.Button(
-                "Upload Distance Matrix",
-                justify="center",
-                fullWidth=True,
-            )
-        ]
-    ),
-    multiple=True,
-)
-
-
 clear_data_button = dmc.Button(
     "Clear Data",
     justify="center",
@@ -166,8 +195,6 @@ def add_navbar():
         children=[
             dmc.Stack(
                 [
-                    upload_button,
-                    upload_distmat_button,
                     dmc.Button(
                         "Load Trees",
                         id="load-trees-button",
@@ -177,31 +204,14 @@ def add_navbar():
                         color="green",
                     ),
                     clear_data_button,
-                    html.Div(id="upload-placeholder"),
                     # dcc.Store components for state management
-                    dcc.Store(id="uploaded-files-store", storage_type="memory"),
-                    dcc.Store(id="dataframes-store", storage_type="memory"),
                     dcc.Store(id="distmat-store", storage_type="memory"),
                     dcc.Store(id="plot-config-store", storage_type="memory"),
                     dcc.Store(id="tree-offset-store", storage_type="memory"),
+                    dcc.Store(id="mds-result-store", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),
-                    # Add a div to display validation messages
-                    dmc.Alert(
-                        id="validation-alert",
-                        title="",
-                        color="red",
-                        withCloseButton=True,
-                        style={"display": "none"},
-                    ),
-                    dmc.Alert(
-                        id="distmat-validation-alert",
-                        title="",
-                        color="red",
-                        withCloseButton=True,
-                        style={"display": "none"},
-                    ),
                     dmc.Alert(
                         id="trees-validation-alert",
                         title="",
@@ -209,8 +219,6 @@ def add_navbar():
                         withCloseButton=True,
                         style={"display": "none"},
                     ),
-                    # Display selected file info
-                    html.Div(id="file-info-display"),
                 ]
             ),
         ],

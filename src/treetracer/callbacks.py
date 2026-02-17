@@ -68,6 +68,50 @@ def _open_file_dialog():
     return None
 
 
+def _open_tsv_dialog():
+    """Open a native file picker filtered to .tsv files and return the selected path."""
+    if sys.platform == "darwin":
+        cmd = [
+            "osascript", "-e",
+            'POSIX path of (choose file of type {"tsv","tab"} '
+            'with prompt "Select a .tsv file")',
+        ]
+    else:
+        cmd = [
+            sys.executable, "-c",
+            "import tkinter as tk; from tkinter import filedialog; "
+            "root = tk.Tk(); root.withdraw(); "
+            "print(filedialog.askopenfilename("
+            "title='Select a .tsv file', "
+            "filetypes=[('TSV files', '*.tsv'), ('All files', '*.*')])); "
+            "root.destroy()",
+        ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _validate_group_names(names):
+    """Check that every tree name contains at least one '/' as a group delimiter.
+
+    Returns (True, None) if valid, (False, error_message) if any name lacks a group.
+    """
+    bad_names = [n for n in names if "/" not in str(n)]
+    if bad_names:
+        preview = ", ".join(str(n) for n in bad_names[:5])
+        if len(bad_names) > 5:
+            preview += f" ... ({len(bad_names)} total)"
+        return False, (
+            "Tree names must include a group prefix (e.g., 'group1/tree_name'). "
+            f"Found names without '/': {preview}"
+        )
+    return True, None
+
+
 def register_callbacks(app):
     # Sidebar collapse callback
     @callback(
@@ -921,6 +965,174 @@ def register_callbacks(app):
             autoClose=4000,
             id="export-mds-notification",
         )
+
+    # ------ LOAD RF / MDS FROM FILE ------
+
+    @callback(
+        Output("distmat-store", "data", allow_duplicate=True),
+        Output("compute-rf-output", "children", allow_duplicate=True),
+        Output("export-rf-button", "disabled", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("load-rf-button", "n_clicks"),
+        State("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def load_rf_matrix(n_clicks, stored_distmats):
+        if not n_clicks:
+            return no_update, no_update, no_update, no_update
+
+        file_path = _open_tsv_dialog()
+        if not file_path:
+            return no_update, no_update, no_update, no_update
+
+        try:
+            df = pd.read_csv(file_path, sep="\t", index_col=0)
+        except Exception as e:
+            msg = f"Failed to read file: {e}"
+            add_log(msg, "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Load Error", message=msg, color="red",
+                action="show", autoClose=8000, id="load-rf-notification",
+            )
+
+        # Validate tree names have group prefix
+        all_names = list(df.index.astype(str)) + list(df.columns.astype(str))
+        valid, err_msg = _validate_group_names(all_names)
+        if not valid:
+            add_log(f"RF load validation failed: {err_msg}", "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Invalid Tree Names", message=err_msg, color="red",
+                action="show", autoClose=8000, id="load-rf-notification",
+            )
+
+        filename = os.path.basename(file_path)
+        stored_distmats = stored_distmats or {}
+        stored_distmats[filename] = df.to_dict()
+        add_log(f"Loaded RF distance matrix from {filename}: {df.shape[0]}x{df.shape[1]}")
+
+        output_indicator = dmc.Alert(
+            title="RF Distance Matrix",
+            children=dmc.Text(
+                f"{filename}: {df.shape[0]} x {df.shape[1]} trees",
+                size="sm",
+            ),
+            color="green",
+            variant="light",
+        )
+
+        notification = dmc.Notification(
+            title="RF Matrix Loaded",
+            message=f"Loaded {df.shape[0]}x{df.shape[1]} distance matrix from {filename}.",
+            color="green",
+            action="show",
+            autoClose=6000,
+            id="load-rf-notification",
+        )
+
+        return stored_distmats, output_indicator, False, notification
+
+    @callback(
+        Output("mds-result-store", "data", allow_duplicate=True),
+        Output("compute-mds-output", "children", allow_duplicate=True),
+        Output("export-mds-button", "disabled", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("load-mds-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def load_mds(n_clicks):
+        if not n_clicks:
+            return no_update, no_update, no_update, no_update
+
+        file_path = _open_tsv_dialog()
+        if not file_path:
+            return no_update, no_update, no_update, no_update
+
+        try:
+            mds_df = pd.read_csv(file_path, sep="\t")
+        except Exception as e:
+            msg = f"Failed to read file: {e}"
+            add_log(msg, "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Load Error", message=msg, color="red",
+                action="show", autoClose=8000, id="load-mds-notification",
+            )
+
+        if "group" not in mds_df.columns:
+            msg = "MDS file must contain a 'group' column."
+            add_log(msg, "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Invalid MDS File", message=msg, color="red",
+                action="show", autoClose=8000, id="load-mds-notification",
+            )
+
+        if mds_df["group"].isna().any() or (mds_df["group"].astype(str).str.strip() == "").any():
+            msg = "The 'group' column must not contain empty values."
+            add_log(msg, "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Invalid MDS File", message=msg, color="red",
+                action="show", autoClose=8000, id="load-mds-notification",
+            )
+
+        mds_df["group"] = mds_df["group"].astype(str)
+
+        group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
+        mds_df["group_col"] = mds_df["group"].map(group_mapping)
+
+        if "treenum" not in mds_df.columns:
+            mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
+        mds_df["size"] = 6
+
+        mds_filename = os.path.basename(file_path)
+        mds_df["file"] = mds_filename
+
+        # Detect MDS dimension columns
+        mdscols = [c for c in mds_df.columns if c.startswith("MDS")]
+        if not mdscols:
+            msg = "No MDS dimension columns found (expected columns starting with 'MDS')."
+            add_log(msg, "ERROR")
+            return no_update, no_update, no_update, dmc.Notification(
+                title="Invalid MDS File", message=msg, color="red",
+                action="show", autoClose=8000, id="load-mds-notification",
+            )
+
+        metadata = {
+            "filename": mds_filename,
+            "source_distmat": "loaded_from_file",
+            "rows": len(mds_df),
+            "dimensions": mdscols,
+            "groups": mds_df["group"].unique().tolist(),
+            "MIN_TREENUM": int(mds_df["treenum"].min()),
+            "MAX_TREENUM": int(mds_df["treenum"].max()),
+        }
+
+        mds_result = {
+            "metadata": metadata,
+            "data": mds_df.to_dict("records"),
+        }
+
+        n_groups = len(mds_df["group"].unique())
+        add_log(f"Loaded MDS from {mds_filename}: {len(mds_df)} points, {len(mdscols)}D, {n_groups} groups")
+
+        output_indicator = dmc.Alert(
+            title="MDS Embedding",
+            children=dmc.Text(
+                f"{mds_filename}: {len(mds_df)} points, {len(mdscols)}D, {n_groups} groups",
+                size="sm",
+            ),
+            color="blue",
+            variant="light",
+        )
+
+        notification = dmc.Notification(
+            title="MDS Loaded",
+            message=f"Loaded MDS from {mds_filename}: {len(mds_df)} points, {len(mdscols)} dimensions, {n_groups} groups.",
+            color="green",
+            action="show",
+            autoClose=6000,
+            id="load-mds-notification",
+        )
+
+        return mds_result, output_indicator, False, notification
 
     # ------- VISUALIZE TAB CALLBACKS ------
 

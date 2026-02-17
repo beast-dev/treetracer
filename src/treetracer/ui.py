@@ -95,14 +95,23 @@ def add_main_body():
                             size="md",
                             disabled=True,
                         ),
-                        dmc.Button(
-                            "Export RF Matrix",
-                            id="export-rf-button",
-                            variant="outline",
-                            color="green",
-                            size="sm",
-                            disabled=True,
-                        ),
+                        dmc.Group([
+                            dmc.Button(
+                                "Load RF Matrix",
+                                id="load-rf-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                            ),
+                            dmc.Button(
+                                "Export RF Matrix",
+                                id="export-rf-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                                disabled=True,
+                            ),
+                        ], gap="xs"),
                     ], justify="space-between"),
                     dmc.Space(h=10),
                     dcc.Loading(
@@ -124,14 +133,23 @@ def add_main_body():
                             size="md",
                             disabled=True,
                         ),
-                        dmc.Button(
-                            "Export MDS",
-                            id="export-mds-button",
-                            variant="outline",
-                            color="blue",
-                            size="sm",
-                            disabled=True,
-                        ),
+                        dmc.Group([
+                            dmc.Button(
+                                "Load MDS",
+                                id="load-mds-button",
+                                variant="outline",
+                                color="green",
+                                size="sm",
+                            ),
+                            dmc.Button(
+                                "Export MDS",
+                                id="export-mds-button",
+                                variant="outline",
+                                color="blue",
+                                size="sm",
+                                disabled=True,
+                            ),
+                        ], gap="xs"),
                     ], justify="space-between"),
                     dmc.Space(h=10),
                     dcc.Loading(

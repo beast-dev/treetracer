@@ -86,14 +86,24 @@ def add_main_body():
                     dmc.Title("RF Distances", order=4),
                     html.Div(id="compute-trees-table"),
                     dmc.Space(h=10),
-                    dmc.Button(
-                        "Compute RF Distances",
-                        id="compute-rf-button",
-                        variant="filled",
-                        color="green",
-                        size="md",
-                        disabled=True,
-                    ),
+                    dmc.Group([
+                        dmc.Button(
+                            "Compute RF Distances",
+                            id="compute-rf-button",
+                            variant="filled",
+                            color="green",
+                            size="md",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Export RF Matrix",
+                            id="export-rf-button",
+                            variant="outline",
+                            color="green",
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ], justify="space-between"),
                     dmc.Space(h=10),
                     dcc.Loading(
                         html.Div(id="compute-rf-output"),
@@ -103,20 +113,26 @@ def add_main_body():
                     # MDS Embedding section
                     dmc.Divider(my="lg"),
                     dmc.Title("MDS Embedding", order=4),
-                    dcc.Loading(
-                        html.Div(id="mds-distmat-selector"),
-                        type="circle",
-                        parent_style={"minHeight": "50px"},
-                    ),
+                    html.Div(id="mds-status-text"),
                     dmc.Space(h=10),
-                    dmc.Button(
-                        "Compute MDS",
-                        id="compute-mds-button",
-                        variant="filled",
-                        color="blue",
-                        size="md",
-                        disabled=True,
-                    ),
+                    dmc.Group([
+                        dmc.Button(
+                            "Compute MDS",
+                            id="compute-mds-button",
+                            variant="filled",
+                            color="blue",
+                            size="md",
+                            disabled=True,
+                        ),
+                        dmc.Button(
+                            "Export MDS",
+                            id="export-mds-button",
+                            variant="outline",
+                            color="blue",
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ], justify="space-between"),
                     dmc.Space(h=10),
                     dcc.Loading(
                         html.Div(id="compute-mds-output"),

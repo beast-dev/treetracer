@@ -12,6 +12,35 @@ import pandas as pd
 from sklearn.manifold import MDS
 
 
+def _save_file_dialog(default_filename="output.tsv"):
+    """Open a native save-file dialog and return the chosen path."""
+    if sys.platform == "darwin":
+        cmd = [
+            "osascript", "-e",
+            'POSIX path of (choose file name with prompt '
+            '"Save file as" default name "' + default_filename + '")',
+        ]
+    else:
+        cmd = [
+            sys.executable, "-c",
+            "import tkinter as tk; from tkinter import filedialog; "
+            "root = tk.Tk(); root.withdraw(); "
+            "print(filedialog.asksaveasfilename("
+            "title='Save file as', "
+            "initialfile='" + default_filename + "', "
+            "defaultextension='.tsv', "
+            "filetypes=[('TSV files', '*.tsv'), ('All files', '*.*')])); "
+            "root.destroy()",
+        ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _open_file_dialog():
     """Open a native file picker and return the selected path."""
     if sys.platform == "darwin":
@@ -359,6 +388,7 @@ def register_callbacks(app):
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-rf-output", "children"),
         Output("distmat-store", "data", allow_duplicate=True),
+        Output("export-rf-button", "disabled"),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
@@ -369,7 +399,7 @@ def register_callbacks(app):
     def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries,
                           stored_distmats):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         # Determine which files are selected
         selected_files = [
@@ -390,7 +420,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update
+            ), no_update, no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -414,7 +444,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=8000,
                 id="compute-rf-notification",
-            ), no_update, no_update
+            ), no_update, no_update, no_update
 
         # --- All taxa counts match — run RF computation ---
         n_taxa = unique_counts.pop()
@@ -447,7 +477,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update
+            ), no_update, no_update, no_update
 
         # Build names, newicks, translate maps, and map indices
         names = [t["name"] for t in sampled_trees]
@@ -495,7 +525,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=8000,
                 id="compute-rf-notification",
-            ), dmc.Text(msg, c="red"), no_update
+            ), dmc.Text(msg, c="red"), no_update, no_update
 
         # Convert to dict-of-dicts and store in distmat-store
         distmat_dict = matrix_to_dict(result_names, matrix)
@@ -524,7 +554,7 @@ def register_callbacks(app):
             variant="light",
         )
 
-        return notification, output_indicator, stored_distmats
+        return notification, output_indicator, stored_distmats, False
 
     # Callback to downsample trees for a given file
     @callback(
@@ -679,53 +709,34 @@ def register_callbacks(app):
 
     # ------ MDS SECTION ON COMPUTE TAB ------
 
-    # Render available distance matrices as radio buttons
+    # Enable MDS button when a distance matrix is available
     @callback(
-        Output("mds-distmat-selector", "children"),
         Output("compute-mds-button", "disabled"),
+        Output("mds-status-text", "children"),
         Input("distmat-store", "data"),
     )
-    def render_mds_distmat_selector(distmat_data):
+    def toggle_mds_button(distmat_data):
         if not distmat_data:
-            return dmc.Text("No distance matrices available. Compute RF distances first.", c="dimmed"), True
+            return True, dmc.Text("No distance matrix computed yet.", c="dimmed")
+        name = next(iter(distmat_data))
+        df = pd.DataFrame(distmat_data[name])
+        return False, dmc.Text(f"Distance matrix: {name} ({df.shape[0]}x{df.shape[1]})", c="green")
 
-        options = []
-        for name in distmat_data:
-            df = pd.DataFrame(distmat_data[name])
-            options.append({
-                "value": name,
-                "label": f"{name} ({df.shape[0]}x{df.shape[1]})",
-            })
-
-        radio_items = [
-            dmc.Radio(label=opt["label"], value=opt["value"])
-            for opt in options
-        ]
-
-        return dmc.RadioGroup(
-            children=dmc.Stack(radio_items, gap="xs"),
-            id="mds-distmat-radio",
-            value=options[0]["value"] if options else None,
-            label="Select a distance matrix",
-        ), False
-
-    # Compute MDS from selected distance matrix
+    # Compute MDS from distance matrix
     @callback(
         Output("mds-result-store", "data"),
         Output("compute-mds-output", "children"),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("export-mds-button", "disabled"),
         Input("compute-mds-button", "n_clicks"),
-        State("mds-distmat-radio", "value"),
         State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_mds(n_clicks, selected_distmat, distmat_data):
-        if not n_clicks or not selected_distmat or not distmat_data:
-            return no_update, no_update, no_update
+    def handle_compute_mds(n_clicks, distmat_data):
+        if not n_clicks or not distmat_data:
+            return no_update, no_update, no_update, no_update
 
-        if selected_distmat not in distmat_data:
-            return no_update, dmc.Text("Selected matrix not found.", c="red"), no_update
-
+        selected_distmat = next(iter(distmat_data))
         add_log(f"Computing MDS from {selected_distmat}...")
 
         distmat_df_data = distmat_data[selected_distmat]
@@ -737,21 +748,21 @@ def register_callbacks(app):
         if distance_matrix.shape[0] != distance_matrix.shape[1]:
             msg = f"Distance matrix is not square: {distance_matrix.shape}"
             add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update
+            return no_update, dmc.Text(msg, c="red"), no_update, no_update
 
         try:
             import time as _time
             t0 = _time.time()
             n_components = min(6, distance_matrix.shape[0] - 1)
             add_log(f"Computing MDS with {n_components} components...")
-            mds = MDS(n_components=n_components, dissimilarity='precomputed', random_state=42, verbose=1)
+            mds = MDS(n_components=n_components, metric='precomputed', random_state=42, verbose=1)
             embedding = mds.fit_transform(distance_matrix)
             elapsed = _time.time() - t0
             add_log(f"MDS completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")
         except Exception as e:
             msg = f"MDS computation failed: {str(e)}"
             add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update
+            return no_update, dmc.Text(msg, c="red"), no_update, no_update
 
         # Build MDS result dataframe
         tree_names = distmat_df.index.astype(str).tolist()
@@ -801,14 +812,14 @@ def register_callbacks(app):
 
         notification = dmc.Notification(
             title="MDS Computed",
-            message=f"MDS embedding from {selected_distmat}: {len(mds_df)} points, {n_components} dimensions.",
+            message=f"MDS embedding from {selected_distmat}: {len(mds_df)} points, {n_components} dimensions in {elapsed:.2f}s.",
             color="green",
             action="show",
             autoClose=6000,
             id="compute-mds-notification",
         )
 
-        return mds_result, output_indicator, notification
+        return mds_result, output_indicator, notification, False
 
     # ------ CLEAR DATA ------
 
@@ -821,6 +832,8 @@ def register_callbacks(app):
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("compute-mds-output", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("export-rf-button", "disabled", allow_duplicate=True),
+        Output("export-mds-button", "disabled", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -850,8 +863,64 @@ def register_callbacks(app):
                 html.Div(),
                 html.Div(),
                 notification,
+                True,
+                True,
             )
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    # ------ EXPORT CALLBACKS ------
+
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("export-rf-button", "n_clicks"),
+        State("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_rf_matrix(n_clicks, distmat_data):
+        if not n_clicks or not distmat_data:
+            return no_update
+        rf_filename = next(iter(distmat_data))
+        path = _save_file_dialog(default_filename=rf_filename)
+        if not path:
+            return no_update
+        df = pd.DataFrame(distmat_data[rf_filename])
+        df.to_csv(path, sep="\t")
+        add_log(f"Exported RF distance matrix to {path}")
+        return dmc.Notification(
+            title="RF Matrix Exported",
+            message=f"Saved to {path}",
+            color="green",
+            action="show",
+            autoClose=4000,
+            id="export-rf-notification",
+        )
+
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("export-mds-button", "n_clicks"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_mds(n_clicks, mds_result):
+        if not n_clicks or not mds_result or not mds_result.get("data"):
+            return no_update
+        metadata = mds_result["metadata"]
+        path = _save_file_dialog(default_filename=metadata["filename"])
+        if not path:
+            return no_update
+        mds_df = pd.DataFrame(mds_result["data"])
+        cols = metadata["dimensions"] + ["tree", "group", "treenum"]
+        export_df = mds_df[[c for c in cols if c in mds_df.columns]]
+        export_df.to_csv(path, sep="\t", index=False)
+        add_log(f"Exported MDS result to {path}")
+        return dmc.Notification(
+            title="MDS Exported",
+            message=f"Saved to {path}",
+            color="green",
+            action="show",
+            autoClose=4000,
+            id="export-mds-notification",
+        )
 
     # ------- VISUALIZE TAB CALLBACKS ------
 

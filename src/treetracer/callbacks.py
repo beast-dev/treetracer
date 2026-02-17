@@ -772,13 +772,14 @@ def register_callbacks(app):
         Output("compute-mds-output", "children"),
         Output("notifications-container", "children", allow_duplicate=True),
         Output("export-mds-button", "disabled"),
+        Output("plot-config-store", "data", allow_duplicate=True),
         Input("compute-mds-button", "n_clicks"),
         State("distmat-store", "data"),
         prevent_initial_call=True,
     )
     def handle_compute_mds(n_clicks, distmat_data):
         if not n_clicks or not distmat_data:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         selected_distmat = next(iter(distmat_data))
         add_log(f"Computing MDS from {selected_distmat}...")
@@ -792,7 +793,7 @@ def register_callbacks(app):
         if distance_matrix.shape[0] != distance_matrix.shape[1]:
             msg = f"Distance matrix is not square: {distance_matrix.shape}"
             add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update, no_update
+            return no_update, dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         try:
             import time as _time
@@ -806,7 +807,7 @@ def register_callbacks(app):
         except Exception as e:
             msg = f"MDS computation failed: {str(e)}"
             add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update, no_update
+            return no_update, dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         # Build MDS result dataframe
         tree_names = distmat_df.index.astype(str).tolist()
@@ -863,7 +864,7 @@ def register_callbacks(app):
             id="compute-mds-notification",
         )
 
-        return mds_result, output_indicator, notification, False
+        return mds_result, output_indicator, notification, False, {}
 
     # ------ CLEAR DATA ------
 

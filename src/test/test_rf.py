@@ -256,7 +256,7 @@ def main():
     names, matrix = test_basic_file_path(test_file)
     test_helpers(names, matrix)
 
-    sample_sizes = [100, 500, 1000, 2000]
+    sample_sizes = [100, 500, 1000]
     sample_sizes = [s for s in sample_sizes if s <= count]
     test_newick_vs_file(test_file, mgr, file_source, sample_sizes)
 

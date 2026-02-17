@@ -291,7 +291,7 @@ def register_callbacks(app):
                         message=f"Loaded {result['trees_loaded']} trees from {filename}. WARNING: {taxa_warning}",
                         color="yellow",
                         action="show",
-                        autoClose=8000,
+                        autoClose=3000,
                         id="load-notification",
                     )
                 else:
@@ -300,7 +300,7 @@ def register_callbacks(app):
                         message=f"Loaded {result['trees_loaded']} trees from {filename}.",
                         color="green",
                         action="show",
-                        autoClose=4000,
+                        autoClose=3000,
                         id="load-notification",
                     )
                 return stored_summaries, "", {"display": "none"}, no_update, notification
@@ -486,7 +486,7 @@ def register_callbacks(app):
                 message=msg,
                 color="red",
                 action="show",
-                autoClose=8000,
+                autoClose=6000,
                 id="compute-rf-notification",
             ), no_update, no_update, no_update
 
@@ -567,7 +567,7 @@ def register_callbacks(app):
                 message=msg,
                 color="red",
                 action="show",
-                autoClose=8000,
+                autoClose=6000,
                 id="compute-rf-notification",
             ), dmc.Text(msg, c="red"), no_update, no_update
 
@@ -583,7 +583,7 @@ def register_callbacks(app):
             message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
             color="green",
             action="show",
-            autoClose=6000,
+            autoClose=3000,
             id="compute-rf-notification",
         )
 
@@ -644,7 +644,7 @@ def register_callbacks(app):
                 message=msg,
                 color="yellow",
                 action="show",
-                autoClose=8000,
+                autoClose=4000,
                 id="downsample-skip-notification",
             )
             return no_update, no_update, notification
@@ -743,7 +743,7 @@ def register_callbacks(app):
         notification = dmc.Notification(
             title="Trees Reset",
             message=f"Reloaded {len(file_rows)} trees from {filename}.",
-            color="red",
+            color="orange",
             action="show",
             autoClose=4000,
             id="reset-notification",
@@ -859,7 +859,7 @@ def register_callbacks(app):
             message=f"MDS embedding from {selected_distmat}: {len(mds_df)} points, {n_components} dimensions in {elapsed:.2f}s.",
             color="green",
             action="show",
-            autoClose=6000,
+            autoClose=3000,
             id="compute-mds-notification",
         )
 
@@ -895,7 +895,7 @@ def register_callbacks(app):
                 message="All data and plots have been cleared.",
                 color="blue",
                 action="show",
-                autoClose=4000,
+                autoClose=3000,
                 id="clear-notification",
             )
             return (
@@ -935,7 +935,7 @@ def register_callbacks(app):
             message=f"Saved to {path}",
             color="green",
             action="show",
-            autoClose=4000,
+            autoClose=3000,
             id="export-rf-notification",
         )
 
@@ -962,7 +962,7 @@ def register_callbacks(app):
             message=f"Saved to {path}",
             color="green",
             action="show",
-            autoClose=4000,
+            autoClose=3000,
             id="export-mds-notification",
         )
 
@@ -1025,7 +1025,7 @@ def register_callbacks(app):
             message=f"Loaded {df.shape[0]}x{df.shape[1]} distance matrix from {filename}.",
             color="green",
             action="show",
-            autoClose=6000,
+            autoClose=3000,
             id="load-rf-notification",
         )
 

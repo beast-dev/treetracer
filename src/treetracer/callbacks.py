@@ -571,12 +571,11 @@ def register_callbacks(app):
                 id="compute-rf-notification",
             ), dmc.Text(msg, c="red"), no_update, no_update
 
-        # Convert to dict-of-dicts and store in distmat-store
+        # Convert to dict-of-dicts and store in distmat-store (single matrix only)
         distmat_dict = matrix_to_dict(result_names, matrix)
         rf_filename = "RF_distances.tsv"
 
-        stored_distmats = stored_distmats or {}
-        stored_distmats[rf_filename] = distmat_dict
+        stored_distmats = {rf_filename: distmat_dict}
         add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
 
         notification = dmc.Notification(

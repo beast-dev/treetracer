@@ -760,7 +760,7 @@ def register_callbacks(app):
     )
     def toggle_mds_button(distmat_data):
         if not distmat_data:
-            return True, dmc.Text("No distance matrix computed yet.", c="dimmed")
+            return True, dmc.Text("No distance matrix computed yet.", c="dimmed",style={"padding": "20px"})
         name = next(iter(distmat_data))
         df = pd.DataFrame(distmat_data[name])
         return False, dmc.Text(f"Distance matrix: {name} ({df.shape[0]}x{df.shape[1]})", c="green")

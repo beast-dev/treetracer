@@ -71,13 +71,16 @@ def rf_distance_from_newick_iter(
             bipartitions (unrooted RF, matches R phangorn default).
 
     Returns:
-        (names, matrix) — tree identifiers and symmetric distance matrix.
+        (names, matrix) — tree identifiers and symmetric numpy uint32 array.
     """
     if map_indices is None:
         map_indices = [0] * len(names)
-    return rtd.pairwise_rf_from_newick_iter(
+    names_out, matrix_bytes = rtd.pairwise_rf_from_newick_iter(
         names, newick_iter, translate_maps, map_indices, rooted=rooted,
     )
+    n = len(names_out)
+    matrix = np.frombuffer(matrix_bytes, dtype=np.uint32).reshape(n, n).copy()
+    return names_out, matrix
 
 
 def rf_distance_from_file(

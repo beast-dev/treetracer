@@ -15,6 +15,7 @@ tests=(
     src/test/test_export_trees.py
     src/test/test_rf.py
     src/test/test_rf_distances.py
+    src/test/test_rf_memory.py
 )
 
 passed=0

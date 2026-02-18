@@ -10,7 +10,7 @@ import os
 import json
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import Iterator, List, Dict, Any, Optional
 
 
 class TreeManagerPandas:
@@ -58,6 +58,27 @@ class TreeManagerPandas:
         fh = self._get_source_handle(file_source)
         fh.seek(offset)
         return fh.read(length).decode('utf-8')
+
+    def iter_newicks(self, tree_ids: List[int]) -> Iterator[str]:
+        """Yield newick strings one at a time, reading from disk on demand.
+
+        Args:
+            tree_ids: List of tree IDs whose newicks to yield (in order).
+
+        Yields:
+            Newick strings, one per tree ID.
+        """
+        self.flush()
+        id_set = set(tree_ids)
+        # Build a lookup from id -> (file_source, newick_offset, newick_length)
+        subset = self._trees[self._trees['id'].isin(id_set)]
+        lookup = {
+            int(row['id']): (row['file_source'], int(row['newick_offset']), int(row['newick_length']))
+            for _, row in subset.iterrows()
+        }
+        for tid in tree_ids:
+            file_source, offset, length = lookup[tid]
+            yield self._read_newick(file_source, offset, length)
 
     # ------------------------------------------------------------------
     # Insert

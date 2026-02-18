@@ -7,7 +7,7 @@ Provides two entry points:
 Both return (names, matrix) where matrix is a symmetric list-of-lists of ints.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 import numpy as np
 import rust_python_tree_distances as rtd
@@ -43,6 +43,40 @@ def rf_distance_from_newicks(
         map_indices = [0] * len(newicks)
     return rtd.pairwise_rf_from_newicks(
         names, newicks, translate_maps, map_indices, rooted=rooted,
+    )
+
+
+def rf_distance_from_newick_iter(
+    names: List[str],
+    newick_iter: Iterator[str],
+    translate_maps: List[Dict[str, str]],
+    map_indices: List[int] | None = None,
+    rooted: bool = False,
+) -> Tuple[List[str], List[List[int]]]:
+    """Compute pairwise RF distances from a lazy iterator of newick strings.
+
+    Unlike rf_distance_from_newicks, this never holds all newick strings in
+    memory at once. The Rust side pulls one newick at a time from the
+    iterator, parses it into a compact snapshot, and discards the raw string.
+
+    Args:
+        names: Tree identifiers (one per newick).
+        newick_iter: Iterator yielding newick strings (may contain BEAST
+            annotations). Must yield exactly len(names) strings.
+        translate_maps: List of translate maps. When all trees share the same
+            map, pass a single-element list.
+        map_indices: Per-tree index into *translate_maps*. Defaults to all-zero
+            (every tree uses the first map).
+        rooted: If True compare clades (rooted RF); if False compare
+            bipartitions (unrooted RF, matches R phangorn default).
+
+    Returns:
+        (names, matrix) — tree identifiers and symmetric distance matrix.
+    """
+    if map_indices is None:
+        map_indices = [0] * len(names)
+    return rtd.pairwise_rf_from_newick_iter(
+        names, newick_iter, translate_maps, map_indices, rooted=rooted,
     )
 
 

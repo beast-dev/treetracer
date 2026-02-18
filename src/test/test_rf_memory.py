@@ -16,6 +16,7 @@ import tracemalloc
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import numpy as np
 from treetracer.rf.rf import rf_distance_from_newicks, rf_distance_from_newick_iter
 from treetracer.db.tree_manager import TreeManagerPandas
 from treetracer.db.process_trees import process_nexus_trees_streaming
@@ -236,10 +237,11 @@ def main():
         print(f"    Iterator path: time={iter_elapsed:.3f}s  peak={fmt_bytes(iter_peak)}")
         print(f"    Saving:        {fmt_bytes(saving)}  ({saving / list_peak * 100:.1f}%)")
 
-        # Verify identical results
+        # Verify identical results (iter_matrix is numpy uint32, list_matrix is list-of-lists)
+        list_as_np = np.array(list_matrix, dtype=np.uint32)
         check(list_names == iter_names,
               f"n={n}: names match between list and iterator paths")
-        check(list_matrix == iter_matrix,
+        check(np.array_equal(list_as_np, iter_matrix),
               f"n={n}: distance matrices match between list and iterator paths")
         check(iter_peak < list_peak,
               f"n={n}: iterator peak ({fmt_bytes(iter_peak)}) < list peak ({fmt_bytes(list_peak)})")

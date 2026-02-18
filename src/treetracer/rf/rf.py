@@ -126,54 +126,6 @@ def rf_distance_from_files(
 
 
 # ---------------------------------------------------------------------------
-# One-vs-many distance (for diagnostics trace)
-# ---------------------------------------------------------------------------
-
-def rf_distance_to_reference(
-    names: List[str],
-    newick_iter: Iterator[str],
-    n_trees: int,
-    ref_newick: str,
-    translate_maps: List[Dict[str, str]],
-    map_indices: List[int],
-    ref_map_index: int = 0,
-    rooted: bool = False,
-) -> Tuple[List[str], np.ndarray]:
-    """Compute RF distance of every tree to a single reference tree.
-
-    Uses the Rust cross-block function for O(n) computation instead of
-    building the full pairwise matrix.
-
-    Args:
-        names: Tree identifiers (one per newick in the iterator).
-        newick_iter: Iterator yielding newick strings for all trees.
-        n_trees: Number of trees the iterator will yield.
-        ref_newick: Newick string of the reference tree.
-        translate_maps: List of translate maps.
-        map_indices: Per-tree index into translate_maps.
-        ref_map_index: Index into translate_maps for the reference tree.
-        rooted: If True compare clades; if False compare bipartitions.
-
-    Returns:
-        (names, distances) — tree names and 1-D array of RF distances
-        to the reference tree.
-    """
-    result_bytes = rtd.pairwise_rf_cross_block(
-        newick_iter,            # iter A = all trees
-        n_trees,
-        iter([ref_newick]),     # iter B = single reference
-        1,
-        translate_maps,
-        map_indices,            # map indices for A
-        [ref_map_index],        # map indices for B
-        rooted=rooted,
-    )
-    # Result is n_trees x 1 matrix in row-major u32 bytes
-    distances = np.frombuffer(result_bytes, dtype=np.uint32).copy()
-    return names, distances
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

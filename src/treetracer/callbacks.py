@@ -5,6 +5,8 @@ from .db.tree_service import get_tree_service
 import dash_mantine_components as dmc
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy.stats import gaussian_kde
 import os
 import sys
 
@@ -1405,20 +1407,40 @@ def register_callbacks(app):
         colors = px.colors.qualitative.Dark24[:len(groups)]
         color_map = dict(zip(groups, colors))
 
-        fig = go.Figure()
+        fig = make_subplots(
+            rows=1, cols=2, shared_yaxes=True,
+            column_widths=[0.8, 0.2],
+            horizontal_spacing=0.02,
+        )
         for group in groups:
             gdf = trace_df[trace_df['group'] == group]
+            vals = gdf['value'].values
             fig.add_trace(go.Scatter(
                 x=gdf['treenum'],
-                y=gdf['value'],
+                y=vals,
                 mode='lines',
                 name=group,
                 line=dict(color=color_map[group], width=1),
-            ))
+                legendgroup=group,
+            ), row=1, col=1)
+            if len(vals) > 1 and np.std(vals) > 0:
+                kde = gaussian_kde(vals)
+                y_grid = np.linspace(vals.min(), vals.max(), 200)
+                density = kde(y_grid)
+                fig.add_trace(go.Scatter(
+                    x=density, y=y_grid,
+                    mode='lines',
+                    line=dict(color=color_map[group], width=1),
+                    fill='tozerox',
+                    opacity=0.3,
+                    legendgroup=group,
+                    showlegend=False,
+                ), row=1, col=2)
 
         fig.update_layout(
             xaxis_title="Tree number",
             yaxis_title=field_name,
+            xaxis2_title="Density",
             margin=dict(l=60, r=20, t=30, b=40),
             height=300,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1431,8 +1453,9 @@ def register_callbacks(app):
         Output("rf-reference-group-select", "data"),
         Output("rf-reference-group-select", "value"),
         Input("tree-offset-store", "data"),
+        Input("distmat-store", "data"),
     )
-    def toggle_rf_trace_controls(stored_summaries):
+    def toggle_rf_trace_controls(stored_summaries, stored_distmats):
         """Enable/disable RF trace controls and populate group dropdown."""
         if not stored_summaries:
             return True, [], None
@@ -1446,7 +1469,11 @@ def register_callbacks(app):
         group_options = [{"value": g, "label": g} for g in all_groups]
         # Default to last group alphabetically
         default_group = all_groups[-1] if all_groups else None
-        return False, group_options, default_group
+
+        # Button is only enabled when distance matrix is available
+        has_distmat = bool(stored_distmats and any(stored_distmats.values()))
+        disabled = not has_distmat
+        return disabled, group_options, default_group
 
     @callback(
         Output("rf-trace-plot", "children"),
@@ -1456,10 +1483,11 @@ def register_callbacks(app):
         State("tree-offset-store", "data"),
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
+        State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position):
-        """Compute RF distance of every tree to a single shared reference tree."""
+    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats):
+        """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
         if not n_clicks or not stored_summaries:
             return no_update, no_update, no_update
 
@@ -1470,16 +1498,23 @@ def register_callbacks(app):
                 no_update,
             )
 
-        import time as _time
+        if not stored_distmats:
+            return (
+                dmc.Text("Please compute RF distances first (Distances tab).", c="red"),
+                no_update,
+                no_update,
+            )
+
+        # Get the single distance matrix (stored under the first key)
+        distmat_dict = next(iter(stored_distmats.values()))
 
         tree_service = get_tree_service()
-        file_sources = list(stored_summaries.keys())
 
-        add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}'...")
+        add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}' (using pre-computed matrix)...")
 
-        # --- Find the single reference tree from the selected group ---
+        # --- Find the reference tree name from the selected group ---
         tree_service.db_manager.flush()
-        all_df = tree_service.db_manager._trees
+        all_df = tree_service.db_manager._trees.sort_values('id')
         ref_df = all_df[all_df['group_name'] == ref_group].sort_values('id')
 
         if len(ref_df) == 0:
@@ -1488,73 +1523,33 @@ def register_callbacks(app):
             return dmc.Text(msg, c="red"), no_update, no_update
 
         if ref_position == "first":
-            ref_row = ref_df.iloc[:1]
+            ref_row = ref_df.iloc[0]
         else:
-            ref_row = ref_df.iloc[-1:]
+            ref_row = ref_df.iloc[-1]
 
-        ref_trees = tree_service.db_manager._resolve_newick(ref_row)
-        if not ref_trees:
-            msg = f"Could not resolve reference tree from group '{ref_group}'."
+        ref_name = ref_row['name']
+        add_log(f"Reference tree: name='{ref_name}' ({ref_position} of group '{ref_group}')")
+
+        if ref_name not in distmat_dict:
+            msg = f"Reference tree '{ref_name}' not found in distance matrix."
             add_log(msg, "ERROR")
             return dmc.Text(msg, c="red"), no_update, no_update
 
-        ref_newick = ref_trees[0]['newick']
-        ref_name = ref_trees[0]['name']
-        ref_id = ref_trees[0]['id']
-        ref_file_source = ref_row.iloc[0]['file_source']
-        ref_tmap = tree_service.db_manager.get_translate_map(ref_file_source)
+        ref_distances = distmat_dict[ref_name]
 
-        add_log(f"Reference tree: id={ref_id} name='{ref_name}' ({ref_position} of group '{ref_group}') from {ref_file_source}")
-        add_log(f"Reference newick (first 80 chars): {ref_newick[:80]}")
-
-        # --- Compute RF distance for all trees against this single reference ---
+        # --- Look up RF distance for every tree from the pre-computed matrix ---
         all_records = []
-
-        for file_source in file_sources:
-            file_df = all_df[all_df['file_source'] == file_source].sort_values('id')
-            if len(file_df) == 0:
+        for _, row in all_df.iterrows():
+            tree_name = row['name']
+            if tree_name not in ref_distances:
+                add_log(f"Tree '{tree_name}' not found in distance matrix, skipping.", "WARNING")
                 continue
-
-            tree_ids = file_df['id'].tolist()
-            names = file_df['name'].tolist()
-            groups = file_df['group_name'].tolist()
-            n_trees = len(tree_ids)
-
-            # Build translate maps: [file_tmap, ref_tmap]
-            tmap = tree_service.db_manager.get_translate_map(file_source)
-            translate_maps = [tmap if tmap else {}, ref_tmap if ref_tmap else {}]
-            map_indices = [0] * n_trees  # all trees use map 0
-
-            newick_iter = tree_service.db_manager.iter_newicks(tree_ids)
-
-            try:
-                from .rf.rf import rf_distance_to_reference
-
-                t0 = _time.time()
-                _, distances = rf_distance_to_reference(
-                    names, newick_iter, n_trees, ref_newick,
-                    translate_maps, map_indices,
-                    ref_map_index=1, rooted=False,
-                )
-                elapsed = _time.time() - t0
-                nonzero = int(np.sum(distances > 0))
-                add_log(f"RF trace for {file_source}: {n_trees} trees in {elapsed:.2f}s, {nonzero} non-zero distances")
-                add_log(f"  First 5 distances: {distances[:5].tolist()}, Last 5: {distances[-5:].tolist()}")
-            except Exception as e:
-                msg = f"RF trace computation failed for {file_source}: {e}"
-                add_log(msg, "ERROR")
-                return dmc.Text(msg, c="red"), no_update, dmc.Notification(
-                    title="RF Trace Error", message=msg, color="red",
-                    action="show", autoClose=6000, id="rf-trace-notification",
-                )
-
-            for i in range(n_trees):
-                all_records.append({
-                    'rf_distance': int(distances[i]),
-                    'group': groups[i],
-                    'name': names[i],
-                    'file_source': file_source,
-                })
+            all_records.append({
+                'rf_distance': int(ref_distances[tree_name]),
+                'group': row['group_name'],
+                'name': tree_name,
+                'file_source': row['file_source'],
+            })
 
         if not all_records:
             return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update
@@ -1567,21 +1562,41 @@ def register_callbacks(app):
         colors = px.colors.qualitative.Dark24[:len(all_groups)]
         color_map = dict(zip(all_groups, colors))
 
-        fig = go.Figure()
+        fig = make_subplots(
+            rows=1, cols=2, shared_yaxes=True,
+            column_widths=[0.8, 0.2],
+            horizontal_spacing=0.02,
+        )
         for group in all_groups:
             gdf = trace_df[trace_df['group'] == group]
+            vals = gdf['rf_distance'].values.astype(float)
             fig.add_trace(go.Scatter(
                 x=gdf['treenum'],
-                y=gdf['rf_distance'],
+                y=vals,
                 mode='lines',
                 name=group,
                 line=dict(color=color_map[group], width=1),
-            ))
+                legendgroup=group,
+            ), row=1, col=1)
+            if len(vals) > 1 and np.std(vals) > 0:
+                kde = gaussian_kde(vals)
+                y_grid = np.linspace(vals.min(), vals.max(), 200)
+                density = kde(y_grid)
+                fig.add_trace(go.Scatter(
+                    x=density, y=y_grid,
+                    mode='lines',
+                    line=dict(color=color_map[group], width=1),
+                    fill='tozerox',
+                    opacity=0.3,
+                    legendgroup=group,
+                    showlegend=False,
+                ), row=1, col=2)
 
         ref_label = f"{ref_position} tree of {ref_group}"
         fig.update_layout(
             xaxis_title="Tree number",
             yaxis_title=f"RF distance to {ref_label}",
+            xaxis2_title="Density",
             margin=dict(l=60, r=20, t=30, b=40),
             height=300,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),

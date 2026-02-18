@@ -451,6 +451,7 @@ def register_callbacks(app):
         Output("compute-rf-output", "children"),
         Output("distmat-store", "data", allow_duplicate=True),
         Output("export-rf-button", "disabled"),
+        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
@@ -461,7 +462,7 @@ def register_callbacks(app):
     def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries,
                           stored_distmats):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         # Determine which files are selected
         selected_files = [
@@ -482,7 +483,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -506,7 +507,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
 
         # --- All taxa counts match — run RF computation ---
         n_taxa = unique_counts.pop()
@@ -539,7 +540,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
 
         # Build names, newicks, translate maps, and map indices
         names = [t["name"] for t in sampled_trees]
@@ -587,7 +588,7 @@ def register_callbacks(app):
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), dmc.Text(msg, c="red"), no_update, no_update
+            ), dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         # Convert to dict-of-dicts and store in distmat-store (single matrix only)
         distmat_dict = matrix_to_dict(result_names, matrix)
@@ -615,7 +616,7 @@ def register_callbacks(app):
             variant="light",
         )
 
-        return notification, output_indicator, stored_distmats, False
+        return notification, output_indicator, stored_distmats, False, False
 
     # Callback to downsample trees for a given file
     @callback(
@@ -900,6 +901,7 @@ def register_callbacks(app):
         Output("rf-trace-store", "data", allow_duplicate=True),
         Output("lnl-trace-plot", "children", allow_duplicate=True),
         Output("rf-trace-plot", "children", allow_duplicate=True),
+        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -941,8 +943,9 @@ def register_callbacks(app):
                 None,            # rf-trace-store
                 html.Div(),      # lnl-trace-plot
                 html.Div(),      # rf-trace-plot
+                True,            # compute-rf-trace-button disabled
             )
-        return (no_update,) * 14
+        return (no_update,) * 15
 
     # ------ EXPORT CALLBACKS ------
 
@@ -1005,17 +1008,18 @@ def register_callbacks(app):
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("export-rf-button", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Input("load-rf-button", "n_clicks"),
         State("distmat-store", "data"),
         prevent_initial_call=True,
     )
     def load_rf_matrix(n_clicks, stored_distmats):
         if not n_clicks:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         file_path = _open_tsv_dialog()
         if not file_path:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         try:
             df = pd.read_csv(file_path, sep="\t", index_col=0)
@@ -1025,7 +1029,7 @@ def register_callbacks(app):
             return no_update, no_update, no_update, dmc.Notification(
                 title="Load Error", message=msg, color="red",
                 action="show", autoClose=8000, id="load-rf-notification",
-            )
+            ), no_update
 
         # Validate tree names have group prefix
         all_names = list(df.index.astype(str)) + list(df.columns.astype(str))
@@ -1035,7 +1039,7 @@ def register_callbacks(app):
             return no_update, no_update, no_update, dmc.Notification(
                 title="Invalid Tree Names", message=err_msg, color="red",
                 action="show", autoClose=8000, id="load-rf-notification",
-            )
+            ), no_update
 
         filename = os.path.basename(file_path)
         stored_distmats = stored_distmats or {}
@@ -1061,7 +1065,7 @@ def register_callbacks(app):
             id="load-rf-notification",
         )
 
-        return stored_distmats, output_indicator, False, notification
+        return stored_distmats, output_indicator, False, notification, False
 
     @callback(
         Output("mds-result-store", "data", allow_duplicate=True),
@@ -1449,16 +1453,15 @@ def register_callbacks(app):
         return dcc.Graph(figure=fig, config={"displayModeBar": False})
 
     @callback(
-        Output("compute-rf-trace-button", "disabled"),
-        Output("rf-reference-group-select", "data"),
-        Output("rf-reference-group-select", "value"),
+        Output("rf-reference-group-select", "data", allow_duplicate=True),
+        Output("rf-reference-group-select", "value", allow_duplicate=True),
         Input("tree-offset-store", "data"),
-        Input("distmat-store", "data"),
+        prevent_initial_call=True,
     )
-    def toggle_rf_trace_controls(stored_summaries, stored_distmats):
-        """Enable/disable RF trace controls and populate group dropdown."""
+    def toggle_rf_trace_controls(stored_summaries):
+        """Populate group dropdown when trees are loaded."""
         if not stored_summaries:
-            return True, [], None
+            return [], None
 
         # Collect all groups across all loaded files
         all_groups = []
@@ -1469,11 +1472,34 @@ def register_callbacks(app):
         group_options = [{"value": g, "label": g} for g in all_groups]
         # Default to last group alphabetically
         default_group = all_groups[-1] if all_groups else None
+        return group_options, default_group
 
-        # Button is only enabled when distance matrix is available
-        has_distmat = bool(stored_distmats and any(stored_distmats.values()))
-        disabled = not has_distmat
-        return disabled, group_options, default_group
+    @callback(
+        Output("rf-reference-group-select", "data", allow_duplicate=True),
+        Output("rf-reference-group-select", "value", allow_duplicate=True),
+        Input("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_groups_from_distmat(stored_distmats):
+        """Populate group dropdown from distance matrix tree names when no tree files loaded."""
+        if not stored_distmats:
+            return no_update, no_update
+
+        # Extract tree names from the first (only) distance matrix
+        distmat_dict = next(iter(stored_distmats.values()), None)
+        if not distmat_dict:
+            return no_update, no_update
+
+        tree_names = list(distmat_dict.keys())
+        all_groups = sorted(set(
+            name.rsplit("/", 1)[0] for name in tree_names if "/" in name
+        ))
+        if not all_groups:
+            return no_update, no_update
+
+        group_options = [{"value": g, "label": g} for g in all_groups]
+        default_group = all_groups[-1] if all_groups else None
+        return group_options, default_group
 
     @callback(
         Output("rf-trace-plot", "children"),
@@ -1488,7 +1514,7 @@ def register_callbacks(app):
     )
     def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats):
         """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
-        if not n_clicks or not stored_summaries:
+        if not n_clicks:
             return no_update, no_update, no_update
 
         if not ref_group:
@@ -1508,26 +1534,39 @@ def register_callbacks(app):
         # Get the single distance matrix (stored under the first key)
         distmat_dict = next(iter(stored_distmats.values()))
 
-        tree_service = get_tree_service()
-
         add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}' (using pre-computed matrix)...")
 
-        # --- Find the reference tree name from the selected group ---
+        # Build ordered tree list: prefer DB if trees are loaded, otherwise derive from distmat keys
+        tree_service = get_tree_service()
         tree_service.db_manager.flush()
-        all_df = tree_service.db_manager._trees.sort_values('id')
-        ref_df = all_df[all_df['group_name'] == ref_group].sort_values('id')
+        all_df = tree_service.db_manager._trees
 
-        if len(ref_df) == 0:
+        if len(all_df) > 0:
+            # Trees loaded in DB — use DB ordering
+            all_df = all_df.sort_values('id')
+            tree_names = all_df['name'].tolist()
+            tree_groups = all_df['group_name'].tolist()
+            tree_file_sources = all_df['file_source'].tolist()
+        else:
+            # No tree files loaded — derive from distance matrix keys
+            tree_names = list(distmat_dict.keys())
+            tree_groups = [
+                name.rsplit("/", 1)[0] if "/" in name else name
+                for name in tree_names
+            ]
+            tree_file_sources = ["(from distance matrix)"] * len(tree_names)
+
+        # Filter to reference group and pick first/last
+        ref_trees_in_group = [
+            name for name, grp in zip(tree_names, tree_groups) if grp == ref_group
+        ]
+
+        if not ref_trees_in_group:
             msg = f"No trees found in group '{ref_group}'."
             add_log(msg, "ERROR")
             return dmc.Text(msg, c="red"), no_update, no_update
 
-        if ref_position == "first":
-            ref_row = ref_df.iloc[0]
-        else:
-            ref_row = ref_df.iloc[-1]
-
-        ref_name = ref_row['name']
+        ref_name = ref_trees_in_group[0] if ref_position == "first" else ref_trees_in_group[-1]
         add_log(f"Reference tree: name='{ref_name}' ({ref_position} of group '{ref_group}')")
 
         if ref_name not in distmat_dict:
@@ -1539,16 +1578,15 @@ def register_callbacks(app):
 
         # --- Look up RF distance for every tree from the pre-computed matrix ---
         all_records = []
-        for _, row in all_df.iterrows():
-            tree_name = row['name']
+        for tree_name, group, file_source in zip(tree_names, tree_groups, tree_file_sources):
             if tree_name not in ref_distances:
                 add_log(f"Tree '{tree_name}' not found in distance matrix, skipping.", "WARNING")
                 continue
             all_records.append({
-                'rf_distance': int(ref_distances[tree_name]),
-                'group': row['group_name'],
+                'rf_distance': int(float(ref_distances[tree_name])),
+                'group': group,
                 'name': tree_name,
-                'file_source': row['file_source'],
+                'file_source': file_source,
             })
 
         if not all_records:

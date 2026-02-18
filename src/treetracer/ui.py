@@ -79,8 +79,64 @@ def add_about():
                 ],
             )
         ],
-        radius="sm",  # or p=10 for border-radius of 10px
+        radius="sm",
     )
+
+
+def _add_diagnostics_panel():
+    """Build the Diagnostics tab panel content."""
+    return html.Div([
+        dmc.Stack([
+            # Section 1: Log-Likelihood Trace
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("Log-Likelihood Trace", order=5),
+                    dmc.Badge("from tree metadata", variant="light", size="sm"),
+                ], gap="sm"),
+                dmc.Space(h=10),
+                dcc.Loading(
+                    html.Div(id="lnl-trace-plot"),
+                    type="circle",
+                    parent_style={"minHeight": "200px"},
+                ),
+            ], p="md", withBorder=True, radius="sm"),
+
+            # Section 2: RF Distance to Reference
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("RF Distance to Reference", order=5),
+                ], gap="sm"),
+                dmc.Space(h=10),
+                dmc.Group([
+                    dmc.Select(
+                        id="rf-reference-select",
+                        label="Reference tree",
+                        data=[
+                            {"value": "last", "label": "Last tree (default)"},
+                            {"value": "first", "label": "First tree"},
+                        ],
+                        value="last",
+                        w=200,
+                    ),
+                    dmc.Button(
+                        "Compute RF Trace",
+                        id="compute-rf-trace-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                        style={"alignSelf": "flex-end"},
+                    ),
+                ], align="flex-end", gap="md"),
+                dmc.Space(h=10),
+                dcc.Loading(
+                    html.Div(id="rf-trace-plot"),
+                    type="circle",
+                    parent_style={"minHeight": "200px"},
+                ),
+            ], p="md", withBorder=True, radius="sm"),
+        ], gap="md"),
+    ], style={"padding": "10px"})
 
 
 def add_main_body():
@@ -88,23 +144,13 @@ def add_main_body():
         [
             dmc.TabsList(
                 [
-                    dmc.TabsTab("Trees", value="trees"),
                     dmc.TabsTab("Compute", value="compute"),
-                    dmc.TabsTab("Visualize", value="visualize"),
+                    dmc.TabsTab("Tree Space", value="treespace"),
+                    dmc.TabsTab("Diagnostics", value="diagnostics"),
                     dmc.TabsTab("About", value="about"),
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
-            ),
-            dmc.TabsPanel(
-                html.Div([
-                    dcc.Loading(
-                        html.Div(id="trees-info-display"),
-                        type="circle",
-                        parent_style={"minHeight": "200px"},
-                    ),
-                ]),
-                value="trees",
             ),
             dmc.TabsPanel(
                 html.Div([
@@ -186,14 +232,15 @@ def add_main_body():
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
-            dmc.TabsPanel(html.Div(id="plot-display"), value="visualize"),
+            dmc.TabsPanel(html.Div(id="plot-display"), value="treespace"),
+            dmc.TabsPanel(_add_diagnostics_panel(), value="diagnostics"),
             dmc.TabsPanel(add_about(), value="about"),
         ],
         id="main-tabs",
-        color="blue.2",  # default is blue
-        orientation="horizontal",  # or "vertical"
-        variant="pills",  # or "outline" or "pills"
-        value="about",
+        color="blue.2",
+        orientation="horizontal",
+        variant="pills",
+        value="compute",
         autoContrast=True,
     )
     return dmc.AppShellMain([
@@ -205,36 +252,35 @@ def add_main_body():
 # Sidebar
 
 
-clear_data_button = dmc.Button(
-    "Clear Data",
-    justify="center",
-    fullWidth=True,
-    variant="filled",
-    color="orange",
-    id="clear-data-button",
-)
-
-
 def add_navbar():
     return dmc.AppShellNavbar(
         id="navbar",
         children=[
             dmc.Stack(
                 [
-                    dmc.Button(
-                        "Load Trees",
-                        id="load-trees-button",
-                        justify="center",
-                        fullWidth=True,
-                        variant="filled",
-                        color="green",
+                    dmc.Text("Loaded Trees", fw=600, size="sm"),
+                    dmc.Divider(),
+                    dmc.ScrollArea(
+                        html.Div(
+                            id="sidebar-trees-display",
+                            children=[
+                                dmc.Text(
+                                    "No trees loaded. Click the upload icon in the header to load a .trees file.",
+                                    c="dimmed",
+                                    size="sm",
+                                    style={"padding": "10px"},
+                                ),
+                            ],
+                        ),
+                        style={"height": "calc(100vh - 160px)"},
+                        offsetScrollbars=True,
                     ),
-                    clear_data_button,
                     # dcc.Store components for state management
                     dcc.Store(id="distmat-store", storage_type="memory"),
                     dcc.Store(id="plot-config-store", storage_type="memory"),
                     dcc.Store(id="tree-offset-store", storage_type="memory"),
                     dcc.Store(id="mds-result-store", storage_type="memory"),
+                    dcc.Store(id="rf-trace-store", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),
@@ -245,7 +291,8 @@ def add_navbar():
                         withCloseButton=True,
                         style={"display": "none"},
                     ),
-                ]
+                ],
+                gap="xs",
             ),
         ],
         p="md",

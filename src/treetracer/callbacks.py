@@ -185,21 +185,12 @@ def register_callbacks(app):
                             style={"padding": "8px"})
         return no_update
 
-    # Instantly switch to Trees tab when Load Trees is clicked
-    from dash import clientside_callback
-    clientside_callback(
-        """function(n_clicks) { return "trees"; }""",
-        Output("main-tabs", "value"),
-        Input("load-trees-button", "n_clicks"),
-        prevent_initial_call=True,
-    )
-
     # Callback to load .trees files via native file dialog
     @callback(
         Output("tree-offset-store", "data"),
         Output("trees-validation-alert", "title"),
         Output("trees-validation-alert", "style"),
-        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("load-trees-button", "n_clicks"),
         State("tree-offset-store", "data"),
@@ -313,70 +304,83 @@ def register_callbacks(app):
             add_log(msg, "ERROR")
             return no_update, msg, {"display": "block"}, no_update, no_update
 
-    # Callback to display loaded trees info in the Trees tab
+    # Callback to display loaded trees info in the sidebar
     @callback(
-        Output("trees-info-display", "children"),
+        Output("sidebar-trees-display", "children"),
         Input("tree-offset-store", "data"),
     )
     def display_trees_info(stored_summaries):
         if not stored_summaries:
-            return html.Div()
+            return dmc.Text(
+                "No trees loaded. Click the upload icon in the header to load a .trees file.",
+                c="dimmed",
+                size="sm",
+                style={"padding": "10px"},
+            )
 
-        cards = []
+        items = []
         for filename, summary in stored_summaries.items():
             total_trees = summary["total_trees"]
-            groups = summary["groups"]
+            n_taxa = summary.get("n_taxa", 0)
             trees_per_group = summary["trees_per_group"]
 
             group_lines = [
-                dmc.Text(f"  {g}: {count} trees", size="sm")
+                dmc.Text(f"{g}: {count}", size="xs", c="dimmed")
                 for g, count in trees_per_group.items()
             ]
 
-            cards.append(
-                dmc.Paper(
-                    children=[
-                        dmc.Text(f"Filename: {filename}", fw=500),
-                        dmc.Text("File Type: Nexus Trees", c="green"),
-                        dmc.Text(f"Total Trees: {total_trees}"),
-                        dmc.Text(f"Number of Groups: {len(groups)}"),
-                        dmc.Text("Groups: " + ", ".join(groups)),
-                        dmc.Space(h=5),
-                        dmc.Text("Trees per Group:", fw=500, size="sm"),
-                        *group_lines,
-                        dmc.Space(h=10),
-                        dmc.Group([
-                            dmc.NumberInput(
-                                id={"type": "downsample-input", "index": filename},
-                                value=1000,
-                                min=1,
-                                step=1,
-                                style={"width": "120px"},
-                            ),
-                            dmc.Button(
-                                "Downsample Trees",
-                                id={"type": "downsample-btn", "index": filename},
-                                variant="filled",
-                                color="orange",
-                                size="sm",
-                            ),
-                            dmc.Button(
-                                "Reset",
-                                id={"type": "reset-trees-btn", "index": filename},
-                                variant="outline",
-                                color="red",
-                                size="sm",
-                            ),
-                        ]),
+            panel_content = dmc.Stack([
+                dmc.Text(f"Taxa: {n_taxa}", size="xs"),
+                dmc.Text("Groups:", size="xs", fw=500),
+                *group_lines,
+                dmc.Divider(my="xs"),
+                dmc.Group([
+                    dmc.NumberInput(
+                        id={"type": "downsample-input", "index": filename},
+                        value=1000,
+                        min=1,
+                        step=1,
+                        size="xs",
+                        style={"width": "80px"},
+                    ),
+                    dmc.Button(
+                        "Downsample",
+                        id={"type": "downsample-btn", "index": filename},
+                        variant="filled",
+                        color="orange",
+                        size="compact-xs",
+                    ),
+                    dmc.Button(
+                        "Reset",
+                        id={"type": "reset-trees-btn", "index": filename},
+                        variant="outline",
+                        color="red",
+                        size="compact-xs",
+                    ),
+                ], gap="xs"),
+            ], gap="xs")
+
+            items.append(
+                dmc.AccordionItem(
+                    [
+                        dmc.AccordionControl(
+                            dmc.Group([
+                                dmc.Text(filename, size="sm", fw=500, style={"flex": 1}),
+                                dmc.Badge(str(total_trees), size="sm", variant="light"),
+                            ], gap="xs"),
+                        ),
+                        dmc.AccordionPanel(panel_content),
                     ],
-                    p="md",
-                    shadow="xs",
-                    withBorder=True,
-                    mt=10,
+                    value=filename,
                 )
             )
 
-        return html.Div(cards)
+        return dmc.Accordion(
+            items,
+            multiple=True,
+            variant="separated",
+            value=list(stored_summaries.keys()),
+        )
 
     # Callback to render the Compute tab RF table
     @callback(
@@ -602,7 +606,7 @@ def register_callbacks(app):
     # Callback to downsample trees for a given file
     @callback(
         Output("tree-offset-store", "data", allow_duplicate=True),
-        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input({"type": "downsample-btn", "index": ALL}, "n_clicks"),
         State({"type": "downsample-input", "index": ALL}, "value"),
@@ -686,7 +690,7 @@ def register_callbacks(app):
     # Callback to reset trees to original file contents
     @callback(
         Output("tree-offset-store", "data", allow_duplicate=True),
-        Output("trees-info-display", "children", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input({"type": "reset-trees-btn", "index": ALL}, "n_clicks"),
         State("tree-offset-store", "data"),
@@ -878,6 +882,10 @@ def register_callbacks(app):
         Output("notifications-container", "children", allow_duplicate=True),
         Output("export-rf-button", "disabled", allow_duplicate=True),
         Output("export-mds-button", "disabled", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
+        Output("rf-trace-store", "data", allow_duplicate=True),
+        Output("lnl-trace-plot", "children", allow_duplicate=True),
+        Output("rf-trace-plot", "children", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -898,19 +906,29 @@ def register_callbacks(app):
                 autoClose=3000,
                 id="clear-notification",
             )
-            return (
-                {},
-                {},
-                None,
-                html.Div(),
-                {},
-                html.Div(),
-                html.Div(),
-                notification,
-                True,
-                True,
+            empty_sidebar = dmc.Text(
+                "No trees loaded. Click the upload icon in the header to load a .trees file.",
+                c="dimmed",
+                size="sm",
+                style={"padding": "10px"},
             )
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+            return (
+                {},          # distmat-store
+                {},          # plot-config-store
+                None,        # mds-result-store
+                html.Div(),  # plot-display
+                {},          # tree-offset-store
+                html.Div(),  # compute-rf-output
+                html.Div(),  # compute-mds-output
+                notification,
+                True,        # export-rf-button disabled
+                True,        # export-mds-button disabled
+                empty_sidebar,   # sidebar-trees-display
+                None,            # rf-trace-store
+                html.Div(),      # lnl-trace-plot
+                html.Div(),      # rf-trace-plot
+            )
+        return (no_update,) * 14
 
     # ------ EXPORT CALLBACKS ------
 
@@ -1134,7 +1152,7 @@ def register_callbacks(app):
 
         return mds_result, output_indicator, False, notification
 
-    # ------- VISUALIZE TAB CALLBACKS ------
+    # ------- TREE SPACE TAB CALLBACKS ------
 
     # Auto-generate plot config when MDS result changes
     @callback(

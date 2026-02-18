@@ -1219,70 +1219,66 @@ def register_callbacks(app):
         groups = plot_config["groups"]
         color_dict = plot_config["color_dict"]
 
-        # Controls row with slider, checkbox, and plot button
-        controls = html.Div(
-            [
-                html.Div(
-                    [
-                        html.Label(
-                            "Dimensions:",
-                            style={"display": "block", "margin-bottom": "2px"},
-                        ),
-                        dcc.Checklist(
-                            options=mdscols,
-                            value=mdscols[:3],
-                            id="dimensions-box",
-                            inline=True,
-                        ),
-                    ],
-                    style={"width": "20%", "padding": "5px"},
-                ),
-                # tree num slider
-                html.Div(
-                    [
-                        html.Label("Filter by Tree Number Range:"),
-                        dcc.RangeSlider(
-                            id="treenum-slider",
-                            min=MIN_TREENUM,
-                            max=MAX_TREENUM,
-                            value=[MIN_TREENUM, MAX_TREENUM],
-                            marks={
-                                MIN_TREENUM: str(MIN_TREENUM),
-                                MAX_TREENUM: str(MAX_TREENUM),
-                            },
-                            step=1,
-                            tooltip={"placement": "bottom", "always_visible": True},
-                        ),
-                    ],
-                    style={"width": "60%", "padding": "5px"},
-                ),
-                # show lines checkbox
-                html.Div(
-                    [
-                        dmc.Checkbox(
-                            label="Show lines",
-                            id="show-lines-checkbox",
-                            checked=True,
-                        ),
-                    ],
-                    style={"width": "10%", "padding": "5px", "display": "flex", "align-items": "center"},
-                ),
-                # plot button
-                html.Div(
-                    [
-                        dmc.Button(
-                            "Plot",
-                            id="plot-button",
-                            variant="filled",
-                            color="blue",
-                            size="md",
-                            style={"margin-top": "20px"},
-                        ),
-                    ],
-                    style={"width": "10%", "padding": "5px", "text-align": "center"},
-                ),
-            ],
-            style={"display": "flex", "align-items": "center", "padding": "5px 0"},
+        # Controls row with axis selects, slider, checkbox, and plot button
+        dim_options = [{"value": col, "label": col} for col in mdscols]
+        controls = dmc.Paper(
+            dmc.Group(
+                [
+                    dmc.Select(
+                        label="X", id="dim-x-select",
+                        data=dim_options, value=mdscols[0],
+                        size="xs", w=120,
+                    ),
+                    dmc.Select(
+                        label="Y", id="dim-y-select",
+                        data=dim_options, value=mdscols[1],
+                        size="xs", w=120,
+                    ),
+                    dmc.Select(
+                        label="Z", id="dim-z-select",
+                        data=dim_options, value=mdscols[2],
+                        size="xs", w=120,
+                    ),
+                    dmc.Stack(
+                        [
+                            dmc.Text("Tree Number Range:", size="sm", fw=500),
+                            dmc.RangeSlider(
+                                id="treenum-slider",
+                                min=MIN_TREENUM,
+                                max=MAX_TREENUM,
+                                value=[MIN_TREENUM, MAX_TREENUM],
+                                marks=[
+                                    {"value": MIN_TREENUM, "label": str(MIN_TREENUM)},
+                                    {"value": MAX_TREENUM, "label": str(MAX_TREENUM)},
+                                ],
+                                step=1,
+                                labelAlwaysOn=True,
+                                styles={"label": {"top": "unset", "bottom": "-2rem"}},
+                            ),
+                        ],
+                        gap="xs",
+                        style={"flex": 1},
+                    ),
+                    dmc.Checkbox(
+                        label="Show lines",
+                        id="show-lines-checkbox",
+                        checked=True,
+                    ),
+                    dmc.Button(
+                        "Plot",
+                        id="plot-button",
+                        variant="filled",
+                        color="blue",
+                        size="md",
+                    ),
+                ],
+                align="flex-end",
+                gap="lg",
+            ),
+            withBorder=True,
+            p="md",
+            radius="sm",
+            mb="sm",
         )
 
         plot_div.append(controls)
@@ -1322,7 +1318,9 @@ def register_callbacks(app):
         ],
         Input("plot-button", "n_clicks"),
         [
-            State(component_id="dimensions-box", component_property="value"),
+            State("dim-x-select", "value"),
+            State("dim-y-select", "value"),
+            State("dim-z-select", "value"),
             State(component_id="treenum-slider", component_property="value"),
             State("show-lines-checkbox", "checked"),
             State("plot-container", "children"),
@@ -1330,8 +1328,8 @@ def register_callbacks(app):
         ],
         prevent_initial_call=True,
     )
-    def update_graph_on_button_click(n_clicks, mds_selected, treenum_range, show_lines, current_plot, plot_config):
-        if not n_clicks or not plot_config or len(mds_selected) != 3:
+    def update_graph_on_button_click(n_clicks, dim_x, dim_y, dim_z, treenum_range, show_lines, current_plot, plot_config):
+        if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
             return no_update, no_update
 
         # Filter data based on current control values
@@ -1340,9 +1338,10 @@ def register_callbacks(app):
         filtered_dff = combined_df[
             (combined_df["treenum"] >= treenum_range[0]) & (combined_df["treenum"] <= treenum_range[1])
         ]
+        mds_selected = [dim_x, dim_y, dim_z]
         add_log(f"Plotting {len(filtered_dff)} trees (range {treenum_range[0]}-{treenum_range[1]}), dims: {mds_selected}")
 
-        x, y, z = mds_selected
+        x, y, z = dim_x, dim_y, dim_z
 
         # Create new plot with filtered data
         fig = make_plot_grid()

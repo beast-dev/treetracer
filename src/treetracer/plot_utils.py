@@ -89,6 +89,7 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
         )
 
     fig.update_layout(
+        template="simple_white",
         scene=dict(
             xaxis=dict(title=dict(text=x)),
             yaxis=dict(title=dict(text=y)),

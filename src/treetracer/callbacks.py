@@ -814,7 +814,7 @@ def register_callbacks(app):
             t0 = _time.time()
             n_components = min(6, distance_matrix.shape[0] - 1)
             add_log(f"Computing MDS with {n_components} components...")
-            mds = MDS(n_components=n_components, metric='precomputed', random_state=42, verbose=1)
+            mds = MDS(n_components=n_components, metric='precomputed', random_state=42, verbose=1, n_init=1, init="random", normalized_stress="auto")
             embedding = mds.fit_transform(distance_matrix)
             elapsed = _time.time() - t0
             add_log(f"MDS completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")

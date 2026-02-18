@@ -9,6 +9,7 @@ import os
 import sys
 
 import subprocess
+import numpy as np
 import pandas as pd
 from sklearn.manifold import MDS
 
@@ -1427,22 +1428,25 @@ def register_callbacks(app):
 
     @callback(
         Output("compute-rf-trace-button", "disabled"),
-        Output("rf-reference-select", "data"),
+        Output("rf-reference-group-select", "data"),
+        Output("rf-reference-group-select", "value"),
         Input("tree-offset-store", "data"),
     )
     def toggle_rf_trace_controls(stored_summaries):
-        """Enable/disable RF trace controls based on loaded trees."""
+        """Enable/disable RF trace controls and populate group dropdown."""
         if not stored_summaries:
-            return True, [
-                {"value": "last", "label": "Last tree (default)"},
-                {"value": "first", "label": "First tree"},
-            ]
+            return True, [], None
 
-        options = [
-            {"value": "last", "label": "Last tree (default)"},
-            {"value": "first", "label": "First tree"},
-        ]
-        return False, options
+        # Collect all groups across all loaded files
+        all_groups = []
+        for summary in stored_summaries.values():
+            all_groups.extend(summary.get("groups", []))
+        all_groups = sorted(set(all_groups))
+
+        group_options = [{"value": g, "label": g} for g in all_groups]
+        # Default to last group alphabetically
+        default_group = all_groups[-1] if all_groups else None
+        return False, group_options, default_group
 
     @callback(
         Output("rf-trace-plot", "children"),
@@ -1450,64 +1454,77 @@ def register_callbacks(app):
         Output("notifications-container", "children", allow_duplicate=True),
         Input("compute-rf-trace-button", "n_clicks"),
         State("tree-offset-store", "data"),
-        State("rf-reference-select", "value"),
+        State("rf-reference-group-select", "value"),
+        State("rf-reference-position-select", "value"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_choice):
-        """Compute RF distance of every tree to a reference tree."""
+    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position):
+        """Compute RF distance of every tree to a single shared reference tree."""
         if not n_clicks or not stored_summaries:
             return no_update, no_update, no_update
+
+        if not ref_group:
+            return (
+                dmc.Text("Please select a reference group.", c="red"),
+                no_update,
+                no_update,
+            )
 
         import time as _time
 
         tree_service = get_tree_service()
         file_sources = list(stored_summaries.keys())
 
-        add_log(f"Computing RF trace to {ref_choice} tree...")
+        add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}'...")
 
+        # --- Find the single reference tree from the selected group ---
+        tree_service.db_manager.flush()
+        all_df = tree_service.db_manager._trees
+        ref_df = all_df[all_df['group_name'] == ref_group].sort_values('id')
+
+        if len(ref_df) == 0:
+            msg = f"No trees found in group '{ref_group}'."
+            add_log(msg, "ERROR")
+            return dmc.Text(msg, c="red"), no_update, no_update
+
+        if ref_position == "first":
+            ref_row = ref_df.iloc[:1]
+        else:
+            ref_row = ref_df.iloc[-1:]
+
+        ref_trees = tree_service.db_manager._resolve_newick(ref_row)
+        if not ref_trees:
+            msg = f"Could not resolve reference tree from group '{ref_group}'."
+            add_log(msg, "ERROR")
+            return dmc.Text(msg, c="red"), no_update, no_update
+
+        ref_newick = ref_trees[0]['newick']
+        ref_name = ref_trees[0]['name']
+        ref_id = ref_trees[0]['id']
+        ref_file_source = ref_row.iloc[0]['file_source']
+        ref_tmap = tree_service.db_manager.get_translate_map(ref_file_source)
+
+        add_log(f"Reference tree: id={ref_id} name='{ref_name}' ({ref_position} of group '{ref_group}') from {ref_file_source}")
+        add_log(f"Reference newick (first 80 chars): {ref_newick[:80]}")
+
+        # --- Compute RF distance for all trees against this single reference ---
         all_records = []
 
         for file_source in file_sources:
-            summary = stored_summaries[file_source]
-            total = summary["total_trees"]
-
-            # Get reference tree
-            if ref_choice == "first":
-                # Get first tree by id order
-                tree_service.db_manager.flush()
-                df = tree_service.db_manager._trees
-                file_df = df[df['file_source'] == file_source].sort_values('id')
-                if len(file_df) == 0:
-                    continue
-                first_row = file_df.iloc[:1]
-                ref_trees = tree_service.db_manager._resolve_newick(first_row)
-            else:
-                ref_trees = tree_service.db_manager.get_last_trees(file_source, limit=1)
-
-            if not ref_trees:
-                add_log(f"No reference tree found for {file_source}", "WARNING")
+            file_df = all_df[all_df['file_source'] == file_source].sort_values('id')
+            if len(file_df) == 0:
                 continue
-
-            ref_tree = ref_trees[0]
-            ref_newick = ref_tree['newick']
-
-            # Get all tree IDs for this file (in order)
-            tree_service.db_manager.flush()
-            file_df = tree_service.db_manager._trees[
-                tree_service.db_manager._trees['file_source'] == file_source
-            ].sort_values('id')
 
             tree_ids = file_df['id'].tolist()
             names = file_df['name'].tolist()
             groups = file_df['group_name'].tolist()
             n_trees = len(tree_ids)
 
-            # Build translate map info
+            # Build translate maps: [file_tmap, ref_tmap]
             tmap = tree_service.db_manager.get_translate_map(file_source)
-            translate_maps = [tmap] if tmap else [{}]
-            map_indices = [0] * n_trees
+            translate_maps = [tmap if tmap else {}, ref_tmap if ref_tmap else {}]
+            map_indices = [0] * n_trees  # all trees use map 0
 
-            # Get newick iterator
             newick_iter = tree_service.db_manager.iter_newicks(tree_ids)
 
             try:
@@ -1517,10 +1534,12 @@ def register_callbacks(app):
                 _, distances = rf_distance_to_reference(
                     names, newick_iter, n_trees, ref_newick,
                     translate_maps, map_indices,
-                    ref_map_index=0, rooted=False,
+                    ref_map_index=1, rooted=False,
                 )
                 elapsed = _time.time() - t0
-                add_log(f"RF trace for {file_source}: {n_trees} trees in {elapsed:.2f}s")
+                nonzero = int(np.sum(distances > 0))
+                add_log(f"RF trace for {file_source}: {n_trees} trees in {elapsed:.2f}s, {nonzero} non-zero distances")
+                add_log(f"  First 5 distances: {distances[:5].tolist()}, Last 5: {distances[-5:].tolist()}")
             except Exception as e:
                 msg = f"RF trace computation failed for {file_source}: {e}"
                 add_log(msg, "ERROR")
@@ -1531,7 +1550,6 @@ def register_callbacks(app):
 
             for i in range(n_trees):
                 all_records.append({
-                    'treenum': i + 1,
                     'rf_distance': int(distances[i]),
                     'group': groups[i],
                     'name': names[i],
@@ -1542,6 +1560,7 @@ def register_callbacks(app):
             return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update
 
         trace_df = pd.DataFrame(all_records)
+        trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
 
         # Build plot
         all_groups = sorted(trace_df['group'].unique().tolist())
@@ -1559,10 +1578,10 @@ def register_callbacks(app):
                 line=dict(color=color_map[group], width=1),
             ))
 
-        ref_label = "last" if ref_choice == "last" else "first"
+        ref_label = f"{ref_position} tree of {ref_group}"
         fig.update_layout(
             xaxis_title="Tree number",
-            yaxis_title=f"RF distance to {ref_label} tree",
+            yaxis_title=f"RF distance to {ref_label}",
             margin=dict(l=60, r=20, t=30, b=40),
             height=300,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1570,7 +1589,7 @@ def register_callbacks(app):
 
         notification = dmc.Notification(
             title="RF Trace Computed",
-            message=f"Computed RF distances for {len(all_records)} trees to {ref_label} tree.",
+            message=f"Computed RF distances for {len(all_records)} trees to {ref_label}.",
             color="green",
             action="show",
             autoClose=3000,

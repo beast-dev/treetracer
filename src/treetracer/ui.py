@@ -84,18 +84,22 @@ def _add_diagnostics_panel():
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("RF Distance to Reference", order=5),
-                ], gap="sm"),
-                dmc.Space(h=10),
-                dmc.Group([
                     dmc.Select(
-                        id="rf-reference-select",
-                        label="Reference tree",
+                        id="rf-reference-group-select",
+                        placeholder="Reference group",
+                        data=[],
+                        value=None,
+                        w=200,
+                    ),
+                    dmc.Select(
+                        id="rf-reference-position-select",
+                        placeholder="Position",
                         data=[
-                            {"value": "last", "label": "Last tree (default)"},
+                            {"value": "last", "label": "Last tree"},
                             {"value": "first", "label": "First tree"},
                         ],
                         value="last",
-                        w=200,
+                        w=150,
                     ),
                     dmc.Button(
                         "Compute RF Trace",
@@ -104,9 +108,8 @@ def _add_diagnostics_panel():
                         color="green",
                         size="sm",
                         disabled=True,
-                        style={"alignSelf": "flex-end"},
                     ),
-                ], align="flex-end", gap="md"),
+                ], align="center", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),
@@ -123,7 +126,7 @@ def add_main_body():
         [
             dmc.TabsList(
                 [
-                    dmc.TabsTab("Compute", value="compute"),
+                    dmc.TabsTab("Compute Distances", value="compute"),
                     dmc.TabsTab("Tree Space", value="treespace"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
                     dmc.TabsTab("About", value="about"),

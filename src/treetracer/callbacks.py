@@ -186,6 +186,15 @@ def register_callbacks(app):
                             style={"padding": "8px"})
         return no_update
 
+    # Show loading overlay instantly when Load Trees is clicked
+    from dash import clientside_callback
+    clientside_callback(
+        """function(n) { return true; }""",
+        Output("sidebar-loading-overlay", "visible"),
+        Input("load-trees-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
     # Callback to load .trees files via native file dialog
     @callback(
         Output("tree-offset-store", "data"),
@@ -193,17 +202,18 @@ def register_callbacks(app):
         Output("trees-validation-alert", "style"),
         Output("sidebar-trees-display", "children", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("sidebar-loading-overlay", "visible", allow_duplicate=True),
         Input("load-trees-button", "n_clicks"),
         State("tree-offset-store", "data"),
         prevent_initial_call=True,
     )
     def handle_trees_load(n_clicks, stored_summaries):
         if not n_clicks:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         file_path = _open_file_dialog()
         if not file_path:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, False
 
         stored_summaries = stored_summaries or {}
         filename = os.path.basename(file_path)
@@ -211,11 +221,11 @@ def register_callbacks(app):
         if not file_path.endswith(".trees"):
             msg = f"Only .trees files are allowed. '{filename}' was rejected."
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}, no_update, no_update
+            return no_update, msg, {"display": "block"}, no_update, no_update, False
 
         if filename in stored_summaries:
             add_log(f"File {filename} already loaded, skipping", "WARNING")
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, False
 
         print(f"Loading {filename}...")
         add_log(f"Loading {filename}...")
@@ -295,15 +305,15 @@ def register_callbacks(app):
                         autoClose=3000,
                         id="load-notification",
                     )
-                return stored_summaries, "", {"display": "none"}, no_update, notification
+                return stored_summaries, "", {"display": "none"}, no_update, notification, False
             else:
                 msg = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
                 add_log(msg, "ERROR")
-                return no_update, msg, {"display": "block"}, no_update, no_update
+                return no_update, msg, {"display": "block"}, no_update, no_update, False
         except Exception as e:
             msg = f"Error processing {filename}: {str(e)}"
             add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}, no_update, no_update
+            return no_update, msg, {"display": "block"}, no_update, no_update, False
 
     # Callback to display loaded trees info in the sidebar
     @callback(
@@ -313,7 +323,7 @@ def register_callbacks(app):
     def display_trees_info(stored_summaries):
         if not stored_summaries:
             return dmc.Text(
-                "No trees loaded. Click the upload icon in the header to load a .trees file.",
+                "No trees loaded. Click the upload button above to load a .trees file.",
                 c="dimmed",
                 size="sm",
                 style={"padding": "10px"},
@@ -908,7 +918,7 @@ def register_callbacks(app):
                 id="clear-notification",
             )
             empty_sidebar = dmc.Text(
-                "No trees loaded. Click the upload icon in the header to load a .trees file.",
+                "No trees loaded. Click the upload button above to load a .trees file.",
                 c="dimmed",
                 size="sm",
                 style={"padding": "10px"},

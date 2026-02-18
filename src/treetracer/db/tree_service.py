@@ -8,7 +8,9 @@ This module provides the main API for TreeTracer's tree processing functionality
 """
 
 from typing import List, Dict, Any, Optional
+import json
 import time
+import pandas as pd
 from .process_trees import process_nexus_trees_streaming
 from .tree_manager import get_tree_manager
 
@@ -243,6 +245,70 @@ class TreeService:
             'trees_per_group': stats.get('trees_per_group', {})
         }
     
+    def get_metadata_traces(self, file_sources: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+        """Extract numeric time-series fields from tree metadata.
+
+        Scans tree metadata for known log-likelihood / posterior fields and
+        returns one DataFrame per field found.
+
+        Args:
+            file_sources: Restrict to these files (None = all loaded files).
+
+        Returns:
+            Dict mapping field name to DataFrame with columns:
+            treenum, value, group, file_source.
+        """
+        self.db_manager.flush()
+        df = self.db_manager._trees
+
+        if file_sources:
+            df = df[df['file_source'].isin(file_sources)]
+
+        if len(df) == 0:
+            return {}
+
+        # Known numeric metadata keys (BEAST / MrBayes conventions)
+        target_fields = {'lnP', 'loglikelihood', 'lnL', 'posterior', 'joint'}
+
+        # Parse metadata JSON and collect values
+        records = []
+        for _, row in df.iterrows():
+            meta = row['metadata']
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(meta, dict):
+                continue
+            for field in target_fields:
+                if field in meta:
+                    try:
+                        val = float(meta[field])
+                    except (ValueError, TypeError):
+                        continue
+                    records.append({
+                        'id': int(row['id']),
+                        'field': field,
+                        'value': val,
+                        'group': row['group_name'],
+                        'file_source': row['file_source'],
+                    })
+
+        if not records:
+            return {}
+
+        all_df = pd.DataFrame(records)
+
+        # Build per-field DataFrames with treenum = cumulative count per group
+        result = {}
+        for field_name, field_df in all_df.groupby('field'):
+            field_df = field_df.sort_values('id')
+            field_df['treenum'] = field_df.groupby('group').cumcount() + 1
+            result[field_name] = field_df[['treenum', 'value', 'group', 'file_source']].reset_index(drop=True)
+
+        return result
+
     def clear_database(self, file_source: Optional[str] = None) -> None:
         """Clear trees from database with optional file filtering.
         

@@ -4,6 +4,7 @@ from .logger import add_log, get_logs, clear_logs
 from .db.tree_service import get_tree_service
 import dash_mantine_components as dmc
 import plotly.express as px
+import plotly.graph_objects as go
 import os
 import sys
 
@@ -1353,3 +1354,224 @@ def register_callbacks(app):
         button_text = "Update Plot"
 
         return [plot_component], button_text
+
+    # ------ DIAGNOSTICS TAB CALLBACKS ------
+
+    @callback(
+        Output("lnl-trace-plot", "children"),
+        Input("tree-offset-store", "data"),
+    )
+    def update_lnl_trace(stored_summaries):
+        """Render log-likelihood trace plot when trees are loaded/changed."""
+        if not stored_summaries:
+            return dmc.Text(
+                "No trees loaded yet.",
+                c="dimmed", size="sm", style={"padding": "20px"},
+            )
+
+        tree_service = get_tree_service()
+        file_sources = list(stored_summaries.keys())
+        traces = tree_service.get_metadata_traces(file_sources)
+
+        if not traces:
+            return dmc.Text(
+                "No log-likelihood data found in tree annotations.",
+                c="dimmed", size="sm", style={"padding": "20px"},
+            )
+
+        # Pick first available field (prefer lnP > lnL > posterior > joint > loglikelihood)
+        preferred = ['lnP', 'lnL', 'posterior', 'joint', 'loglikelihood']
+        field_name = None
+        for f in preferred:
+            if f in traces:
+                field_name = f
+                break
+        if field_name is None:
+            field_name = next(iter(traces))
+
+        trace_df = traces[field_name]
+        groups = sorted(trace_df['group'].unique().tolist())
+        colors = px.colors.qualitative.Dark24[:len(groups)]
+        color_map = dict(zip(groups, colors))
+
+        fig = go.Figure()
+        for group in groups:
+            gdf = trace_df[trace_df['group'] == group]
+            fig.add_trace(go.Scatter(
+                x=gdf['treenum'],
+                y=gdf['value'],
+                mode='lines',
+                name=group,
+                line=dict(color=color_map[group], width=1),
+            ))
+
+        fig.update_layout(
+            xaxis_title="Tree number",
+            yaxis_title=field_name,
+            margin=dict(l=60, r=20, t=30, b=40),
+            height=300,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+
+        return dcc.Graph(figure=fig, config={"displayModeBar": False})
+
+    @callback(
+        Output("compute-rf-trace-button", "disabled"),
+        Output("rf-reference-select", "data"),
+        Input("tree-offset-store", "data"),
+    )
+    def toggle_rf_trace_controls(stored_summaries):
+        """Enable/disable RF trace controls based on loaded trees."""
+        if not stored_summaries:
+            return True, [
+                {"value": "last", "label": "Last tree (default)"},
+                {"value": "first", "label": "First tree"},
+            ]
+
+        options = [
+            {"value": "last", "label": "Last tree (default)"},
+            {"value": "first", "label": "First tree"},
+        ]
+        return False, options
+
+    @callback(
+        Output("rf-trace-plot", "children"),
+        Output("rf-trace-store", "data"),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("compute-rf-trace-button", "n_clicks"),
+        State("tree-offset-store", "data"),
+        State("rf-reference-select", "value"),
+        prevent_initial_call=True,
+    )
+    def compute_rf_trace(n_clicks, stored_summaries, ref_choice):
+        """Compute RF distance of every tree to a reference tree."""
+        if not n_clicks or not stored_summaries:
+            return no_update, no_update, no_update
+
+        import time as _time
+
+        tree_service = get_tree_service()
+        file_sources = list(stored_summaries.keys())
+
+        add_log(f"Computing RF trace to {ref_choice} tree...")
+
+        all_records = []
+
+        for file_source in file_sources:
+            summary = stored_summaries[file_source]
+            total = summary["total_trees"]
+
+            # Get reference tree
+            if ref_choice == "first":
+                # Get first tree by id order
+                tree_service.db_manager.flush()
+                df = tree_service.db_manager._trees
+                file_df = df[df['file_source'] == file_source].sort_values('id')
+                if len(file_df) == 0:
+                    continue
+                first_row = file_df.iloc[:1]
+                ref_trees = tree_service.db_manager._resolve_newick(first_row)
+            else:
+                ref_trees = tree_service.db_manager.get_last_trees(file_source, limit=1)
+
+            if not ref_trees:
+                add_log(f"No reference tree found for {file_source}", "WARNING")
+                continue
+
+            ref_tree = ref_trees[0]
+            ref_newick = ref_tree['newick']
+
+            # Get all tree IDs for this file (in order)
+            tree_service.db_manager.flush()
+            file_df = tree_service.db_manager._trees[
+                tree_service.db_manager._trees['file_source'] == file_source
+            ].sort_values('id')
+
+            tree_ids = file_df['id'].tolist()
+            names = file_df['name'].tolist()
+            groups = file_df['group_name'].tolist()
+            n_trees = len(tree_ids)
+
+            # Build translate map info
+            tmap = tree_service.db_manager.get_translate_map(file_source)
+            translate_maps = [tmap] if tmap else [{}]
+            map_indices = [0] * n_trees
+
+            # Get newick iterator
+            newick_iter = tree_service.db_manager.iter_newicks(tree_ids)
+
+            try:
+                from .rf.rf import rf_distance_to_reference
+
+                t0 = _time.time()
+                _, distances = rf_distance_to_reference(
+                    names, newick_iter, n_trees, ref_newick,
+                    translate_maps, map_indices,
+                    ref_map_index=0, rooted=False,
+                )
+                elapsed = _time.time() - t0
+                add_log(f"RF trace for {file_source}: {n_trees} trees in {elapsed:.2f}s")
+            except Exception as e:
+                msg = f"RF trace computation failed for {file_source}: {e}"
+                add_log(msg, "ERROR")
+                return dmc.Text(msg, c="red"), no_update, dmc.Notification(
+                    title="RF Trace Error", message=msg, color="red",
+                    action="show", autoClose=6000, id="rf-trace-notification",
+                )
+
+            for i in range(n_trees):
+                all_records.append({
+                    'treenum': i + 1,
+                    'rf_distance': int(distances[i]),
+                    'group': groups[i],
+                    'name': names[i],
+                    'file_source': file_source,
+                })
+
+        if not all_records:
+            return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update
+
+        trace_df = pd.DataFrame(all_records)
+
+        # Build plot
+        all_groups = sorted(trace_df['group'].unique().tolist())
+        colors = px.colors.qualitative.Dark24[:len(all_groups)]
+        color_map = dict(zip(all_groups, colors))
+
+        fig = go.Figure()
+        for group in all_groups:
+            gdf = trace_df[trace_df['group'] == group]
+            fig.add_trace(go.Scatter(
+                x=gdf['treenum'],
+                y=gdf['rf_distance'],
+                mode='lines',
+                name=group,
+                line=dict(color=color_map[group], width=1),
+            ))
+
+        ref_label = "last" if ref_choice == "last" else "first"
+        fig.update_layout(
+            xaxis_title="Tree number",
+            yaxis_title=f"RF distance to {ref_label} tree",
+            margin=dict(l=60, r=20, t=30, b=40),
+            height=300,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+
+        notification = dmc.Notification(
+            title="RF Trace Computed",
+            message=f"Computed RF distances for {len(all_records)} trees to {ref_label} tree.",
+            color="green",
+            action="show",
+            autoClose=3000,
+            id="rf-trace-notification",
+        )
+
+        # Store result for potential reuse
+        store_data = trace_df.to_dict("records")
+
+        return (
+            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            store_data,
+            notification,
+        )

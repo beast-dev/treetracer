@@ -1,5 +1,6 @@
 import dash_mantine_components as dmc
 from dash import dcc, html
+from dash_iconify import DashIconify
 
 # Header
 
@@ -18,15 +19,40 @@ def add_header():
                 dmc.Image(src=logo_path, w=50, fit="contain"),
                 dmc.Title("TreeTracer", c="blue"),
                 dmc.Space(style={"flex": 1}),
-                dmc.ActionIcon(
-                    dmc.Text(">_", ff="monospace", fw=700, size="sm"),
-                    id="log-toggle-button",
-                    variant="subtle",
-                    size="lg",
+                dmc.Tooltip(
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:file-upload", width=20),
+                        id="load-trees-button",
+                        variant="light",
+                        color="green",
+                        size="lg",
+                    ),
+                    label="Load Trees",
+                ),
+                dmc.Tooltip(
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:trash", width=20),
+                        id="clear-data-button",
+                        variant="light",
+                        color="orange",
+                        size="lg",
+                    ),
+                    label="Clear Data",
+                ),
+                dmc.Divider(orientation="vertical", style={"height": "24px", "alignSelf": "center"}),
+                dmc.Tooltip(
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:terminal-2", width=20),
+                        id="log-toggle-button",
+                        variant="subtle",
+                        size="lg",
+                    ),
+                    label="Toggle Log",
                 ),
             ],
             h="100%",
             px="md",
+            gap="xs",
         )
     )
 

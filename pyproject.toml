@@ -17,6 +17,7 @@ dependencies = [
     "psutil>=7.0.0",
     "scikit-learn",
     "numpy",
+    "kaleido",
 ]
 
 [project.scripts]

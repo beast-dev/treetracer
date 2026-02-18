@@ -71,6 +71,8 @@ def _add_diagnostics_panel():
                 dmc.Group([
                     dmc.Title("Log-Likelihood Trace", order=5),
                     dmc.Badge("from tree metadata", variant="light", size="sm"),
+                    dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
+                               size="xs", disabled=True),
                 ], gap="sm"),
                 dmc.Space(h=10),
                 dcc.Loading(
@@ -109,6 +111,8 @@ def _add_diagnostics_panel():
                         size="sm",
                         disabled=True,
                     ),
+                    dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
+                               size="xs", disabled=True),
                 ], align="center", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(

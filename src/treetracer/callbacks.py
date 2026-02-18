@@ -902,6 +902,8 @@ def register_callbacks(app):
         Output("lnl-trace-plot", "children", allow_duplicate=True),
         Output("rf-trace-plot", "children", allow_duplicate=True),
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
+        Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
+        Output("export-rf-trace-button", "disabled", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -944,8 +946,10 @@ def register_callbacks(app):
                 html.Div(),      # lnl-trace-plot
                 html.Div(),      # rf-trace-plot
                 True,            # compute-rf-trace-button disabled
+                True,            # export-lnl-trace-button disabled
+                True,            # export-rf-trace-button disabled
             )
-        return (no_update,) * 15
+        return (no_update,) * 17
 
     # ------ EXPORT CALLBACKS ------
 
@@ -1376,7 +1380,9 @@ def register_callbacks(app):
 
     @callback(
         Output("lnl-trace-plot", "children"),
+        Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
         Input("tree-offset-store", "data"),
+        prevent_initial_call=True,
     )
     def update_lnl_trace(stored_summaries):
         """Render log-likelihood trace plot when trees are loaded/changed."""
@@ -1384,7 +1390,7 @@ def register_callbacks(app):
             return dmc.Text(
                 "No trees loaded yet.",
                 c="dimmed", size="sm", style={"padding": "20px"},
-            )
+            ), True
 
         tree_service = get_tree_service()
         file_sources = list(stored_summaries.keys())
@@ -1394,7 +1400,7 @@ def register_callbacks(app):
             return dmc.Text(
                 "No log-likelihood data found in tree annotations.",
                 c="dimmed", size="sm", style={"padding": "20px"},
-            )
+            ), True
 
         # Pick first available field (prefer lnP > lnL > posterior > joint > loglikelihood)
         preferred = ['lnP', 'lnL', 'posterior', 'joint', 'loglikelihood']
@@ -1442,6 +1448,7 @@ def register_callbacks(app):
                 ), row=1, col=2)
 
         fig.update_layout(
+            template="simple_white",
             xaxis_title="Tree number",
             yaxis_title=field_name,
             xaxis2_title="Density",
@@ -1450,7 +1457,7 @@ def register_callbacks(app):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
 
-        return dcc.Graph(figure=fig, config={"displayModeBar": False})
+        return dcc.Graph(id="lnl-trace-graph", figure=fig, config={"displayModeBar": False}), False
 
     @callback(
         Output("rf-reference-group-select", "data", allow_duplicate=True),
@@ -1505,6 +1512,7 @@ def register_callbacks(app):
         Output("rf-trace-plot", "children"),
         Output("rf-trace-store", "data"),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("export-rf-trace-button", "disabled", allow_duplicate=True),
         Input("compute-rf-trace-button", "n_clicks"),
         State("tree-offset-store", "data"),
         State("rf-reference-group-select", "value"),
@@ -1515,11 +1523,12 @@ def register_callbacks(app):
     def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats):
         """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
         if not n_clicks:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         if not ref_group:
             return (
                 dmc.Text("Please select a reference group.", c="red"),
+                no_update,
                 no_update,
                 no_update,
             )
@@ -1527,6 +1536,7 @@ def register_callbacks(app):
         if not stored_distmats:
             return (
                 dmc.Text("Please compute RF distances first (Distances tab).", c="red"),
+                no_update,
                 no_update,
                 no_update,
             )
@@ -1564,7 +1574,7 @@ def register_callbacks(app):
         if not ref_trees_in_group:
             msg = f"No trees found in group '{ref_group}'."
             add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update
+            return dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         ref_name = ref_trees_in_group[0] if ref_position == "first" else ref_trees_in_group[-1]
         add_log(f"Reference tree: name='{ref_name}' ({ref_position} of group '{ref_group}')")
@@ -1572,7 +1582,7 @@ def register_callbacks(app):
         if ref_name not in distmat_dict:
             msg = f"Reference tree '{ref_name}' not found in distance matrix."
             add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update
+            return dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         ref_distances = distmat_dict[ref_name]
 
@@ -1590,7 +1600,7 @@ def register_callbacks(app):
             })
 
         if not all_records:
-            return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update
+            return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update, no_update
 
         trace_df = pd.DataFrame(all_records)
         trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
@@ -1632,6 +1642,7 @@ def register_callbacks(app):
 
         ref_label = f"{ref_position} tree of {ref_group}"
         fig.update_layout(
+            template="simple_white",
             xaxis_title="Tree number",
             yaxis_title=f"RF distance to {ref_label}",
             xaxis2_title="Density",
@@ -1653,7 +1664,60 @@ def register_callbacks(app):
         store_data = trace_df.to_dict("records")
 
         return (
-            dcc.Graph(figure=fig, config={"displayModeBar": False}),
+            dcc.Graph(id="rf-trace-graph", figure=fig, config={"displayModeBar": False}),
             store_data,
             notification,
+            False,
+        )
+
+    # ------ EXPORT DIAGNOSTICS PLOTS AS PDF ------
+
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("export-lnl-trace-button", "n_clicks"),
+        State("lnl-trace-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def export_lnl_trace_pdf(n_clicks, fig_dict):
+        if not n_clicks or not fig_dict:
+            return no_update
+        path = _save_file_dialog(default_filename="lnl_trace.pdf")
+        if not path:
+            return no_update
+        fig = go.Figure(fig_dict)
+        fig.update_layout(template="simple_white")
+        fig.write_image(path, width=1200, height=400, scale=2)
+        add_log(f"Exported LnL trace plot to {path}")
+        return dmc.Notification(
+            title="LnL Trace Exported",
+            message=f"Saved to {path}",
+            color="green",
+            action="show",
+            autoClose=3000,
+            id="export-lnl-trace-notification",
+        )
+
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("export-rf-trace-button", "n_clicks"),
+        State("rf-trace-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def export_rf_trace_pdf(n_clicks, fig_dict):
+        if not n_clicks or not fig_dict:
+            return no_update
+        path = _save_file_dialog(default_filename="rf_trace.pdf")
+        if not path:
+            return no_update
+        fig = go.Figure(fig_dict)
+        fig.update_layout(template="simple_white")
+        fig.write_image(path, width=1200, height=400, scale=2)
+        add_log(f"Exported RF trace plot to {path}")
+        return dmc.Notification(
+            title="RF Trace Exported",
+            message=f"Saved to {path}",
+            color="green",
+            action="show",
+            autoClose=3000,
+            id="export-rf-trace-notification",
         )

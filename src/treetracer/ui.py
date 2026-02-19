@@ -21,6 +21,15 @@ def add_header():
                 dmc.Space(style={"flex": 1}),
                 dmc.Tooltip(
                     dmc.ActionIcon(
+                        DashIconify(icon="tabler:info-circle", width=20),
+                        id="about-modal-button",
+                        variant="subtle",
+                        size="lg",
+                    ),
+                    label="About",
+                ),
+                dmc.Tooltip(
+                    dmc.ActionIcon(
                         DashIconify(icon="tabler:terminal-2", width=20),
                         id="log-toggle-button",
                         variant="subtle",
@@ -39,14 +48,15 @@ def add_header():
 # Main Body
 
 
-def add_about():
-    return dmc.Paper(
+def _add_about_modal():
+    return dmc.Modal(
+        id="about-modal",
+        title="About TreeTracer",
+        centered=True,
         children=[
             dmc.Stack(
                 [
-                    dmc.Text(""),
-                    dmc.Title("TreeTracer v0.0-DEMO", order=1),
-                    dmc.Title("About TreeTracer", order=4),
+                    dmc.Title("TreeTracer v0.0-DEMO", order=3),
                     dmc.Text(
                         "TreeTracer is a diagnostic tool used to visualize convergence of tree topologies"
                     ),
@@ -58,7 +68,6 @@ def add_about():
                 ],
             )
         ],
-        radius="sm",
     )
 
 
@@ -132,8 +141,8 @@ def add_main_body():
                 [
                     dmc.TabsTab("Compute Distances", value="compute"),
                     dmc.TabsTab("Tree Space", value="treespace"),
+                    dmc.TabsTab("Within-run Analysis", value="within-run"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
-                    dmc.TabsTab("About", value="about"),
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
@@ -219,8 +228,14 @@ def add_main_body():
                 value="compute",
             ),
             dmc.TabsPanel(html.Div(id="plot-display"), value="treespace"),
+            dmc.TabsPanel(
+                html.Div(
+                    dmc.Text("Within-run analysis coming soon.", c="dimmed", size="sm"),
+                    style={"padding": "20px"},
+                ),
+                value="within-run",
+            ),
             dmc.TabsPanel(_add_diagnostics_panel(), value="diagnostics"),
-            dmc.TabsPanel(add_about(), value="about"),
         ],
         id="main-tabs",
         color="blue.2",
@@ -232,6 +247,7 @@ def add_main_body():
     return dmc.AppShellMain([
         html.Div(id="notifications-container"),
         tabs,
+        _add_about_modal(),
     ])
 
 

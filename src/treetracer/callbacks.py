@@ -126,6 +126,19 @@ def register_callbacks(app):
         navbar["collapsed"] = {"mobile": not opened}
         return navbar
 
+    # ------ ABOUT MODAL CALLBACK ------
+
+    @callback(
+        Output("about-modal", "opened"),
+        Input("about-modal-button", "n_clicks"),
+        State("about-modal", "opened"),
+        prevent_initial_call=True,
+    )
+    def toggle_about_modal(n_clicks, opened):
+        if n_clicks:
+            return not opened
+        return no_update
+
     # ------ LOG PANEL CALLBACKS ------
 
     @callback(

@@ -157,7 +157,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
             byte_pos += len(raw_line)
 
             stripped = raw_line.strip()
-            if not stripped.startswith(b'tree '):
+            if not stripped.lower().startswith(b'tree '):
                 # Accumulate preamble lines until first tree line
                 if not preamble_captured:
                     preamble_bytes += raw_line

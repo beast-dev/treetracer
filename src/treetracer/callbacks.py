@@ -1252,7 +1252,6 @@ def register_callbacks(app):
                                     {"value": MAX_TREENUM, "label": str(MAX_TREENUM)},
                                 ],
                                 step=1,
-                                labelAlwaysOn=True,
                                 styles={"label": {"top": "unset", "bottom": "-2rem"}},
                             ),
                         ],

@@ -15,7 +15,6 @@ dependencies = [
     "pandas",
     "plotly",
     "psutil>=7.0.0",
-    "scikit-learn",
     "numpy",
     "kaleido",
 ]

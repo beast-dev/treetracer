@@ -13,7 +13,6 @@ import sys
 import subprocess
 import numpy as np
 import pandas as pd
-from sklearn.manifold import MDS
 
 
 def _save_file_dialog(default_filename="output.tsv"):
@@ -816,12 +815,12 @@ def register_callbacks(app):
         try:
             import time as _time
             t0 = _time.time()
+            from treetracer.rf.mds import compute_mds
             n_components = min(6, distance_matrix.shape[0] - 1)
-            add_log(f"Computing MDS with {n_components} components...")
-            mds = MDS(n_components=n_components, metric='precomputed', random_state=42, verbose=1, n_init=1, init="random", normalized_stress="auto")
-            embedding = mds.fit_transform(distance_matrix)
+            add_log(f"Computing classical PCoA with {n_components} components...")
+            embedding = compute_mds(distance_matrix, n_components=n_components, algorithm="pcoa")
             elapsed = _time.time() - t0
-            add_log(f"MDS completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")
+            add_log(f"PCoA completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")
         except Exception as e:
             msg = f"MDS computation failed: {str(e)}"
             add_log(msg, "ERROR")

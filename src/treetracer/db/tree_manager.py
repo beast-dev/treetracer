@@ -9,8 +9,7 @@ dependencies beyond pandas.
 import os
 import json
 import pandas as pd
-import numpy as np
-from typing import Iterator, List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 
 
 class TreeManagerPandas:
@@ -58,27 +57,6 @@ class TreeManagerPandas:
         fh = self._get_source_handle(file_source)
         fh.seek(offset)
         return fh.read(length).decode('utf-8')
-
-    def iter_newicks(self, tree_ids: List[int]) -> Iterator[str]:
-        """Yield newick strings one at a time, reading from disk on demand.
-
-        Args:
-            tree_ids: List of tree IDs whose newicks to yield (in order).
-
-        Yields:
-            Newick strings, one per tree ID.
-        """
-        self.flush()
-        id_set = set(tree_ids)
-        # Build a lookup from id -> (file_source, newick_offset, newick_length)
-        subset = self._trees[self._trees['id'].isin(id_set)]
-        lookup = {
-            int(row['id']): (row['file_source'], int(row['newick_offset']), int(row['newick_length']))
-            for _, row in subset.iterrows()
-        }
-        for tid in tree_ids:
-            file_source, offset, length = lookup[tid]
-            yield self._read_newick(file_source, offset, length)
 
     # ------------------------------------------------------------------
     # Insert
@@ -232,24 +210,6 @@ class TreeManagerPandas:
 
         return self._resolve_newick(sampled)
 
-    def get_last_trees(self,
-                       file_source: str,
-                       limit: int = 500) -> List[Dict[str, Any]]:
-        """Get the last N trees (by insertion order) for a given file_source.
-
-        Useful for retrieving the end of an MCMC chain.
-
-        Returns trees in chronological order (earliest first).
-        """
-        self.flush()
-        df = self._trees[self._trees['file_source'] == file_source]
-        if len(df) == 0:
-            return []
-        # Sort descending by id, take last N, then reverse to chronological order
-        last_n = df.sort_values('id', ascending=False).head(limit)
-        last_n = last_n.iloc[::-1]
-        return self._resolve_newick(last_n)
-
     # ------------------------------------------------------------------
     # Statistics
     # ------------------------------------------------------------------
@@ -279,71 +239,9 @@ class TreeManagerPandas:
         self._source_preambles[file_source] = preamble
         self._source_translate[file_source] = translate_map
 
-    def get_source_preamble(self, file_source: str) -> Optional[bytes]:
-        """Get the stored preamble bytes for a file source."""
-        return self._source_preambles.get(file_source)
-
     def get_translate_map(self, file_source: str) -> Optional[Dict[str, str]]:
         """Get the stored Translate mapping for a file source."""
         return self._source_translate.get(file_source)
-
-    # ------------------------------------------------------------------
-    # Export
-    # ------------------------------------------------------------------
-
-    def _read_tree_line(self, file_source: str, line_offset: int,
-                        line_length: int) -> bytes:
-        """Read a full tree line from the source file."""
-        fh = self._get_source_handle(file_source)
-        fh.seek(line_offset)
-        return fh.read(line_length)
-
-    def export_trees_nexus(self, output_path: str,
-                           sampled_trees: List[Dict[str, Any]]) -> int:
-        """Export sampled trees to a valid NEXUS .trees file.
-
-        Writes the original preamble (taxa block, trees block header,
-        Translate section) followed by the sampled tree lines verbatim,
-        then closes with 'End;'.
-
-        Args:
-            output_path: Path to write the output .trees file
-            sampled_trees: List of tree dicts as returned by get_trees_sample
-
-        Returns:
-            Number of trees written
-        """
-        if not sampled_trees:
-            return 0
-
-        # All trees in a sample should come from the same file_source
-        file_source = sampled_trees[0]['file_source']
-        preamble = self._source_preambles.get(file_source)
-        if preamble is None:
-            raise ValueError(f"No preamble stored for file_source '{file_source}'")
-
-        self.flush()
-
-        # Look up line_offset / line_length for each tree by ID,
-        # sorted by line_offset so trees appear in original MCMC order
-        tree_ids = [t['id'] for t in sampled_trees]
-        df = self._trees[self._trees['id'].isin(tree_ids)].sort_values('line_offset')
-
-        written = 0
-        with open(output_path, 'wb') as out:
-            out.write(preamble)
-            for _, row in df.iterrows():
-                line_bytes = self._read_tree_line(
-                    file_source, int(row['line_offset']), int(row['line_length'])
-                )
-                out.write(line_bytes)
-                # Ensure each tree line ends with newline
-                if not line_bytes.endswith(b'\n'):
-                    out.write(b'\n')
-                written += 1
-            out.write(b'End;\n')
-
-        return written
 
     # ------------------------------------------------------------------
     # Downsample
@@ -380,16 +278,6 @@ class TreeManagerPandas:
             self._source_handles.clear()
             self._source_preambles.clear()
             self._source_translate.clear()
-
-    def cleanup(self):
-        """Close source file handles. No temp files to delete."""
-        for fh in self._source_handles.values():
-            fh.close()
-        self._source_handles.clear()
-        self._trees = self._trees.iloc[0:0]
-        self._pending_rows = []
-        self._source_preambles.clear()
-        self._source_translate.clear()
 
 
 # Global singleton

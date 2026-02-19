@@ -1,7 +1,7 @@
 from dash import html, callback, Input, Output, State, no_update
 import dash_mantine_components as dmc
 
-from ..logger import add_log, get_logs, clear_logs
+from ..logger import get_logs, clear_logs
 
 
 def register_shell_callbacks():

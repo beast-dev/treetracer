@@ -1,15 +1,12 @@
 """Robinson-Foulds distance computation backed by rust_python_tree_distances.
 
-Provides two entry points:
-  - rf_distance_from_newicks: for trees already in memory (newick strings + translate map)
-  - rf_distance_from_file:    for trees still on disk (.trees NEXUS file)
-
-Both return (names, matrix) where matrix is a symmetric list-of-lists of ints.
+Provides rf_distance_from_newicks for trees already in memory (newick strings
++ translate map), returning (names, matrix) where matrix is a symmetric
+list-of-lists of ints.
 """
 
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, List, Tuple
 
-import numpy as np
 import rust_python_tree_distances as rtd
 
 
@@ -46,93 +43,10 @@ def rf_distance_from_newicks(
     )
 
 
-def rf_distance_from_newick_iter(
-    names: List[str],
-    newick_iter: Iterator[str],
-    translate_maps: List[Dict[str, str]],
-    map_indices: List[int] | None = None,
-    rooted: bool = False,
-) -> Tuple[List[str], List[List[int]]]:
-    """Compute pairwise RF distances from a lazy iterator of newick strings.
-
-    Unlike rf_distance_from_newicks, this never holds all newick strings in
-    memory at once. The Rust side pulls one newick at a time from the
-    iterator, parses it into a compact snapshot, and discards the raw string.
-
-    Args:
-        names: Tree identifiers (one per newick).
-        newick_iter: Iterator yielding newick strings (may contain BEAST
-            annotations). Must yield exactly len(names) strings.
-        translate_maps: List of translate maps. When all trees share the same
-            map, pass a single-element list.
-        map_indices: Per-tree index into *translate_maps*. Defaults to all-zero
-            (every tree uses the first map).
-        rooted: If True compare clades (rooted RF); if False compare
-            bipartitions (unrooted RF, matches R phangorn default).
-
-    Returns:
-        (names, matrix) — tree identifiers and symmetric numpy uint32 array.
-    """
-    if map_indices is None:
-        map_indices = [0] * len(names)
-    names_out, matrix_bytes = rtd.pairwise_rf_from_newick_iter(
-        names, newick_iter, translate_maps, map_indices, rooted=rooted,
-    )
-    n = len(names_out)
-    matrix = np.frombuffer(matrix_bytes, dtype=np.uint32).reshape(n, n).copy()
-    return names_out, matrix
-
-
-def rf_distance_from_file(
-    trees_path: str,
-    burnin_trees: int = 0,
-    rooted: bool = False,
-) -> Tuple[List[str], List[List[int]]]:
-    """Compute pairwise RF distances from a .trees NEXUS file.
-
-    Args:
-        trees_path: Path to a BEAST/NEXUS .trees file.
-        burnin_trees: Number of trees to skip at the beginning.
-        rooted: If True compare clades; if False compare bipartitions.
-
-    Returns:
-        (names, matrix) — tree identifiers and symmetric distance matrix.
-    """
-    return rtd.pairwise_rf(
-        [trees_path], burnin_trees=burnin_trees, use_real_taxa=True, rooted=rooted,
-    )
-
-
-def rf_distance_from_files(
-    trees_paths: List[str],
-    burnin_trees: int = 0,
-    rooted: bool = False,
-) -> Tuple[List[str], List[List[int]]]:
-    """Compute pairwise RF distances across multiple .trees files.
-
-    All files must share the same taxon set.
-
-    Args:
-        trees_paths: Paths to BEAST/NEXUS .trees files.
-        burnin_trees: Number of trees to skip per file.
-        rooted: If True compare clades; if False compare bipartitions.
-
-    Returns:
-        (names, matrix) — tree identifiers and symmetric distance matrix.
-    """
-    return rtd.pairwise_rf(
-        trees_paths, burnin_trees=burnin_trees, use_real_taxa=True, rooted=rooted,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def matrix_to_numpy(matrix: List[List[int]]) -> np.ndarray:
-    """Convert the list-of-lists distance matrix to a numpy array."""
-    return np.array(matrix, dtype=np.int32)
-
 
 def matrix_to_dict(
     names: List[str],

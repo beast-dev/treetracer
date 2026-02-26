@@ -16,6 +16,7 @@ dependencies = [
     "plotly",
     "psutil>=7.0.0",
     "numpy",
+    "scipy",
     "kaleido",
 ]
 

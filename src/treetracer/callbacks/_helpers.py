@@ -1,5 +1,10 @@
+import shutil
 import subprocess
 import sys
+
+
+def _has_zenity():
+    return shutil.which("zenity") is not None
 
 
 def _save_file_dialog(default_filename="output.tsv"):
@@ -9,6 +14,14 @@ def _save_file_dialog(default_filename="output.tsv"):
             "osascript", "-e",
             'POSIX path of (choose file name with prompt '
             '"Save file as" default name "' + default_filename + '")',
+        ]
+    elif _has_zenity():
+        cmd = [
+            "zenity", "--file-selection", "--save", "--confirm-overwrite",
+            "--title=Save file as",
+            "--filename=" + default_filename,
+            "--file-filter=TSV files | *.tsv",
+            "--file-filter=All files | *",
         ]
     else:
         cmd = [
@@ -39,6 +52,13 @@ def _open_file_dialog():
             'POSIX path of (choose file of type {"trees"} '
             'with prompt "Select a .trees file")',
         ]
+    elif _has_zenity():
+        cmd = [
+            "zenity", "--file-selection",
+            "--title=Select a .trees file",
+            "--file-filter=Trees files | *.trees",
+            "--file-filter=All files | *",
+        ]
     else:
         cmd = [
             sys.executable, "-c",
@@ -65,6 +85,13 @@ def _open_tsv_dialog():
             "osascript", "-e",
             'POSIX path of (choose file of type {"tsv","tab"} '
             'with prompt "Select a .tsv file")',
+        ]
+    elif _has_zenity():
+        cmd = [
+            "zenity", "--file-selection",
+            "--title=Select a .tsv file",
+            "--file-filter=TSV files | *.tsv",
+            "--file-filter=All files | *",
         ]
     else:
         cmd = [

@@ -9,13 +9,15 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "dash",
+    "dash-iconify",
     "dash-mantine-components",
     "dendropy>=5.0.8",
     "pandas",
     "plotly",
     "psutil>=7.0.0",
-    "scikit-learn",
     "numpy",
+    "scipy",
+    "kaleido",
 ]
 
 [project.scripts]

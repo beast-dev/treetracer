@@ -8,7 +8,9 @@ This module provides the main API for TreeTracer's tree processing functionality
 """
 
 from typing import List, Dict, Any, Optional
+import json
 import time
+import pandas as pd
 from .process_trees import process_nexus_trees_streaming
 from .tree_manager import get_tree_manager
 
@@ -45,8 +47,6 @@ class TreeService:
         """
         if file_source is None:
             file_source = nexus_file_path.split('/')[-1]
-        
-        trees_data = []
         
         try:
             start_time = time.time()
@@ -206,52 +206,70 @@ class TreeService:
             'ready_for_analysis': True
         }
     
-    def get_available_files(self) -> List[str]:
-        """Get list of all loaded file sources.
-        
-        Returns:
-            List of file source identifiers currently in database
-        """
-        stats = self.db_manager.get_database_stats()
-        return list(stats.get('trees_per_file', {}).keys())
-    
-    def get_available_groups(self) -> List[str]:
-        """Get list of all available group names.
-        
-        Returns:
-            List of group identifiers currently in database
-        """
-        stats = self.db_manager.get_database_stats()
-        return list(stats.get('trees_per_group', {}).keys())
-    
-    def get_database_summary(self) -> Dict[str, Any]:
-        """Get comprehensive database statistics and metadata.
-        
-        Returns:
-            Dict with current database state including tree counts,
-            file sources, groups, and distribution statistics
-        """
-        stats = self.db_manager.get_database_stats()
-        
-        return {
-            'total_trees': stats.get('total_trees', 0),
-            'number_of_files': len(stats.get('trees_per_file', {})),
-            'number_of_groups': len(stats.get('trees_per_group', {})),
-            'files': list(stats.get('trees_per_file', {}).keys()),
-            'groups': list(stats.get('trees_per_group', {}).keys()),
-            'trees_per_file': stats.get('trees_per_file', {}),
-            'trees_per_group': stats.get('trees_per_group', {})
-        }
-    
-    def clear_database(self, file_source: Optional[str] = None) -> None:
-        """Clear trees from database with optional file filtering.
-        
+    def get_metadata_traces(self, file_sources: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+        """Extract numeric time-series fields from tree metadata.
+
+        Scans tree metadata for known log-likelihood / posterior fields and
+        returns one DataFrame per field found.
+
         Args:
-            file_source: If provided, only clear trees from this file.
-                        If None, clear entire database.
+            file_sources: Restrict to these files (None = all loaded files).
+
+        Returns:
+            Dict mapping field name to DataFrame with columns:
+            treenum, value, group, file_source.
         """
-        self.db_manager.clear_trees(file_source)
-    
+        self.db_manager.flush()
+        df = self.db_manager._trees
+
+        if file_sources:
+            df = df[df['file_source'].isin(file_sources)]
+
+        if len(df) == 0:
+            return {}
+
+        # Known numeric metadata keys (BEAST / MrBayes conventions)
+        target_fields = {'lnP', 'loglikelihood', 'lnL', 'posterior', 'joint'}
+
+        # Parse metadata JSON and collect values
+        records = []
+        for _, row in df.iterrows():
+            meta = row['metadata']
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(meta, dict):
+                continue
+            for field in target_fields:
+                if field in meta:
+                    try:
+                        val = float(meta[field])
+                    except (ValueError, TypeError):
+                        continue
+                    records.append({
+                        'id': int(row['id']),
+                        'field': field,
+                        'value': val,
+                        'group': row['group_name'],
+                        'file_source': row['file_source'],
+                    })
+
+        if not records:
+            return {}
+
+        all_df = pd.DataFrame(records)
+
+        # Build per-field DataFrames with treenum = cumulative count per group
+        result = {}
+        for field_name, field_df in all_df.groupby('field'):
+            field_df = field_df.sort_values('id')
+            field_df['treenum'] = field_df.groupby('group').cumcount() + 1
+            result[field_name] = field_df[['treenum', 'value', 'group', 'file_source']].reset_index(drop=True)
+
+        return result
+
     def prepare_trees_for_rf_analysis(self, sampled_trees: List[Dict[str, Any]]) -> List[str]:
         """Extract newick strings for Robinson-Foulds distance computation.
         
@@ -263,30 +281,6 @@ class TreeService:
         """
         return [tree['newick'] for tree in sampled_trees]
     
-    def prepare_metadata_for_mds(self, sampled_trees: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Extract metadata for MDS visualization and plotting.
-        
-        Prepares tree identifiers, groupings, and annotations for use
-        in downstream MDS computation and Plotly visualization.
-        
-        Args:
-            sampled_trees: List of tree dictionaries from get_sample_for_analysis
-            
-        Returns:
-            Dict with organized metadata including:
-            - tree_names: Individual tree identifiers
-            - tree_ids: Database IDs for reference
-            - file_sources: Source file groupings for coloring
-            - group_names: Phylogenetic group classifications
-            - metadata: Raw metadata for additional analysis
-        """
-        return {
-            'tree_names': [tree['name'] for tree in sampled_trees],
-            'tree_ids': [tree['id'] for tree in sampled_trees],
-            'file_sources': [tree['file_source'] for tree in sampled_trees],
-            'group_names': [tree.get('group_name', 'Unknown') for tree in sampled_trees],
-            'metadata': [tree.get('metadata', {}) for tree in sampled_trees]
-        }
 
 
 # Global instance

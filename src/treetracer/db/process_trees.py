@@ -99,6 +99,15 @@ def _parse_translate_block(preamble_text: str) -> Dict[str, str]:
     return translate_map
 
 
+def _extract_tip_labels(newick: str) -> set:
+    """Extract tip (leaf) labels from a newick string.
+
+    Tips appear after '(' or ',' and before ':', ',', ')', or '['.
+    Internal node labels (after ')') are excluded by this pattern.
+    """
+    return set(re.findall(r'(?<=[(,])\s*([^\s():,\[\]]+)', newick))
+
+
 def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                                   batch_size: int = 200, transaction_size: int = 1000) -> int:
     """Stream a nexus file, storing newick byte offsets instead of strings.
@@ -148,7 +157,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
             byte_pos += len(raw_line)
 
             stripped = raw_line.strip()
-            if not stripped.startswith(b'tree '):
+            if not stripped.lower().startswith(b'tree '):
                 # Accumulate preamble lines until first tree line
                 if not preamble_captured:
                     preamble_bytes += raw_line
@@ -180,6 +189,17 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
             newick_start_in_stripped = eq_pos + 3
             newick_bytes = stripped[newick_start_in_stripped:]
             newick_length = len(newick_bytes)
+
+            # Fallback: if no Translate block, extract taxa from first tree
+            if tree_count == 0 and not translate_map:
+                newick_str = newick_bytes.decode('utf-8', errors='replace').rstrip(';')
+                tips = _extract_tip_labels(newick_str)
+                translate_map = {name: name for name in sorted(tips)}
+                if hasattr(db_manager, 'set_source_preamble'):
+                    db_manager.set_source_preamble(
+                        file_source, preamble_bytes, translate_map
+                    )
+                print(f"No Translate block; extracted {len(translate_map)} taxa from first tree")
 
             leading_ws = len(raw_line) - len(raw_line.lstrip())
             newick_offset = line_start + leading_ws + newick_start_in_stripped

@@ -720,7 +720,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "plotly" },
     { name = "psutil", specifier = ">=7.0.0" },
-    { name = "rapidtrees", specifier = ">=0.3.0" },
+    { name = "rapidtrees", specifier = "==0.3.0" },
     { name = "scipy" },
 ]
 

@@ -1,4 +1,4 @@
-"""Robinson-Foulds distance computation backed by rust_python_tree_distances.
+"""Robinson-Foulds distance computation backed by rapidtrees.
 
 Provides rf_distance_from_newicks for trees already in memory (newick strings
 + translate map), returning (names, matrix) where matrix is a symmetric
@@ -7,7 +7,7 @@ list-of-lists of ints.
 
 from typing import Dict, List, Tuple
 
-import rust_python_tree_distances as rtd
+import rapidtrees
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def rf_distance_from_newicks(
     """
     if map_indices is None:
         map_indices = [0] * len(newicks)
-    return rtd.pairwise_rf_from_newicks(
+    return rapidtrees.pairwise_rf_from_newicks(
         names, newicks, translate_maps, map_indices, rooted=rooted,
     )
 

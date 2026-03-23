@@ -80,9 +80,18 @@ def _add_diagnostics_panel():
                 dmc.Group([
                     dmc.Title("Log-Likelihood Trace", order=5),
                     dmc.Badge("from tree metadata", variant="light", size="sm"),
+                    dmc.NumberInput(
+                        id="lnl-burnin-input",
+                        label="Burnin",
+                        value=0,
+                        min=0,
+                        step=100,
+                        size="xs",
+                        w=120,
+                    ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm"),
+                ], gap="sm", align="center"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -120,6 +129,15 @@ def _add_diagnostics_panel():
                         size="sm",
                         disabled=True,
                     ),
+                    dmc.NumberInput(
+                        id="rf-burnin-input",
+                        label="Burnin",
+                        value=0,
+                        min=0,
+                        step=100,
+                        size="xs",
+                        w=120,
+                    ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
                 ], align="center", gap="md"),
@@ -130,6 +148,77 @@ def _add_diagnostics_panel():
                     parent_style={"minHeight": "200px"},
                 ),
             ], p="md", withBorder=True, radius="sm"),
+        ], gap="md"),
+    ], style={"padding": "10px"})
+
+
+def _add_within_run_panel():
+    """Build the Within-run Analysis tab panel content."""
+    return html.Div([
+        dmc.Stack([
+            # Run selection and info
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Select(
+                        id="within-run-select",
+                        label="Select Run",
+                        placeholder="No files loaded",
+                        data=[],
+                        value=None,
+                        w=300,
+                    ),
+                    dmc.Button(
+                        "Compute RF + MDS",
+                        id="within-run-compute-button",
+                        variant="filled",
+                        color="green",
+                        size="md",
+                        disabled=True,
+                        style={"alignSelf": "flex-end"},
+                    ),
+                ], align="flex-end", gap="lg"),
+                dmc.Space(h=10),
+                html.Div(id="within-run-info"),
+            ], p="md", withBorder=True, radius="sm"),
+
+            # Plot controls (options populated by compute callback)
+            dmc.Paper(
+                dmc.Group([
+                    dmc.Select(label="X", id="within-run-dim-x",
+                               data=[], value=None, size="xs", w=120),
+                    dmc.Select(label="Y", id="within-run-dim-y",
+                               data=[], value=None, size="xs", w=120),
+                    dmc.Select(label="Z", id="within-run-dim-z",
+                               data=[], value=None, size="xs", w=120),
+                    dmc.Stack([
+                        dmc.Text("Tree Number Range:", size="sm", fw=500),
+                        dmc.RangeSlider(
+                            id="within-run-treenum-slider",
+                            min=1, max=100, value=[1, 100],
+                            minRange=1, step=1,
+                            styles={"label": {"top": "unset", "bottom": "-2rem"}},
+                        ),
+                    ], gap="xs", style={"flex": 1}),
+                    dmc.NumberInput(
+                        id="within-run-min-range",
+                        label="Min range",
+                        value=1, min=1, max=100, step=10,
+                        size="xs", w=100,
+                    ),
+                    dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
+                    dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),
+                    dmc.Button("Reset Axes", id="within-run-reset-button",
+                               variant="outline", color="gray", size="md"),
+                ], align="flex-end", gap="lg"),
+                id="within-run-controls-paper",
+                withBorder=True, p="md", radius="sm", mb="sm",
+                style={"display": "none"},
+            ),
+
+            # Single graph with 3 subplots (matched axes for synced zoom/pan)
+            dcc.Graph(figure={}, id="within-run-graph",
+                      style={"height": "calc(100vh - 380px)"},
+                      config={"doubleClick": False}),
         ], gap="md"),
     ], style={"padding": "10px"})
 
@@ -228,13 +317,7 @@ def add_main_body():
                 value="compute",
             ),
             dmc.TabsPanel(html.Div(id="plot-display"), value="treespace"),
-            dmc.TabsPanel(
-                html.Div(
-                    dmc.Text("Within-run analysis coming soon.", c="dimmed", size="sm"),
-                    style={"padding": "20px"},
-                ),
-                value="within-run",
-            ),
+            dmc.TabsPanel(_add_within_run_panel(), value="within-run"),
             dmc.TabsPanel(_add_diagnostics_panel(), value="diagnostics"),
         ],
         id="main-tabs",
@@ -314,6 +397,9 @@ def add_navbar():
                     dcc.Store(id="tree-offset-store", storage_type="memory"),
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
+                    dcc.Store(id="within-run-mds-store", storage_type="memory"),
+                    dcc.Store(id="within-run-highlight-store", storage_type="memory"),
+                    dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),

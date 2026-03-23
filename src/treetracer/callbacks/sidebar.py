@@ -44,9 +44,15 @@ def register_sidebar_callbacks():
             add_log(msg, "ERROR")
             return no_update, msg, {"display": "block"}, no_update, no_update, False
 
+        # If a file with the same name is already loaded, append _N suffix before the extension
+        original_filename = filename
         if filename in stored_summaries:
-            add_log(f"File {filename} already loaded, skipping", "WARNING")
-            return no_update, no_update, no_update, no_update, no_update, False
+            name_base, name_ext = os.path.splitext(filename)
+            n = 2
+            while f"{name_base}_{n}{name_ext}" in stored_summaries:
+                n += 1
+            filename = f"{name_base}_{n}{name_ext}"
+            add_log(f"File with name '{original_filename}' already loaded. Using '{filename}' as group name.", "WARNING")
 
         print(f"Loading {filename}...")
         add_log(f"Loading {filename}...")
@@ -108,22 +114,26 @@ def register_sidebar_callbacks():
                         )
                         add_log(f"Taxa mismatch warning: {taxa_warning}", "WARNING")
 
+                rename_note = ""
+                if filename != original_filename:
+                    rename_note = f" (renamed from '{original_filename}')"
+
                 if taxa_warning:
                     notification = dmc.Notification(
                         title="Trees Loaded — Taxa Mismatch",
-                        message=f"Loaded {result['trees_loaded']} trees from {filename}. WARNING: {taxa_warning}",
+                        message=f"Loaded {result['trees_loaded']} trees as '{filename}'{rename_note}. WARNING: {taxa_warning}",
                         color="yellow",
                         action="show",
-                        autoClose=3000,
+                        autoClose=5000,
                         id="load-notification",
                     )
                 else:
                     notification = dmc.Notification(
-                        title="Trees Loaded",
-                        message=f"Loaded {result['trees_loaded']} trees from {filename}.",
-                        color="green",
+                        title="Trees Loaded" if not rename_note else "Trees Loaded (Renamed)",
+                        message=f"Loaded {result['trees_loaded']} trees as '{filename}'{rename_note}.",
+                        color="green" if not rename_note else "yellow",
                         action="show",
-                        autoClose=3000,
+                        autoClose=5000 if rename_note else 3000,
                         id="load-notification",
                     )
                 return stored_summaries, "", {"display": "none"}, no_update, notification, False
@@ -383,6 +393,10 @@ def register_sidebar_callbacks():
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
+        Output("within-run-mds-store", "data", allow_duplicate=True),
+        Output("within-run-treenum-range-store", "data", allow_duplicate=True),
+        Output("within-run-controls-paper", "style", allow_duplicate=True),
+        Output("within-run-info", "children", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -427,5 +441,9 @@ def register_sidebar_callbacks():
                 True,            # compute-rf-trace-button disabled
                 True,            # export-lnl-trace-button disabled
                 True,            # export-rf-trace-button disabled
+                None,            # within-run-mds-store
+                None,            # within-run-treenum-range-store
+                {"display": "none"},  # within-run-controls-paper style
+                html.Div(),      # within-run-info
             )
-        return (no_update,) * 17
+        return (no_update,) * 21

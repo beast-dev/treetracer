@@ -142,7 +142,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
     preamble_bytes = b''
 
     start_time = time.time()
-    base_filename = os.path.splitext(os.path.basename(nexus_file))[0]
+    base_filename = os.path.splitext(file_source)[0]
 
     db_manager.get_connection().execute("BEGIN TRANSACTION")
 

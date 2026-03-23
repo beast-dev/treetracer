@@ -12,14 +12,81 @@ from ..db.tree_service import get_tree_service
 from ._helpers import _save_file_dialog
 
 
+def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
+    """Build the RF trace figure with optional burnin zoom."""
+    all_groups = sorted(trace_df['group'].unique().tolist())
+    colors = px.colors.qualitative.Dark24[:len(all_groups)]
+    color_map = dict(zip(all_groups, colors))
+
+    fig = make_subplots(
+        rows=1, cols=2, shared_yaxes=True,
+        column_widths=[0.8, 0.2],
+        horizontal_spacing=0.02,
+    )
+
+    value_col = 'rf_distance'
+
+    for group in all_groups:
+        gdf = trace_df[trace_df['group'] == group]
+        vals = gdf[value_col].values.astype(float)
+        fig.add_trace(go.Scatter(
+            x=gdf['treenum'], y=vals,
+            mode='lines', name=group,
+            line=dict(color=color_map[group], width=1),
+            legendgroup=group,
+        ), row=1, col=1)
+
+        # KDE: use post-burnin values if burnin is set
+        kde_vals = vals
+        if burnin > 0:
+            post = gdf[gdf['treenum'] > burnin][value_col].values.astype(float)
+            if len(post) > 1:
+                kde_vals = post
+
+        if len(kde_vals) > 1 and np.std(kde_vals) > 0:
+            kde = gaussian_kde(kde_vals)
+            y_grid = np.linspace(kde_vals.min(), kde_vals.max(), 200)
+            density = kde(y_grid)
+            fig.add_trace(go.Scatter(
+                x=density, y=y_grid, mode='lines',
+                line=dict(color=color_map[group], width=1),
+                fill='tozerox', opacity=0.3,
+                legendgroup=group, showlegend=False,
+            ), row=1, col=2)
+
+    # Apply burnin zoom
+    if burnin > 0:
+        post_burnin = trace_df[trace_df['treenum'] > burnin]
+        if len(post_burnin) > 0:
+            max_treenum = int(trace_df['treenum'].max())
+            fig.update_xaxes(range=[burnin, max_treenum], row=1, col=1)
+            all_post = post_burnin[value_col].values.astype(float)
+            ymin, ymax = all_post.min(), all_post.max()
+            ypad = (ymax - ymin) * 0.05 if ymax > ymin else 1.0
+            fig.update_yaxes(range=[ymin - ypad, ymax + ypad], row=1, col=1)
+
+    ref_label = f"{ref_position} tree of {ref_group}"
+    fig.update_layout(
+        template="simple_white",
+        xaxis_title="Tree number",
+        yaxis_title=f"RF distance to {ref_label}",
+        xaxis2_title="Density",
+        margin=dict(l=60, r=20, t=30, b=40),
+        height=300,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
 def register_diagnostics_callbacks():
     @callback(
         Output("lnl-trace-plot", "children"),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
         Input("tree-offset-store", "data"),
+        Input("lnl-burnin-input", "value"),
         prevent_initial_call=True,
     )
-    def update_lnl_trace(stored_summaries):
+    def update_lnl_trace(stored_summaries, burnin):
         """Render log-likelihood trace plot when trees are loaded/changed."""
         if not stored_summaries:
             return dmc.Text(
@@ -81,6 +148,49 @@ def register_diagnostics_callbacks():
                     legendgroup=group,
                     showlegend=False,
                 ), row=1, col=2)
+
+        # Apply burnin: filter data for KDE and set x-axis range
+        try:
+            burnin = int(burnin) if burnin else 0
+        except (ValueError, TypeError):
+            burnin = 0
+        if burnin > 0:
+            post_burnin = trace_df[trace_df['treenum'] > burnin]
+            if len(post_burnin) > 0:
+                # Recompute KDE using only post-burnin values
+                fig.data = []  # clear traces, rebuild with filtered KDE
+                for group in groups:
+                    gdf = trace_df[trace_df['group'] == group]
+                    vals = gdf['value'].values
+                    # Trace line: show all data (full range)
+                    fig.add_trace(go.Scatter(
+                        x=gdf['treenum'], y=vals,
+                        mode='lines', name=group,
+                        line=dict(color=color_map[group], width=1),
+                        legendgroup=group,
+                    ), row=1, col=1)
+                    # KDE: only post-burnin
+                    post_vals = gdf[gdf['treenum'] > burnin]['value'].values
+                    if len(post_vals) > 1 and np.std(post_vals) > 0:
+                        kde = gaussian_kde(post_vals)
+                        y_grid = np.linspace(post_vals.min(), post_vals.max(), 200)
+                        density = kde(y_grid)
+                        fig.add_trace(go.Scatter(
+                            x=density, y=y_grid, mode='lines',
+                            line=dict(color=color_map[group], width=1),
+                            fill='tozerox', opacity=0.3,
+                            legendgroup=group, showlegend=False,
+                        ), row=1, col=2)
+
+                # Zoom x-axis to post-burnin range
+                max_treenum = int(trace_df['treenum'].max())
+                fig.update_xaxes(range=[burnin, max_treenum], row=1, col=1)
+
+                # Zoom y-axis to post-burnin value range with 5% padding
+                all_post = post_burnin['value'].values
+                ymin, ymax = all_post.min(), all_post.max()
+                ypad = (ymax - ymin) * 0.05 if ymax > ymin else 1.0
+                fig.update_yaxes(range=[ymin - ypad, ymax + ypad], row=1, col=1)
 
         fig.update_layout(
             template="simple_white",
@@ -222,8 +332,11 @@ def register_diagnostics_callbacks():
         ref_distances = distmat_dict[ref_name]
 
         # --- Look up RF distance for every tree from the pre-computed matrix ---
+        # Exclude the reference tree itself (RF=0 skews the axes)
         all_records = []
         for tree_name, group, file_source in zip(tree_names, tree_groups, tree_file_sources):
+            if tree_name == ref_name:
+                continue
             if tree_name not in ref_distances:
                 add_log(f"Tree '{tree_name}' not found in distance matrix, skipping.", "WARNING")
                 continue
@@ -240,62 +353,17 @@ def register_diagnostics_callbacks():
         trace_df = pd.DataFrame(all_records)
         trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
 
-        # Build plot
-        all_groups = sorted(trace_df['group'].unique().tolist())
-        colors = px.colors.qualitative.Dark24[:len(all_groups)]
-        color_map = dict(zip(all_groups, colors))
-
-        fig = make_subplots(
-            rows=1, cols=2, shared_yaxes=True,
-            column_widths=[0.8, 0.2],
-            horizontal_spacing=0.02,
-        )
-        for group in all_groups:
-            gdf = trace_df[trace_df['group'] == group]
-            vals = gdf['rf_distance'].values.astype(float)
-            fig.add_trace(go.Scatter(
-                x=gdf['treenum'],
-                y=vals,
-                mode='lines',
-                name=group,
-                line=dict(color=color_map[group], width=1),
-                legendgroup=group,
-            ), row=1, col=1)
-            if len(vals) > 1 and np.std(vals) > 0:
-                kde = gaussian_kde(vals)
-                y_grid = np.linspace(vals.min(), vals.max(), 200)
-                density = kde(y_grid)
-                fig.add_trace(go.Scatter(
-                    x=density, y=y_grid,
-                    mode='lines',
-                    line=dict(color=color_map[group], width=1),
-                    fill='tozerox',
-                    opacity=0.3,
-                    legendgroup=group,
-                    showlegend=False,
-                ), row=1, col=2)
-
-        ref_label = f"{ref_position} tree of {ref_group}"
-        fig.update_layout(
-            template="simple_white",
-            xaxis_title="Tree number",
-            yaxis_title=f"RF distance to {ref_label}",
-            xaxis2_title="Density",
-            margin=dict(l=60, r=20, t=30, b=40),
-            height=300,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
+        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0)
 
         notification = dmc.Notification(
             title="RF Trace Computed",
-            message=f"Computed RF distances for {len(all_records)} trees to {ref_label}.",
+            message=f"Computed RF distances for {len(all_records)} trees to {ref_position} tree of {ref_group}.",
             color="green",
             action="show",
             autoClose=3000,
             id="rf-trace-notification",
         )
 
-        # Store result for potential reuse
         store_data = trace_df.to_dict("records")
 
         return (
@@ -304,6 +372,27 @@ def register_diagnostics_callbacks():
             notification,
             False,
         )
+
+    # Re-render RF trace plot when burnin changes
+    @callback(
+        Output("rf-trace-plot", "children", allow_duplicate=True),
+        Input("rf-burnin-input", "value"),
+        State("rf-trace-store", "data"),
+        State("rf-reference-group-select", "value"),
+        State("rf-reference-position-select", "value"),
+        prevent_initial_call=True,
+    )
+    def update_rf_trace_burnin(burnin, store_data, ref_group, ref_position):
+        if not store_data:
+            return no_update
+        try:
+            burnin = int(burnin) if burnin else 0
+        except (ValueError, TypeError):
+            burnin = 0
+
+        trace_df = pd.DataFrame(store_data)
+        fig = _build_rf_trace_fig(trace_df, ref_group or "", ref_position or "last", burnin)
+        return dcc.Graph(id="rf-trace-graph", figure=fig, config={"displayModeBar": False})
 
     # ------ EXPORT DIAGNOSTICS PLOTS AS PDF ------
 

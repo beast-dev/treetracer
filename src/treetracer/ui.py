@@ -229,7 +229,7 @@ def add_main_body():
             dmc.TabsList(
                 [
                     dmc.TabsTab("Compute Distances", value="compute"),
-                    dmc.TabsTab("Tree Space", value="treespace"),
+                    dmc.TabsTab("Between-run Analysis", value="treespace"),
                     dmc.TabsTab("Within-run Analysis", value="within-run"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
                 ],

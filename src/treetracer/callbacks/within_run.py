@@ -50,7 +50,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                 marker=dict(color="lightgrey", size=5, opacity=0.4),
                 hoverinfo="skip",
                 showlegend=False,
-                customdata=df_out[["treenum"]].values.tolist(),
+                customdata=list(zip(df_out["treenum"], df_out["tree"].str.split("/").str[-1].str.strip())),
             ), row=row, col=col)
 
         # In-range points: colored by treenum gradient or flat color
@@ -69,8 +69,8 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                 mode=mode,
                 marker=marker_dict,
                 line=dict(color="rgba(120,120,120,0.4)", width=1),
-                hovertemplate="Tree: %{customdata[0]}<extra></extra>",
-                customdata=df_in[["treenum"]].values.tolist(),
+                hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra></extra>",
+                customdata=list(zip(df_in["treenum"], df_in["tree"].str.split("/").str[-1].str.strip())),
                 showlegend=False,
             ), row=row, col=col)
 
@@ -86,8 +86,8 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                         color="rgba(0,0,0,0)",
                         line=dict(color="red", width=3),
                     ),
-                    customdata=sel[["treenum"]].values.tolist(),
-                    hovertemplate=f"Tree: {highlighted_treenum}<extra>selected</extra>",
+                    customdata=list(zip(sel["treenum"], sel["tree"].str.split("/").str[-1].str.strip())),
+                    hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
                     showlegend=False,
                 ), row=row, col=col)
 

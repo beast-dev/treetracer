@@ -9,6 +9,7 @@ import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
+from ..state import distmat as _server_distmat
 from ._helpers import _save_file_dialog
 
 
@@ -237,12 +238,12 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return no_update, no_update
 
-        # Extract tree names from the first (only) distance matrix
-        distmat_dict = next(iter(stored_distmats.values()), None)
-        if not distmat_dict:
+        # Extract tree names from the first (only) distance matrix (compact format)
+        compact = next(iter(stored_distmats.values()), None)
+        if not compact or "names" not in compact:
             return no_update, no_update
 
-        tree_names = list(distmat_dict.keys())
+        tree_names = compact["names"]
         all_groups = sorted(set(
             name.rsplit("/", 1)[0] for name in tree_names if "/" in name
         ))
@@ -286,12 +287,21 @@ def register_diagnostics_callbacks():
                 no_update,
             )
 
-        # Get the single distance matrix (stored under the first key)
-        distmat_dict = next(iter(stored_distmats.values()))
+        # Names from the store, matrix from server-side state (too large for JSON)
+        compact = next(iter(stored_distmats.values()))
+        distmat_names = compact["names"]
+        distmat_matrix = _server_distmat["matrix"]
+        if distmat_matrix is None:
+            return (
+                dmc.Text("Distance matrix not available. Please recompute RF distances.", c="red"),
+                no_update, no_update, no_update,
+            )
+        # Build name→index lookup for O(1) distance access
+        name_to_idx = {n: i for i, n in enumerate(distmat_names)}
 
         add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}' (using pre-computed matrix)...")
 
-        # Build ordered tree list: prefer DB if trees are loaded, otherwise derive from distmat keys
+        # Build ordered tree list: prefer DB if trees are loaded, otherwise derive from distmat names
         tree_service = get_tree_service()
         tree_service.db_manager.flush()
         all_df = tree_service.db_manager._trees
@@ -303,8 +313,8 @@ def register_diagnostics_callbacks():
             tree_groups = all_df['group_name'].tolist()
             tree_file_sources = all_df['file_source'].tolist()
         else:
-            # No tree files loaded — derive from distance matrix keys
-            tree_names = list(distmat_dict.keys())
+            # No tree files loaded — derive from distance matrix names
+            tree_names = distmat_names
             tree_groups = [
                 name.rsplit("/", 1)[0] if "/" in name else name
                 for name in tree_names
@@ -324,12 +334,12 @@ def register_diagnostics_callbacks():
         ref_name = ref_trees_in_group[0] if ref_position == "first" else ref_trees_in_group[-1]
         add_log(f"Reference tree: name='{ref_name}' ({ref_position} of group '{ref_group}')")
 
-        if ref_name not in distmat_dict:
+        if ref_name not in name_to_idx:
             msg = f"Reference tree '{ref_name}' not found in distance matrix."
             add_log(msg, "ERROR")
             return dmc.Text(msg, c="red"), no_update, no_update, no_update
 
-        ref_distances = distmat_dict[ref_name]
+        ref_idx = name_to_idx[ref_name]
 
         # --- Look up RF distance for every tree from the pre-computed matrix ---
         # Exclude the reference tree itself (RF=0 skews the axes)
@@ -337,11 +347,12 @@ def register_diagnostics_callbacks():
         for tree_name, group, file_source in zip(tree_names, tree_groups, tree_file_sources):
             if tree_name == ref_name:
                 continue
-            if tree_name not in ref_distances:
+            if tree_name not in name_to_idx:
                 add_log(f"Tree '{tree_name}' not found in distance matrix, skipping.", "WARNING")
                 continue
+            tree_idx = name_to_idx[tree_name]
             all_records.append({
-                'rf_distance': int(float(ref_distances[tree_name])),
+                'rf_distance': int(float(distmat_matrix[ref_idx][tree_idx])),
                 'group': group,
                 'name': tree_name,
                 'file_source': file_source,

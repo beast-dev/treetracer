@@ -4,6 +4,7 @@ import os
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
+from ..state import clear_distmat as _clear_server_distmat
 from ._helpers import _open_file_dialog
 
 
@@ -403,6 +404,8 @@ def register_sidebar_callbacks():
     def clear_uploads(n_clicks):
         if n_clicks:
             add_log("Data cleared")
+            # Clear server-side distance matrix
+            _clear_server_distmat()
             # Also clear the tree service database
             try:
                 tree_service = get_tree_service()

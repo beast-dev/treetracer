@@ -1,11 +1,28 @@
 from dash import html, callback, Input, Output, State, no_update, ALL
 import dash_mantine_components as dmc
 import os
+from concurrent.futures import ProcessPoolExecutor
 import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
+from ..state import distmat as _server_distmat, clear_distmat as _clear_server_distmat
 from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
+
+
+# Separate-process computation — has its own GIL, so the main process stays responsive.
+# The executor is created lazily to avoid spawning processes at import time.
+_executor = None
+_rf_future = None   # concurrent.futures.Future for RF job
+_mds_future = None  # concurrent.futures.Future for MDS job
+_mds_meta = {}      # metadata needed by poll_mds_completion to build the result
+
+
+def _get_executor():
+    global _executor
+    if _executor is None:
+        _executor = ProcessPoolExecutor(max_workers=1)
+    return _executor
 
 
 def register_compute_callbacks():
@@ -58,24 +75,21 @@ def register_compute_callbacks():
 
         return table, False
 
-    # Callback to validate taxa and trigger RF computation
+    # Callback to validate taxa, extract data, and start RF computation in background
     @callback(
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-rf-output", "children"),
-        Output("distmat-store", "data", allow_duplicate=True),
-        Output("export-rf-button", "disabled"),
-        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled"),
+        Output("compute-rf-button", "disabled", allow_duplicate=True),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
         State("tree-offset-store", "data"),
-        State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries,
-                          stored_distmats):
+    def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         # Determine which files are selected
         selected_files = [
@@ -96,7 +110,7 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update, no_update
+            ), no_update, no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -120,21 +134,20 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id="compute-rf-notification",
-            ), no_update, no_update, no_update, no_update
+            ), no_update, no_update, no_update
 
-        # --- All taxa counts match — run RF computation ---
+        # --- All taxa counts match — extract data then submit RF to subprocess ---
         n_taxa = unique_counts.pop()
         add_log(f"Taxa validation passed: all {len(selected_files)} files have {n_taxa} taxa")
 
         tree_service = get_tree_service()
 
-        # Compute total trees across selected files
+        # Data extraction (disk I/O, fast — runs in main process)
         total_trees = sum(
             stored_summaries[f].get("total_trees", 0) for f in selected_files
         )
         add_log(f"Fetching all {total_trees} trees from {len(selected_files)} files...")
 
-        # Fetch all trees from selected files
         sample = tree_service.get_sample_for_analysis(
             file_sources=selected_files,
             sample_size=total_trees,
@@ -147,19 +160,13 @@ def register_compute_callbacks():
             msg = "Not enough trees retrieved for RF computation."
             add_log(msg, "ERROR")
             return dmc.Notification(
-                title="RF Error",
-                message=msg,
-                color="red",
-                action="show",
-                autoClose=6000,
-                id="compute-rf-notification",
-            ), no_update, no_update, no_update, no_update
+                title="RF Error", message=msg, color="red",
+                action="show", autoClose=6000, id="compute-rf-notification",
+            ), no_update, no_update, no_update
 
-        # Build names, newicks, translate maps, and map indices
         names = [t["name"] for t in sampled_trees]
         newicks = tree_service.prepare_trees_for_rf_analysis(sampled_trees)
 
-        # Collect unique translate maps and build per-tree map indices
         translate_maps = []
         file_to_map_idx = {}
         for fname in selected_files:
@@ -173,63 +180,29 @@ def register_compute_callbacks():
         ]
 
         add_log(
-            f"Starting RF computation: {len(names)} trees, "
+            f"Starting RF computation in background process: {len(names)} trees, "
             f"{len(translate_maps)} translate map(s), {n_taxa} taxa"
         )
 
-        try:
-            import time as _time
-            t0 = _time.time()
-
-            from ..rf.rf import rf_distance_from_newicks, matrix_to_dict
-
-            result_names, matrix = rf_distance_from_newicks(
-                names, newicks, translate_maps, map_indices, rooted=False,
-            )
-            elapsed = _time.time() - t0
-            add_log(
-                f"RF computation complete: {len(result_names)} trees, "
-                f"{elapsed:.2f}s"
-            )
-        except Exception as e:
-            msg = f"RF computation failed: {e}"
-            add_log(msg, "ERROR")
-            return dmc.Notification(
-                title="RF Computation Error",
-                message=msg,
-                color="red",
-                action="show",
-                autoClose=6000,
-                id="compute-rf-notification",
-            ), dmc.Text(msg, c="red"), no_update, no_update, no_update
-
-        # Convert to dict-of-dicts and store in distmat-store (single matrix only)
-        distmat_dict = matrix_to_dict(result_names, matrix)
-        rf_filename = "RF_distances.tsv"
-
-        stored_distmats = {rf_filename: distmat_dict}
-        add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
-
-        notification = dmc.Notification(
-            title="RF Distances Computed",
-            message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id="compute-rf-notification",
+        # Submit RF computation to a separate process (own GIL — main process stays free)
+        from ..rf._worker import compute_rf
+        global _rf_future
+        _rf_future = _get_executor().submit(
+            compute_rf, names, newicks, translate_maps, map_indices,
         )
 
-        output_indicator = dmc.Alert(
-            title="RF Distance Matrix",
+        # Return immediately: show computing indicator, enable polling, disable button
+        computing_indicator = dmc.Alert(
+            title="Computing RF Distances...",
             children=dmc.Text(
-                f"{rf_filename}: {len(result_names)} x {len(result_names)} trees",
+                f"Computing {len(names)}x{len(names)} RF distance matrix in background. "
+                "You can interact with the app while this runs.",
                 size="sm",
             ),
-            color="green",
+            color="blue",
             variant="light",
         )
-
-        return notification, output_indicator, stored_distmats, False, False
+        return no_update, computing_indicator, False, True
 
     # ------ MDS SECTION ON COMPUTE TAB ------
 
@@ -243,108 +216,199 @@ def register_compute_callbacks():
         if not distmat_data:
             return True, dmc.Text("No distance matrix computed yet.", c="dimmed",style={"padding": "20px"})
         name = next(iter(distmat_data))
-        df = pd.DataFrame(distmat_data[name])
-        return False, dmc.Text(f"Distance matrix: {name} ({df.shape[0]}x{df.shape[1]})", c="green")
+        names = distmat_data[name]["names"]
+        n = len(names)
+        return False, dmc.Text(f"Distance matrix: {name} ({n}x{n})", c="green")
 
-    # Compute MDS from distance matrix
+    # Start MDS computation in background process
     @callback(
-        Output("mds-result-store", "data"),
         Output("compute-mds-output", "children"),
-        Output("notifications-container", "children", allow_duplicate=True),
-        Output("export-mds-button", "disabled"),
-        Output("plot-config-store", "data", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("compute-mds-button", "disabled", allow_duplicate=True),
         Input("compute-mds-button", "n_clicks"),
         State("distmat-store", "data"),
         prevent_initial_call=True,
     )
     def handle_compute_mds(n_clicks, distmat_data):
         if not n_clicks or not distmat_data:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         selected_distmat = next(iter(distmat_data))
-        add_log(f"Computing MDS from {selected_distmat}...")
+        tree_names = distmat_data[selected_distmat]["names"]
 
-        distmat_df_data = distmat_data[selected_distmat]
-        distmat_df = pd.DataFrame(distmat_df_data)
-        add_log(f"Distance matrix {selected_distmat}: {distmat_df.shape[0]}x{distmat_df.shape[1]}")
-
-        distance_matrix = distmat_df.values
-
-        if distance_matrix.shape[0] != distance_matrix.shape[1]:
-            msg = f"Distance matrix is not square: {distance_matrix.shape}"
+        if _server_distmat["matrix"] is None:
+            msg = "Distance matrix not available. Please recompute RF distances."
             add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update, no_update, no_update
+            return dmc.Text(msg, c="red"), no_update, no_update
 
-        try:
-            import time as _time
-            t0 = _time.time()
-            from treetracer.rf.mds import compute_mds
-            n_components = min(6, distance_matrix.shape[0] - 1)
-            add_log(f"Computing classical PCoA with {n_components} components...")
-            embedding = compute_mds(distance_matrix, n_components=n_components, algorithm="pcoa")
-            elapsed = _time.time() - t0
-            add_log(f"PCoA completed in {elapsed:.2f}s: {embedding.shape[0]} points in {embedding.shape[1]}D space")
-        except Exception as e:
-            msg = f"MDS computation failed: {str(e)}"
-            add_log(msg, "ERROR")
-            return no_update, dmc.Text(msg, c="red"), no_update, no_update, no_update
+        n = len(tree_names)
+        n_components = min(6, n - 1)
+        add_log(f"Computing MDS from {selected_distmat} ({n}x{n}) in background process...")
 
-        # Build MDS result dataframe
-        tree_names = distmat_df.index.astype(str).tolist()
-        mdscols = [f"MDS{i+1}" for i in range(n_components)]
+        # Store metadata for poll_completion to build the result
+        _mds_meta["tree_names"] = tree_names
+        _mds_meta["selected_distmat"] = selected_distmat
+        _mds_meta["n_components"] = n_components
 
-        mds_df = pd.DataFrame(embedding, columns=mdscols)
-        mds_df["tree"] = tree_names
-        mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("/")[0].strip())
-        mds_df["group"] = mds_df["group"].astype(str)
+        # Submit to subprocess
+        from ..rf._worker import compute_mds_worker
+        global _mds_future
+        _mds_future = _get_executor().submit(
+            compute_mds_worker, _server_distmat["matrix"], n_components,
+        )
 
-        group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
-        mds_df["group_col"] = mds_df["group"].map(group_mapping)
-        mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
-        mds_df["size"] = 6
-
-        mds_filename = selected_distmat.replace('.tsv', '_MDS.tsv')
-        mds_df["file"] = mds_filename
-
-        # Build metadata
-        metadata = {
-            "filename": mds_filename,
-            "source_distmat": selected_distmat,
-            "rows": len(mds_df),
-            "dimensions": mdscols,
-            "groups": mds_df["group"].unique().tolist(),
-            "MIN_TREENUM": int(mds_df["treenum"].min()),
-            "MAX_TREENUM": int(mds_df["treenum"].max()),
-        }
-
-        mds_result = {
-            "metadata": metadata,
-            "data": mds_df.to_dict("records"),
-        }
-
-        add_log(f"Created MDS result '{mds_filename}': {len(mds_df)} trees, {len(mds_df['group'].unique())} groups")
-
-        n_groups = len(mds_df["group"].unique())
-        output_indicator = dmc.Alert(
-            title="MDS Embedding",
+        computing_indicator = dmc.Alert(
+            title="Computing MDS Embedding...",
             children=dmc.Text(
-                f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups",
+                f"Computing PCoA with {n_components} components for {n} trees in background.",
                 size="sm",
             ),
             color="blue",
             variant="light",
         )
+        return computing_indicator, False, True
 
-        notification = dmc.Notification(
-            title="MDS Computed",
-            message=f"MDS embedding from {selected_distmat}: {len(mds_df)} points, {n_components} dimensions in {elapsed:.2f}s.",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id="compute-mds-notification",
-        )
+    # ------ UNIFIED POLL CALLBACK (RF + MDS) ------
+    # Single callback handles both RF and MDS completion to avoid
+    # duplicate-output conflicts from two callbacks sharing the same Input.
 
-        return mds_result, output_indicator, notification, False, {}
+    @callback(
+        # RF outputs
+        Output("compute-rf-output", "children", allow_duplicate=True),
+        Output("distmat-store", "data", allow_duplicate=True),
+        Output("export-rf-button", "disabled"),
+        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
+        Output("compute-rf-button", "disabled", allow_duplicate=True),
+        # MDS outputs
+        Output("mds-result-store", "data"),
+        Output("compute-mds-output", "children", allow_duplicate=True),
+        Output("export-mds-button", "disabled"),
+        Output("plot-config-store", "data", allow_duplicate=True),
+        Output("compute-mds-button", "disabled", allow_duplicate=True),
+        # Shared outputs
+        Output("notifications-container", "children", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Input("compute-poll-interval", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def poll_completion(n_intervals):
+        global _rf_future, _mds_future
+
+        # --- defaults: no change ---
+        rf_out = [no_update] * 5   # rf-output, distmat, export-rf, rf-trace-btn, rf-btn
+        mds_out = [no_update] * 5  # mds-store, mds-output, export-mds, plot-config, mds-btn
+        notif = no_update
+
+        # --- Check RF ---
+        if _rf_future is not None and _rf_future.done():
+            try:
+                result_names, matrix, elapsed = _rf_future.result()
+            except Exception as e:
+                msg = f"RF computation failed: {e}"
+                add_log(msg, "ERROR")
+                _rf_future = None
+                rf_out = [
+                    dmc.Text(msg, c="red"),  # compute-rf-output
+                    no_update,               # distmat-store
+                    no_update,               # export-rf-button
+                    no_update,               # compute-rf-trace-button
+                    False,                   # re-enable compute-rf-button
+                ]
+                notif = dmc.Notification(title="RF Computation Error", message=msg,
+                                         color="red", action="show", autoClose=6000,
+                                         id="compute-rf-notification")
+            else:
+                _rf_future = None
+                rf_filename = "RF_distances.tsv"
+                _server_distmat["names"] = result_names
+                _server_distmat["matrix"] = matrix
+                add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
+                add_log(f"RF computation took {elapsed:.2f}s")
+                rf_out = [
+                    dmc.Alert(title="RF Distance Matrix",
+                              children=dmc.Text(f"{rf_filename}: {len(result_names)} x {len(result_names)} trees", size="sm"),
+                              color="green", variant="light"),
+                    {rf_filename: {"names": result_names}},
+                    False,   # export-rf-button enabled
+                    False,   # compute-rf-trace-button enabled
+                    False,   # re-enable compute-rf-button
+                ]
+                notif = dmc.Notification(
+                    title="RF Distances Computed",
+                    message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
+                    color="green", action="show", autoClose=3000, id="compute-rf-notification")
+
+        # --- Check MDS ---
+        if _mds_future is not None and _mds_future.done():
+            try:
+                embedding_list, elapsed = _mds_future.result()
+            except Exception as e:
+                msg = f"MDS computation failed: {e}"
+                add_log(msg, "ERROR")
+                _mds_future = None
+                mds_out = [
+                    no_update,
+                    dmc.Text(msg, c="red"),
+                    no_update, no_update,
+                    False,   # re-enable mds button
+                ]
+                # Only overwrite notif if RF didn't already set one
+                if notif is no_update:
+                    notif = dmc.Notification(title="MDS Error", message=msg, color="red",
+                                             action="show", autoClose=6000, id="compute-mds-notification")
+            else:
+                _mds_future = None
+                tree_names = [str(n) for n in _mds_meta["tree_names"]]
+                selected_distmat = _mds_meta["selected_distmat"]
+                n_components = _mds_meta["n_components"]
+
+                mdscols = [f"MDS{i+1}" for i in range(n_components)]
+                mds_df = pd.DataFrame(embedding_list, columns=mdscols)
+                mds_df["tree"] = tree_names
+                mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("/")[0].strip())
+                mds_df["group"] = mds_df["group"].astype(str)
+                group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
+                mds_df["group_col"] = mds_df["group"].map(group_mapping)
+                mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
+                mds_df["size"] = 6
+                mds_filename = selected_distmat.replace('.tsv', '_MDS.tsv')
+                mds_df["file"] = mds_filename
+
+                metadata = {
+                    "filename": mds_filename, "source_distmat": selected_distmat,
+                    "rows": len(mds_df), "dimensions": mdscols,
+                    "groups": mds_df["group"].unique().tolist(),
+                    "MIN_TREENUM": int(mds_df["treenum"].min()),
+                    "MAX_TREENUM": int(mds_df["treenum"].max()),
+                }
+                mds_result = {"metadata": metadata, "data": mds_df.to_dict("records")}
+
+                n_groups = len(mds_df["group"].unique())
+                add_log(f"PCoA completed in {elapsed:.2f}s: {len(mds_df)} points, {n_components}D, {n_groups} groups")
+
+                mds_out = [
+                    mds_result,
+                    dmc.Alert(title="MDS Embedding",
+                              children=dmc.Text(f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups", size="sm"),
+                              color="blue", variant="light"),
+                    False,   # export-mds-button enabled
+                    {},      # plot-config-store reset
+                    False,   # re-enable mds button
+                ]
+                if notif is no_update:
+                    notif = dmc.Notification(
+                        title="MDS Computed",
+                        message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
+                        color="green", action="show", autoClose=3000, id="compute-mds-notification")
+
+        # --- Disable interval only when no jobs are pending ---
+        any_running = ((_rf_future is not None and not _rf_future.done()) or
+                       (_mds_future is not None and not _mds_future.done()))
+        should_disable = not any_running and (rf_out[0] is not no_update or mds_out[0] is not no_update)
+        # If nothing finished this tick, keep interval as-is
+        poll_disabled = should_disable if (rf_out[0] is not no_update or mds_out[0] is not no_update) else no_update
+
+        return (*rf_out, *mds_out, notif, poll_disabled)
 
     # ------ EXPORT CALLBACKS ------
 
@@ -361,7 +425,12 @@ def register_compute_callbacks():
         path = _save_file_dialog(default_filename=rf_filename)
         if not path:
             return no_update
-        df = pd.DataFrame(distmat_data[rf_filename])
+        names = distmat_data[rf_filename]["names"]
+        if _server_distmat["matrix"] is None:
+            add_log("No matrix available for export.", "ERROR")
+            return no_update
+        df = pd.DataFrame(_server_distmat["matrix"],
+                          index=names, columns=names)
         df.to_csv(path, sep="\t")
         add_log(f"Exported RF distance matrix to {path}")
         return dmc.Notification(
@@ -442,7 +511,10 @@ def register_compute_callbacks():
 
         filename = os.path.basename(file_path)
         stored_distmats = stored_distmats or {}
-        stored_distmats[filename] = df.to_dict()
+        names = list(df.index.astype(str))
+        _server_distmat["names"] = names
+        _server_distmat["matrix"] = df.values.tolist()
+        stored_distmats[filename] = {"names": names}
         add_log(f"Loaded RF distance matrix from {filename}: {df.shape[0]}x{df.shape[1]}")
 
         output_indicator = dmc.Alert(

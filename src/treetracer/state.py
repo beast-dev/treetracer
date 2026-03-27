@@ -1,21 +1,109 @@
 """Server-side state for data too large to send through dcc.Store.
 
-The RF distance matrix for n trees is n×n integers — for 4000 trees that's
-~80 MB of JSON. Sending this through Dash's callback response / dcc.Store
-(which serializes to JSON and transfers to the browser) is too slow and can
-crash browser tabs. Instead, the matrix lives here in Python memory, and
-only lightweight metadata (tree names, dimensions) goes through the store.
+RF distance matrices are stored on disk as uint16 numpy .npy files in a temp
+directory. For 4000 trees a matrix is ~32 MB on disk, reads in ~25 ms.
+Only lightweight metadata (tree names) goes through dcc.Store / JSON.
 """
 
-# Distance matrix: kept server-side, never serialized to JSON.
-# "names" is also stored in the dcc.Store for client-side group extraction.
-distmat = {
-    "names": None,   # list[str] — tree identifiers
-    "matrix": None,  # list[list[int]] — n×n RF distance matrix
-}
+import atexit
+import os
+import shutil
+import tempfile
+
+import numpy as np
 
 
-def clear_distmat():
-    """Reset the server-side distance matrix."""
-    distmat["names"] = None
-    distmat["matrix"] = None
+_tmpdir = None
+_distmat_index = {}  # name -> {"names": list[str], "path": str, "file_breakdown": dict}
+_distmat_counter = 0  # auto-incrementing ID for unique matrix names
+
+
+def _ensure_tmpdir():
+    global _tmpdir
+    if _tmpdir is None:
+        _tmpdir = tempfile.mkdtemp(prefix="treetracer_distmat_")
+        atexit.register(_cleanup_tmpdir)
+    return _tmpdir
+
+
+def _cleanup_tmpdir():
+    global _tmpdir
+    if _tmpdir and os.path.isdir(_tmpdir):
+        shutil.rmtree(_tmpdir, ignore_errors=True)
+        _tmpdir = None
+
+
+def next_distmat_name():
+    """Return a unique matrix name like 'RF_001', 'RF_002', etc."""
+    global _distmat_counter
+    _distmat_counter += 1
+    return f"RF_{_distmat_counter:03d}"
+
+
+def save_distmat(name, names, matrix, file_breakdown=None):
+    """Save an RF distance matrix as uint16 .npy and register it.
+
+    Args:
+        name: Key for this matrix (e.g. "RF_001").
+        names: List of tree name strings (length n).
+        matrix: n×n distance values (list-of-lists or numpy array).
+        file_breakdown: Optional dict of {filename: n_trees} showing which
+            source files contributed and how many trees each.
+    """
+    d = _ensure_tmpdir()
+    arr = np.array(matrix, dtype=np.uint16)
+    path = os.path.join(d, name.replace("/", "_") + ".npy")
+    np.save(path, arr)
+    _distmat_index[name] = {
+        "names": list(names),
+        "path": path,
+        "file_breakdown": file_breakdown or {},
+    }
+
+
+def load_distmat(name):
+    """Load a matrix from disk.
+
+    Returns:
+        (names, np.ndarray[uint16]) — tree names and n×n matrix.
+
+    Raises:
+        KeyError: if *name* is not in the index.
+    """
+    entry = _distmat_index[name]
+    arr = np.load(entry["path"])
+    return entry["names"], arr
+
+
+def load_distmat_as_lists(name):
+    """Load a matrix and convert to plain Python lists (for subprocess pickling)."""
+    names, arr = load_distmat(name)
+    return names, arr.tolist()
+
+
+def get_distmat_index():
+    """Return lightweight metadata dict suitable for dcc.Store (no paths, no matrix).
+
+    Returns:
+        {"name1": {"names": [...], "file_breakdown": {...}}, ...}
+    """
+    return {
+        k: {"names": v["names"], "file_breakdown": v.get("file_breakdown", {})}
+        for k, v in _distmat_index.items()
+    }
+
+
+def has_distmat(name):
+    return name in _distmat_index
+
+
+def clear_all_distmats():
+    """Remove all .npy files from disk and reset the index."""
+    global _distmat_counter
+    for entry in _distmat_index.values():
+        try:
+            os.remove(entry["path"])
+        except OSError:
+            pass
+    _distmat_index.clear()
+    _distmat_counter = 0

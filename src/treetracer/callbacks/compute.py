@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..state import distmat as _server_distmat, clear_distmat as _clear_server_distmat
+from ..state import save_distmat, load_distmat, load_distmat_as_lists, get_distmat_index, next_distmat_name
 from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
 
 
@@ -14,8 +14,9 @@ from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
 # The executor is created lazily to avoid spawning processes at import time.
 _executor = None
 _rf_future = None   # concurrent.futures.Future for RF job
+_rf_meta = {}       # metadata needed by poll_completion to save RF result
 _mds_future = None  # concurrent.futures.Future for MDS job
-_mds_meta = {}      # metadata needed by poll_mds_completion to build the result
+_mds_meta = {}      # metadata needed by poll_completion to build MDS result
 
 
 def _get_executor():
@@ -179,10 +180,21 @@ def register_compute_callbacks():
             file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
         ]
 
+        # Build file breakdown: {filename: n_trees} for each source file
+        file_breakdown = {}
+        for t in sampled_trees:
+            fs = t["file_source"]
+            file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
+
+        rf_name = next_distmat_name()
         add_log(
-            f"Starting RF computation in background process: {len(names)} trees, "
+            f"Starting RF computation ({rf_name}) in background process: {len(names)} trees, "
             f"{len(translate_maps)} translate map(s), {n_taxa} taxa"
         )
+
+        # Store metadata for poll_completion
+        _rf_meta["name"] = rf_name
+        _rf_meta["file_breakdown"] = file_breakdown
 
         # Submit RF computation to a separate process (own GIL — main process stays free)
         from ..rf._worker import compute_rf
@@ -192,11 +204,12 @@ def register_compute_callbacks():
         )
 
         # Return immediately: show computing indicator, enable polling, disable button
+        breakdown_str = ", ".join(f"{f}: {n}" for f, n in file_breakdown.items())
         computing_indicator = dmc.Alert(
-            title="Computing RF Distances...",
+            title=f"Computing RF Distances ({rf_name})...",
             children=dmc.Text(
                 f"Computing {len(names)}x{len(names)} RF distance matrix in background. "
-                "You can interact with the app while this runs.",
+                f"Files: {breakdown_str}",
                 size="sm",
             ),
             color="blue",
@@ -206,19 +219,43 @@ def register_compute_callbacks():
 
     # ------ MDS SECTION ON COMPUTE TAB ------
 
-    # Enable MDS button when a distance matrix is available
+    # Populate matrix selector and enable MDS button when distance matrices are available
     @callback(
         Output("compute-mds-button", "disabled"),
         Output("mds-status-text", "children"),
+        Output("mds-distmat-select", "data"),
+        Output("mds-distmat-select", "value"),
         Input("distmat-store", "data"),
     )
     def toggle_mds_button(distmat_data):
         if not distmat_data:
-            return True, dmc.Text("No distance matrix computed yet.", c="dimmed",style={"padding": "20px"})
-        name = next(iter(distmat_data))
-        names = distmat_data[name]["names"]
-        n = len(names)
-        return False, dmc.Text(f"Distance matrix: {name} ({n}x{n})", c="green")
+            return True, dmc.Text("No distance matrix computed yet.", c="dimmed", style={"padding": "20px"}), [], None
+        options = [
+            {"value": k, "label": f"{k} — {len(v['names'])} trees"}
+            for k, v in distmat_data.items()
+        ]
+        last_key = list(distmat_data.keys())[-1]
+        status = dmc.Text(f"{len(distmat_data)} distance matrix(es) available", c="green")
+        return False, status, options, last_key
+
+    # Show file breakdown badges when a matrix is selected
+    @callback(
+        Output("mds-distmat-info", "children"),
+        Input("mds-distmat-select", "value"),
+        State("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def show_distmat_info(selected, distmat_data):
+        if not selected or not distmat_data or selected not in distmat_data:
+            return html.Div()
+        breakdown = distmat_data[selected].get("file_breakdown", {})
+        n = len(distmat_data[selected].get("names", []))
+        badges = [
+            dmc.Badge(f"{fname}: {count} trees", variant="light", color="blue", size="lg")
+            for fname, count in breakdown.items()
+        ]
+        badges.append(dmc.Badge(f"Total: {n} trees", variant="light", color="grape", size="lg"))
+        return dmc.Group(badges, gap="xs", mt="xs")
 
     # Start MDS computation in background process
     @callback(
@@ -226,18 +263,17 @@ def register_compute_callbacks():
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
         Input("compute-mds-button", "n_clicks"),
-        State("distmat-store", "data"),
+        State("mds-distmat-select", "value"),
         prevent_initial_call=True,
     )
-    def handle_compute_mds(n_clicks, distmat_data):
-        if not n_clicks or not distmat_data:
+    def handle_compute_mds(n_clicks, selected_distmat):
+        if not n_clicks or not selected_distmat:
             return no_update, no_update, no_update
 
-        selected_distmat = next(iter(distmat_data))
-        tree_names = distmat_data[selected_distmat]["names"]
-
-        if _server_distmat["matrix"] is None:
-            msg = "Distance matrix not available. Please recompute RF distances."
+        try:
+            tree_names, matrix_lists = load_distmat_as_lists(selected_distmat)
+        except KeyError:
+            msg = "Selected distance matrix not available. Please recompute RF distances."
             add_log(msg, "ERROR")
             return dmc.Text(msg, c="red"), no_update, no_update
 
@@ -254,7 +290,7 @@ def register_compute_callbacks():
         from ..rf._worker import compute_mds_worker
         global _mds_future
         _mds_future = _get_executor().submit(
-            compute_mds_worker, _server_distmat["matrix"], n_components,
+            compute_mds_worker, matrix_lists, n_components,
         )
 
         computing_indicator = dmc.Alert(
@@ -319,22 +355,22 @@ def register_compute_callbacks():
                                          id="compute-rf-notification")
             else:
                 _rf_future = None
-                rf_filename = "RF_distances.tsv"
-                _server_distmat["names"] = result_names
-                _server_distmat["matrix"] = matrix
-                add_log(f"Stored RF distance matrix as '{rf_filename}' ({len(result_names)}x{len(result_names)})")
+                rf_name = _rf_meta.get("name", "RF")
+                file_breakdown = _rf_meta.get("file_breakdown", {})
+                save_distmat(rf_name, result_names, matrix, file_breakdown=file_breakdown)
+                add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
                 add_log(f"RF computation took {elapsed:.2f}s")
                 rf_out = [
-                    dmc.Alert(title="RF Distance Matrix",
-                              children=dmc.Text(f"{rf_filename}: {len(result_names)} x {len(result_names)} trees", size="sm"),
+                    dmc.Alert(title=f"RF Distance Matrix ({rf_name})",
+                              children=dmc.Text(f"{len(result_names)} x {len(result_names)} trees", size="sm"),
                               color="green", variant="light"),
-                    {rf_filename: {"names": result_names}},
+                    get_distmat_index(),
                     False,   # export-rf-button enabled
                     False,   # compute-rf-trace-button enabled
                     False,   # re-enable compute-rf-button
                 ]
                 notif = dmc.Notification(
-                    title="RF Distances Computed",
+                    title=f"RF Distances Computed ({rf_name})",
                     message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
                     color="green", action="show", autoClose=3000, id="compute-rf-notification")
 
@@ -425,12 +461,12 @@ def register_compute_callbacks():
         path = _save_file_dialog(default_filename=rf_filename)
         if not path:
             return no_update
-        names = distmat_data[rf_filename]["names"]
-        if _server_distmat["matrix"] is None:
+        try:
+            names, arr = load_distmat(rf_filename)
+        except KeyError:
             add_log("No matrix available for export.", "ERROR")
             return no_update
-        df = pd.DataFrame(_server_distmat["matrix"],
-                          index=names, columns=names)
+        df = pd.DataFrame(arr, index=names, columns=names)
         df.to_csv(path, sep="\t")
         add_log(f"Exported RF distance matrix to {path}")
         return dmc.Notification(
@@ -510,11 +546,14 @@ def register_compute_callbacks():
             ), no_update
 
         filename = os.path.basename(file_path)
-        stored_distmats = stored_distmats or {}
         names = list(df.index.astype(str))
-        _server_distmat["names"] = names
-        _server_distmat["matrix"] = df.values.tolist()
-        stored_distmats[filename] = {"names": names}
+        # Build file breakdown from group prefixes in tree names
+        file_breakdown = {}
+        for n in names:
+            group = n.split("/")[0] if "/" in n else "(ungrouped)"
+            file_breakdown[group] = file_breakdown.get(group, 0) + 1
+        save_distmat(filename, names, df.values.tolist(), file_breakdown=file_breakdown)
+        stored_distmats = get_distmat_index()
         add_log(f"Loaded RF distance matrix from {filename}: {df.shape[0]}x{df.shape[1]}")
 
         output_indicator = dmc.Alert(

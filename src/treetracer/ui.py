@@ -278,6 +278,15 @@ def add_main_body():
                     # MDS Embedding section
                     dmc.Divider(my="lg"),
                     dmc.Title("MDS Embedding", order=4),
+                    dmc.Select(
+                        id="mds-distmat-select",
+                        label="Distance Matrix",
+                        placeholder="No distance matrix available",
+                        data=[],
+                        value=None,
+                        w=400,
+                    ),
+                    html.Div(id="mds-distmat-info"),
                     html.Div(id="mds-status-text"),
                     dmc.Space(h=10),
                     dmc.Group([

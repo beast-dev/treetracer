@@ -1,4 +1,4 @@
-from dash import dcc, callback, Input, Output, State, no_update
+from dash import dcc, callback, Input, Output, State, no_update, ctx
 import dash_mantine_components as dmc
 import plotly.express as px
 import plotly.graph_objects as go
@@ -9,7 +9,7 @@ import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..state import distmat as _server_distmat
+from ..state import load_distmat
 from ._helpers import _save_file_dialog
 
 
@@ -83,6 +83,8 @@ def register_diagnostics_callbacks():
     @callback(
         Output("lnl-trace-plot", "children"),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
+        Output("lnl-burnin-input", "value"),
+        Output("rf-burnin-input", "value"),
         Input("tree-offset-store", "data"),
         Input("lnl-burnin-input", "value"),
         prevent_initial_call=True,
@@ -93,17 +95,29 @@ def register_diagnostics_callbacks():
             return dmc.Text(
                 "No trees loaded yet.",
                 c="dimmed", size="sm", style={"padding": "20px"},
-            ), True
+            ), True, 0, 0
+
+        # When trees are loaded/changed, set burnin to 10% of max per-group tree count
+        triggered = ctx.triggered_id
+        if triggered == "tree-offset-store":
+            max_trees = max(
+                s.get("total_trees", 0) for s in stored_summaries.values()
+            )
+            default_burnin = max(0, int(max_trees * 0.1))
+            burnin = default_burnin
+            burnin_out = (default_burnin, default_burnin)
+        else:
+            burnin_out = (no_update, no_update)
 
         tree_service = get_tree_service()
         file_sources = list(stored_summaries.keys())
         traces = tree_service.get_metadata_traces(file_sources)
 
         if not traces:
-            return dmc.Text(
+            return (dmc.Text(
                 "No log-likelihood data found in tree annotations.",
                 c="dimmed", size="sm", style={"padding": "20px"},
-            ), True
+            ), True, *burnin_out)
 
         # Pick first available field (prefer lnP > lnL > posterior > joint > loglikelihood)
         preferred = ['lnP', 'lnL', 'posterior', 'joint', 'loglikelihood']
@@ -203,7 +217,8 @@ def register_diagnostics_callbacks():
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
 
-        return dcc.Graph(id="lnl-trace-graph", figure=fig, config={"displayModeBar": False}), False
+        return (dcc.Graph(id="lnl-trace-graph", figure=fig, config={"displayModeBar": False}),
+                False, *burnin_out)
 
     @callback(
         Output("rf-reference-group-select", "data", allow_duplicate=True),
@@ -287,11 +302,11 @@ def register_diagnostics_callbacks():
                 no_update,
             )
 
-        # Names from the store, matrix from server-side state (too large for JSON)
-        compact = next(iter(stored_distmats.values()))
-        distmat_names = compact["names"]
-        distmat_matrix = _server_distmat["matrix"]
-        if distmat_matrix is None:
+        # Load matrix from disk (stored as uint16 .npy)
+        distmat_key = next(iter(stored_distmats))
+        try:
+            distmat_names, distmat_matrix = load_distmat(distmat_key)
+        except KeyError:
             return (
                 dmc.Text("Distance matrix not available. Please recompute RF distances.", c="red"),
                 no_update, no_update, no_update,
@@ -352,7 +367,7 @@ def register_diagnostics_callbacks():
                 continue
             tree_idx = name_to_idx[tree_name]
             all_records.append({
-                'rf_distance': int(float(distmat_matrix[ref_idx][tree_idx])),
+                'rf_distance': int(distmat_matrix[ref_idx, tree_idx]),
                 'group': group,
                 'name': tree_name,
                 'file_source': file_source,

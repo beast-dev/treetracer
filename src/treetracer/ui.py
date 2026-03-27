@@ -194,8 +194,10 @@ def _add_within_run_panel():
                         value=1, min=1, max=100, step=10,
                         size="xs", w=100,
                     ),
-                    dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
-                    dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),
+                    dmc.Stack([
+                        dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
+                        dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),
+                    ], gap="xs"),
                     dmc.Button("Reset Axes", id="within-run-reset-button",
                                variant="outline", color="gray", size="md"),
                 ], align="flex-end", gap="lg"),

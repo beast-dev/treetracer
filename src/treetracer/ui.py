@@ -198,6 +198,18 @@ def _add_within_run_panel():
                         dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
                         dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),
                     ], gap="xs"),
+                    dmc.NumberInput(
+                        id="within-run-window-size",
+                        label="Window",
+                        value=100, min=10, step=10,
+                        size="xs", w=90,
+                    ),
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:player-play-filled", width=18),
+                        id="within-run-play-button",
+                        variant="filled", color="blue", size="lg",
+                        style={"alignSelf": "flex-end"},
+                    ),
                     dmc.Button("Reset Axes", id="within-run-reset-button",
                                variant="outline", color="gray", size="md"),
                 ], align="flex-end", gap="lg"),
@@ -205,6 +217,9 @@ def _add_within_run_panel():
                 withBorder=True, p="md", radius="sm", mb="sm",
                 style={"display": "none"},
             ),
+
+            # Animation interval for sliding window playback (disabled by default)
+            dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
 
             # Single graph with 3 subplots (matched axes for synced zoom/pan)
             dcc.Graph(figure={}, id="within-run-graph",

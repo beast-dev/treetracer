@@ -1,5 +1,6 @@
 from dash import dcc, html, callback, Input, Output, State, no_update, ctx
 import dash_mantine_components as dmc
+from dash_iconify import DashIconify
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
@@ -156,6 +157,8 @@ def register_within_run_callbacks():
         Output("within-run-graph", "figure"),
         Output("within-run-highlight-store", "data", allow_duplicate=True),
         Output("within-run-treenum-range-store", "data", allow_duplicate=True),
+        Output("within-run-anim-interval", "disabled", allow_duplicate=True),
+        Output("within-run-play-button", "children", allow_duplicate=True),
         Input("within-run-result-select", "value"),
         State("within-run-mds-results-store", "data"),
         prevent_initial_call=True,
@@ -163,7 +166,7 @@ def register_within_run_callbacks():
     def load_result_for_visualization(selected_key, results):
         result = _get_active_result(selected_key, results)
         if result is None:
-            return (no_update,) * 16
+            return (no_update,) * 18
 
         mdscols = result["dimensions"]
         n = result["n_trees"]
@@ -194,6 +197,8 @@ def register_within_run_callbacks():
             fig,                           # graph
             None,                          # reset highlight
             [1, n],                        # reset treenum range
+            True,                          # disable animation interval
+            DashIconify(icon="tabler:player-play-filled", width=18),  # reset play button
         )
 
     # Pipe slider value to the range store
@@ -221,6 +226,75 @@ def register_within_run_callbacks():
         if min_range < 1:
             return no_update
         return min_range
+
+    # ------ SLIDING WINDOW ANIMATION ------
+
+    # Play/Pause toggle
+    @callback(
+        Output("within-run-anim-interval", "disabled"),
+        Output("within-run-play-button", "children"),
+        Output("within-run-treenum-slider", "value", allow_duplicate=True),
+        Input("within-run-play-button", "n_clicks"),
+        State("within-run-anim-interval", "disabled"),
+        State("within-run-treenum-slider", "min"),
+        State("within-run-treenum-slider", "max"),
+        State("within-run-window-size", "value"),
+        prevent_initial_call=True,
+    )
+    def toggle_playback(n_clicks, currently_disabled, slider_min, slider_max, window_size):
+        if not n_clicks:
+            return no_update, no_update, no_update
+        if currently_disabled:
+            # Start playing: snap slider to [min, min+window] and enable interval
+            w = int(window_size) if window_size else 100
+            return (
+                False,
+                DashIconify(icon="tabler:player-pause-filled", width=18),
+                [slider_min, min(slider_min + w, slider_max)],
+            )
+        else:
+            # Pause
+            return (
+                True,
+                DashIconify(icon="tabler:player-play-filled", width=18),
+                no_update,
+            )
+
+    # Advance the sliding window on each interval tick
+    @callback(
+        Output("within-run-treenum-slider", "value", allow_duplicate=True),
+        Output("within-run-anim-interval", "disabled", allow_duplicate=True),
+        Output("within-run-play-button", "children", allow_duplicate=True),
+        Input("within-run-anim-interval", "n_intervals"),
+        State("within-run-treenum-slider", "value"),
+        State("within-run-treenum-slider", "min"),
+        State("within-run-treenum-slider", "max"),
+        State("within-run-window-size", "value"),
+        prevent_initial_call=True,
+    )
+    def advance_animation(n_intervals, current_value, slider_min, slider_max, window_size):
+        if not current_value or not window_size:
+            return no_update, no_update, no_update
+
+        w = int(window_size)
+        stride = max(1, w // 2)
+
+        new_start = current_value[0] + stride
+        new_end = new_start + w
+
+        if new_start >= slider_max:
+            # Reached the end — stop and reset to start
+            return (
+                [slider_min, min(slider_min + w, slider_max)],
+                True,
+                DashIconify(icon="tabler:player-play-filled", width=18),
+            )
+
+        # Clamp end to slider max
+        if new_end > slider_max:
+            new_end = slider_max
+
+        return [new_start, new_end], no_update, no_update
 
     # Click on a point → store its treenum (toggle on re-click)
     @callback(

@@ -153,30 +153,19 @@ def _add_diagnostics_panel():
 
 
 def _add_within_run_panel():
-    """Build the Within-run Analysis tab panel content."""
+    """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
         dmc.Stack([
-            # Run selection and info
+            # Result selection (computed in the Compute tab)
             dmc.Paper([
-                dmc.Group([
-                    dmc.Select(
-                        id="within-run-select",
-                        label="Select Run",
-                        placeholder="No files loaded",
-                        data=[],
-                        value=None,
-                        w=300,
-                    ),
-                    dmc.Button(
-                        "Compute RF + MDS",
-                        id="within-run-compute-button",
-                        variant="filled",
-                        color="green",
-                        size="md",
-                        disabled=True,
-                        style={"alignSelf": "flex-end"},
-                    ),
-                ], align="flex-end", gap="lg"),
+                dmc.Select(
+                    id="within-run-result-select",
+                    label="Within-run MDS Result",
+                    placeholder="No results computed yet (use Compute Distances tab)",
+                    data=[],
+                    value=None,
+                    w=500,
+                ),
                 dmc.Space(h=10),
                 html.Div(id="within-run-info"),
             ], p="md", withBorder=True, radius="sm"),
@@ -322,6 +311,43 @@ def add_main_body():
                         type="circle",
                         parent_style={"minHeight": "50px"},
                     ),
+                    # Within-run MDS section
+                    dmc.Divider(my="lg"),
+                    dmc.Title("Within-run MDS", order=4),
+                    dmc.Group([
+                        dmc.Select(
+                            id="wr-mds-distmat-select",
+                            label="RF Matrix",
+                            placeholder="No distance matrix available",
+                            data=[],
+                            value=None,
+                            w=300,
+                        ),
+                        dmc.Select(
+                            id="wr-mds-run-select",
+                            label="Run",
+                            placeholder="Select a run",
+                            data=[],
+                            value=None,
+                            w=300,
+                        ),
+                        dmc.Button(
+                            "Compute Within-run MDS",
+                            id="compute-wr-mds-button",
+                            variant="filled",
+                            color="violet",
+                            size="md",
+                            disabled=True,
+                            style={"alignSelf": "flex-end"},
+                        ),
+                    ], align="flex-end", gap="lg"),
+                    html.Div(id="wr-mds-info"),
+                    dmc.Space(h=10),
+                    dcc.Loading(
+                        html.Div(id="compute-wr-mds-output"),
+                        type="circle",
+                        parent_style={"minHeight": "50px"},
+                    ),
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
@@ -406,7 +432,7 @@ def add_navbar():
                     dcc.Store(id="tree-offset-store", storage_type="memory"),
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
-                    dcc.Store(id="within-run-mds-store", storage_type="memory"),
+                    dcc.Store(id="within-run-mds-results-store", storage_type="memory"),
                     dcc.Store(id="within-run-highlight-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Background computation polling

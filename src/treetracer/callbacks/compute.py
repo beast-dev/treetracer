@@ -2,6 +2,7 @@ from dash import html, callback, Input, Output, State, no_update, ALL
 import dash_mantine_components as dmc
 import os
 from concurrent.futures import ProcessPoolExecutor
+import numpy as np
 import pandas as pd
 
 from ..logger import add_log
@@ -13,10 +14,12 @@ from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
 # Separate-process computation — has its own GIL, so the main process stays responsive.
 # The executor is created lazily to avoid spawning processes at import time.
 _executor = None
-_rf_future = None   # concurrent.futures.Future for RF job
-_rf_meta = {}       # metadata needed by poll_completion to save RF result
-_mds_future = None  # concurrent.futures.Future for MDS job
-_mds_meta = {}      # metadata needed by poll_completion to build MDS result
+_rf_future = None      # concurrent.futures.Future for RF job
+_rf_meta = {}          # metadata needed by poll_completion to save RF result
+_mds_future = None     # concurrent.futures.Future for between-run MDS job
+_mds_meta = {}         # metadata needed by poll_completion to build MDS result
+_wr_mds_future = None  # concurrent.futures.Future for within-run MDS job
+_wr_mds_meta = {}      # metadata needed by poll_completion to build within-run MDS result
 
 
 def _get_executor():
@@ -180,11 +183,12 @@ def register_compute_callbacks():
             file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
         ]
 
-        # Build file breakdown: {filename: n_trees} for each source file
+        # Build file breakdown: {group_name: n_trees} keyed by group_name
+        # (group_name is the prefix in tree names like "group_name/tree_001")
         file_breakdown = {}
         for t in sampled_trees:
-            fs = t["file_source"]
-            file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
+            gn = t["group_name"]
+            file_breakdown[gn] = file_breakdown.get(gn, 0) + 1
 
         rf_name = next_distmat_name()
         add_log(
@@ -304,35 +308,147 @@ def register_compute_callbacks():
         )
         return computing_indicator, False, True
 
-    # ------ UNIFIED POLL CALLBACK (RF + MDS) ------
-    # Single callback handles both RF and MDS completion to avoid
-    # duplicate-output conflicts from two callbacks sharing the same Input.
+    # ------ WITHIN-RUN MDS SECTION ------
+
+    # Populate within-run RF matrix selector when distmat-store changes
+    @callback(
+        Output("wr-mds-distmat-select", "data"),
+        Output("wr-mds-distmat-select", "value"),
+        Input("distmat-store", "data"),
+    )
+    def populate_wr_distmat_select(distmat_data):
+        if not distmat_data:
+            return [], None
+        options = [
+            {"value": k, "label": f"{k} — {len(v['names'])} trees"}
+            for k, v in distmat_data.items()
+        ]
+        return options, list(distmat_data.keys())[-1]
+
+    # Populate run selector when an RF matrix is chosen
+    @callback(
+        Output("wr-mds-run-select", "data"),
+        Output("wr-mds-run-select", "value"),
+        Output("wr-mds-info", "children"),
+        Input("wr-mds-distmat-select", "value"),
+        State("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def populate_wr_run_select(selected_distmat, distmat_data):
+        if not selected_distmat or not distmat_data or selected_distmat not in distmat_data:
+            return [], None, html.Div()
+        breakdown = distmat_data[selected_distmat].get("file_breakdown", {})
+        if not breakdown:
+            return [], None, dmc.Text("No file breakdown available for this matrix.", c="dimmed", size="sm")
+        options = [
+            {"value": run, "label": f"{run}: {count} trees"}
+            for run, count in breakdown.items()
+        ]
+        badges = [
+            dmc.Badge(f"{run}: {count} trees", variant="light", color="blue", size="lg")
+            for run, count in breakdown.items()
+        ]
+        return options, None, dmc.Group(badges, gap="xs", mt="xs")
+
+    # Enable compute button when both RF matrix and run are selected
+    @callback(
+        Output("compute-wr-mds-button", "disabled"),
+        Input("wr-mds-distmat-select", "value"),
+        Input("wr-mds-run-select", "value"),
+    )
+    def toggle_wr_mds_button(distmat, run):
+        return not (distmat and run)
+
+    # Start within-run MDS: extract submatrix and submit PCoA
+    @callback(
+        Output("compute-wr-mds-output", "children"),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("compute-wr-mds-button", "disabled", allow_duplicate=True),
+        Input("compute-wr-mds-button", "n_clicks"),
+        State("wr-mds-distmat-select", "value"),
+        State("wr-mds-run-select", "value"),
+        prevent_initial_call=True,
+    )
+    def handle_compute_wr_mds(n_clicks, selected_distmat, selected_run):
+        if not n_clicks or not selected_distmat or not selected_run:
+            return no_update, no_update, no_update
+
+        try:
+            names, matrix = load_distmat(selected_distmat)
+        except KeyError:
+            return dmc.Text("Matrix not found on disk.", c="red"), no_update, no_update
+
+        # Find indices for trees belonging to the selected run
+        indices = [i for i, name in enumerate(names)
+                   if str(name).split("/")[0].strip() == selected_run]
+
+        if len(indices) < 2:
+            msg = f"Only {len(indices)} tree(s) found for '{selected_run}'. Need at least 2."
+            add_log(msg, "ERROR")
+            return dmc.Text(msg, c="red"), no_update, no_update
+
+        # Extract submatrix (numpy fancy indexing — instant)
+        sub_names = [names[i] for i in indices]
+        sub_matrix = matrix[np.ix_(indices, indices)]
+
+        n = len(sub_names)
+        n_components = min(6, n - 1)
+        result_key = f"{selected_distmat}/{selected_run}"
+        add_log(f"Within-run MDS: extracting {n}x{n} submatrix from {selected_distmat} for {selected_run}")
+
+        _wr_mds_meta["tree_names"] = sub_names
+        _wr_mds_meta["selected_distmat"] = selected_distmat
+        _wr_mds_meta["selected_run"] = selected_run
+        _wr_mds_meta["n_components"] = n_components
+        _wr_mds_meta["result_key"] = result_key
+
+        from ..rf._worker import compute_mds_worker
+        global _wr_mds_future
+        _wr_mds_future = _get_executor().submit(
+            compute_mds_worker, sub_matrix.tolist(), n_components,
+        )
+
+        indicator = dmc.Alert(
+            title=f"Computing Within-run MDS ({result_key})...",
+            children=dmc.Text(f"PCoA for {n} trees, {n_components} components", size="sm"),
+            color="violet", variant="light",
+        )
+        return indicator, False, True
+
+    # ------ UNIFIED POLL CALLBACK (RF + between-run MDS + within-run MDS) ------
+    # Single callback handles all completion to avoid duplicate-output conflicts.
 
     @callback(
-        # RF outputs
+        # RF outputs (5)
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("distmat-store", "data", allow_duplicate=True),
         Output("export-rf-button", "disabled"),
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("compute-rf-button", "disabled", allow_duplicate=True),
-        # MDS outputs
+        # Between-run MDS outputs (5)
         Output("mds-result-store", "data"),
         Output("compute-mds-output", "children", allow_duplicate=True),
         Output("export-mds-button", "disabled"),
         Output("plot-config-store", "data", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
-        # Shared outputs
+        # Within-run MDS outputs (3)
+        Output("within-run-mds-results-store", "data"),
+        Output("compute-wr-mds-output", "children", allow_duplicate=True),
+        Output("compute-wr-mds-button", "disabled", allow_duplicate=True),
+        # Shared outputs (2)
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
+        State("within-run-mds-results-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_completion(n_intervals):
-        global _rf_future, _mds_future
+    def poll_completion(n_intervals, current_wr_results):
+        global _rf_future, _mds_future, _wr_mds_future
 
         # --- defaults: no change ---
-        rf_out = [no_update] * 5   # rf-output, distmat, export-rf, rf-trace-btn, rf-btn
-        mds_out = [no_update] * 5  # mds-store, mds-output, export-mds, plot-config, mds-btn
+        rf_out = [no_update] * 5    # rf-output, distmat, export-rf, rf-trace-btn, rf-btn
+        mds_out = [no_update] * 5   # mds-store, mds-output, export-mds, plot-config, mds-btn
+        wr_mds_out = [no_update] * 3  # wr-results-store, wr-mds-output, wr-mds-btn
         notif = no_update
 
         # --- Check RF ---
@@ -437,14 +553,65 @@ def register_compute_callbacks():
                         message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
                         color="green", action="show", autoClose=3000, id="compute-mds-notification")
 
-        # --- Disable interval only when no jobs are pending ---
-        any_running = ((_rf_future is not None and not _rf_future.done()) or
-                       (_mds_future is not None and not _mds_future.done()))
-        should_disable = not any_running and (rf_out[0] is not no_update or mds_out[0] is not no_update)
-        # If nothing finished this tick, keep interval as-is
-        poll_disabled = should_disable if (rf_out[0] is not no_update or mds_out[0] is not no_update) else no_update
+        # --- Check Within-run MDS ---
+        if _wr_mds_future is not None and _wr_mds_future.done():
+            try:
+                embedding_list, elapsed = _wr_mds_future.result()
+            except Exception as e:
+                msg = f"Within-run MDS failed: {e}"
+                add_log(msg, "ERROR")
+                _wr_mds_future = None
+                wr_mds_out = [no_update, dmc.Text(msg, c="red"), False]
+                if notif is no_update:
+                    notif = dmc.Notification(title="Within-run MDS Error", message=msg, color="red",
+                                             action="show", autoClose=6000, id="compute-wr-mds-notification")
+            else:
+                _wr_mds_future = None
+                tree_names = _wr_mds_meta["tree_names"]
+                n_components = _wr_mds_meta["n_components"]
+                result_key = _wr_mds_meta["result_key"]
+                selected_run = _wr_mds_meta["selected_run"]
+                selected_distmat = _wr_mds_meta["selected_distmat"]
 
-        return (*rf_out, *mds_out, notif, poll_disabled)
+                mdscols = [f"MDS{i+1}" for i in range(n_components)]
+                mds_df = pd.DataFrame(embedding_list, columns=mdscols)
+                mds_df["tree"] = tree_names
+                mds_df["treenum"] = range(1, len(tree_names) + 1)
+
+                result_entry = {
+                    "file": selected_run,
+                    "source_distmat": selected_distmat,
+                    "dimensions": mdscols,
+                    "n_trees": len(tree_names),
+                    "data": mds_df.to_dict("records"),
+                }
+
+                all_results = current_wr_results or {}
+                all_results[result_key] = result_entry
+
+                add_log(f"Within-run MDS complete: {result_key}, {len(tree_names)} trees in {elapsed:.2f}s")
+
+                wr_mds_out = [
+                    all_results,
+                    dmc.Alert(title=f"Within-run MDS: {result_key}",
+                              children=dmc.Text(f"{len(tree_names)} trees, {n_components} components in {elapsed:.2f}s", size="sm"),
+                              color="green", variant="light"),
+                    False,
+                ]
+                if notif is no_update:
+                    notif = dmc.Notification(
+                        title=f"Within-run MDS Complete",
+                        message=f"{result_key}: {len(tree_names)} trees in {elapsed:.2f}s",
+                        color="green", action="show", autoClose=3000, id="compute-wr-mds-notification")
+
+        # --- Disable interval only when no jobs are pending ---
+        something_finished = (rf_out[0] is not no_update or mds_out[0] is not no_update or wr_mds_out[0] is not no_update)
+        any_running = ((_rf_future is not None and not _rf_future.done()) or
+                       (_mds_future is not None and not _mds_future.done()) or
+                       (_wr_mds_future is not None and not _wr_mds_future.done()))
+        poll_disabled = (not any_running) if something_finished else no_update
+
+        return (*rf_out, *mds_out, *wr_mds_out, notif, poll_disabled)
 
     # ------ EXPORT CALLBACKS ------
 

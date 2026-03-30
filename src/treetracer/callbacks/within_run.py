@@ -152,7 +152,6 @@ def register_within_run_callbacks():
         Output("within-run-treenum-slider", "max"),
         Output("within-run-treenum-slider", "value"),
         Output("within-run-treenum-slider", "marks"),
-        Output("within-run-min-range", "max"),
         Output("within-run-info", "children"),
         Output("within-run-graph", "figure"),
         Output("within-run-highlight-store", "data", allow_duplicate=True),
@@ -166,7 +165,7 @@ def register_within_run_callbacks():
     def load_result_for_visualization(selected_key, results):
         result = _get_active_result(selected_key, results)
         if result is None:
-            return (no_update,) * 18
+            return (no_update,) * 17
 
         mdscols = result["dimensions"]
         n = result["n_trees"]
@@ -192,7 +191,6 @@ def register_within_run_callbacks():
             dim_options, mdscols[1],       # dim-y
             dim_options, z_default,        # dim-z
             1, n, [1, n], marks,           # slider
-            n,                             # min-range max
             info,                          # info badges
             fig,                           # graph
             None,                          # reset highlight
@@ -212,20 +210,20 @@ def register_within_run_callbacks():
             return no_update
         return slider_value
 
-    # Update minRange on the slider when the NumberInput changes
+    # Sync slider minRange to the window size input
     @callback(
         Output("within-run-treenum-slider", "minRange"),
-        Input("within-run-min-range", "value"),
+        Input("within-run-window-size", "value"),
         prevent_initial_call=True,
     )
-    def update_min_range(min_range):
+    def update_min_range(window_size):
         try:
-            min_range = int(min_range) if min_range else 1
+            val = int(window_size) if window_size else 1
         except (ValueError, TypeError):
             return no_update
-        if min_range < 1:
+        if val < 1:
             return no_update
-        return min_range
+        return val
 
     # ------ SLIDING WINDOW ANIMATION ------
 

@@ -188,12 +188,6 @@ def _add_within_run_panel():
                             styles={"label": {"top": "unset", "bottom": "-2rem"}},
                         ),
                     ], gap="xs", style={"flex": 1}),
-                    dmc.NumberInput(
-                        id="within-run-min-range",
-                        label="Min range",
-                        value=1, min=1, max=100, step=10,
-                        size="xs", w=100,
-                    ),
                     dmc.Stack([
                         dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
                         dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),

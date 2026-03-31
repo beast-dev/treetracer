@@ -399,6 +399,8 @@ def register_sidebar_callbacks():
         Output("within-run-controls-paper", "style", allow_duplicate=True),
         Output("within-run-info", "children", allow_duplicate=True),
         Output("compute-wr-mds-output", "children", allow_duplicate=True),
+        Output("within-run-graph", "figure", allow_duplicate=True),
+        Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -450,5 +452,7 @@ def register_sidebar_callbacks():
                 {"display": "none"},  # within-run-controls-paper style
                 html.Div(),      # within-run-info
                 html.Div(),      # compute-wr-mds-output
+                {},              # within-run-graph (empty figure)
+                [],              # within-run-selected-trees-store
             )
-        return (no_update,) * 22
+        return (no_update,) * 24

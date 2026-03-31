@@ -1,13 +1,10 @@
 import dash_mantine_components as dmc
-from dash import Dash, _dash_renderer
+from dash import Dash
 from .ui import add_header, add_navbar, add_main_body, add_footer
 from .callbacks import register_callbacks
 import sys
 import webbrowser
 import threading
-
-
-_dash_renderer._set_react_version("18.2.0")
 
 
 def create_dash_app():

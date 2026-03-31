@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "dash",
+    "dash>=4.1.0",
     "dash-iconify",
     "dash-mantine-components",
     "dendropy>=5.0.8",

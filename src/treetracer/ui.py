@@ -156,70 +156,93 @@ def _add_within_run_panel():
     """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
         dmc.Stack([
-            # Result selection (computed in the Compute tab)
-            dmc.Paper([
-                dmc.Select(
-                    id="within-run-result-select",
-                    label="Within-run MDS Result",
-                    placeholder="No results computed yet (use Compute Distances tab)",
-                    data=[],
-                    value=None,
-                    w=500,
-                ),
-                dmc.Space(h=10),
-                html.Div(id="within-run-info"),
-            ], p="md", withBorder=True, radius="sm"),
-
-            # Plot controls (options populated by compute callback)
+            # Row 1: Result selector + axis selectors + info (boxed)
             dmc.Paper(
                 dmc.Group([
+                    dmc.Select(
+                        id="within-run-result-select",
+                        placeholder="No results yet",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=350,
+                    ),
                     dmc.Select(label="X", id="within-run-dim-x",
-                               data=[], value=None, size="xs", w=120),
+                               data=[], value=None, size="xs", w=100),
                     dmc.Select(label="Y", id="within-run-dim-y",
-                               data=[], value=None, size="xs", w=120),
+                               data=[], value=None, size="xs", w=100),
                     dmc.Select(label="Z", id="within-run-dim-z",
-                               data=[], value=None, size="xs", w=120),
-                    dmc.Stack([
-                        dmc.Text("Tree Number Range:", size="sm", fw=500),
-                        dmc.RangeSlider(
-                            id="within-run-treenum-slider",
-                            min=1, max=100, value=[1, 100],
-                            minRange=1, step=1,
-                            styles={"label": {"top": "unset", "bottom": "-2rem"}},
-                        ),
-                    ], gap="xs", style={"flex": 1}),
-                    dmc.Stack([
-                        dmc.Checkbox(label="Show lines", id="within-run-show-lines", checked=True),
-                        dmc.Checkbox(label="Color gradient", id="within-run-color-gradient", checked=True),
-                    ], gap="xs"),
-                    dmc.NumberInput(
-                        id="within-run-window-size",
-                        label="Window",
-                        value=100, min=10, step=10,
-                        size="xs", w=90,
-                    ),
-                    dmc.ActionIcon(
-                        DashIconify(icon="tabler:player-play-filled", width=18),
-                        id="within-run-play-button",
-                        variant="filled", color="blue", size="lg",
-                        style={"alignSelf": "flex-end"},
-                    ),
-                    dmc.Button("Reset Axes", id="within-run-reset-button",
-                               variant="outline", color="gray", size="md"),
-                ], align="flex-end", gap="lg"),
-                id="within-run-controls-paper",
-                withBorder=True, p="md", radius="sm", mb="sm",
-                style={"display": "none"},
+                               data=[], value=None, size="xs", w=100),
+                    html.Div(id="within-run-info"),
+                ], align="flex-end", gap="md"),
+                withBorder=True, p="xs", radius="sm",
             ),
 
-            # Animation interval for sliding window playback (disabled by default)
+            # Row 2: All controls (hidden until a result is selected, no border)
+            dmc.Group([
+                # Range slider + playback
+                dmc.Text("Trees:", size="xs", fw=500, style={"alignSelf": "center"}),
+                html.Div([
+                    dmc.RangeSlider(
+                        id="within-run-treenum-slider",
+                        min=1, max=100, value=[1, 100],
+                        minRange=1, step=1,
+                        size="xs",
+                        styles={"markLabel": {"fontSize": "10px"}},
+                    ),
+                ], style={"width": "500px", "alignSelf": "center"}),
+                dmc.Text("Window:", size="xs", fw=500, style={"alignSelf": "center"}),
+                dmc.NumberInput(
+                    id="within-run-window-size",
+                    value=100, min=10, step=10,
+                    size="xs", w=70,
+                    styles={"input": {"height": "28px"}},
+                ),
+                dmc.ActionIcon(
+                    DashIconify(icon="tabler:player-play-filled", width=20),
+                    id="within-run-play-button",
+                    variant="filled", color="blue", size="md",
+                ),
+                dmc.Stack([
+                    dmc.Checkbox(label="Lines", id="within-run-show-lines",
+                                 checked=True, size="xs"),
+                    dmc.Checkbox(label="Gradient", id="within-run-color-gradient",
+                                 checked=True, size="xs"),
+                ], gap=2),
+                dmc.Divider(orientation="vertical", style={"height": "24px", "alignSelf": "center"}),
+                # Selection tools
+                dmc.SegmentedControl(
+                    id="within-run-dragmode",
+                    data=[
+                        {"value": "zoom", "label": "Zoom"},
+                        {"value": "select", "label": "Box"},
+                        {"value": "lasso", "label": "Lasso"},
+                    ],
+                    value="zoom",
+                    size="xs",
+                ),
+                dmc.Button("Clear", id="within-run-clear-selection",
+                           variant="outline", color="gray", size="xs"),
+                dmc.Button("Reset Axes", id="within-run-reset-button",
+                           variant="outline", color="gray", size="xs"),
+                html.Div(id="within-run-selection-info"),
+                dmc.Button("Export .trees", id="within-run-export-trees",
+                           variant="filled", color="green", size="xs",
+                           disabled=True,
+                           leftSection=DashIconify(icon="tabler:download", width=14)),
+            ], align="center", gap="sm", wrap="nowrap",
+               id="within-run-controls-paper",
+               style={"display": "none"}),
+
+            # Hidden stores
+            dcc.Store(id="within-run-selected-trees-store", storage_type="memory"),
             dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
 
-            # Single graph with 3 subplots (matched axes for synced zoom/pan)
+            # Graph
             dcc.Graph(figure={}, id="within-run-graph",
-                      style={"height": "calc(100vh - 380px)"},
+                      style={"height": "calc(100vh - 280px)"},
                       config={"doubleClick": False}),
-        ], gap="md"),
+        ], gap="xs"),
     ], style={"padding": "10px"})
 
 
@@ -444,7 +467,6 @@ def add_navbar():
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
                     dcc.Store(id="within-run-mds-results-store", storage_type="memory"),
-                    dcc.Store(id="within-run-highlight-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=1500, disabled=True),

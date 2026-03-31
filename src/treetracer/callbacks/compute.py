@@ -235,7 +235,7 @@ def register_compute_callbacks():
         if not distmat_data:
             return True, dmc.Text("No distance matrix computed yet.", c="dimmed", style={"padding": "20px"}), [], None
         options = [
-            {"value": k, "label": f"{k} — {len(v['names'])} trees"}
+            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
             for k, v in distmat_data.items()
         ]
         last_key = list(distmat_data.keys())[-1]
@@ -253,7 +253,7 @@ def register_compute_callbacks():
         if not selected or not distmat_data or selected not in distmat_data:
             return html.Div()
         breakdown = distmat_data[selected].get("file_breakdown", {})
-        n = len(distmat_data[selected].get("names", []))
+        n = distmat_data[selected].get("n_trees", 0)
         badges = [
             dmc.Badge(f"{fname}: {count} trees", variant="light", color="blue", size="lg")
             for fname, count in breakdown.items()
@@ -320,7 +320,7 @@ def register_compute_callbacks():
         if not distmat_data:
             return [], None
         options = [
-            {"value": k, "label": f"{k} — {len(v['names'])} trees"}
+            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
             for k, v in distmat_data.items()
         ]
         return options, list(distmat_data.keys())[-1]
@@ -476,11 +476,12 @@ def register_compute_callbacks():
                 save_distmat(rf_name, result_names, matrix, file_breakdown=file_breakdown)
                 add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
                 add_log(f"RF computation took {elapsed:.2f}s")
+                distmat_idx = get_distmat_index()
                 rf_out = [
                     dmc.Alert(title=f"RF Distance Matrix ({rf_name})",
                               children=dmc.Text(f"{len(result_names)} x {len(result_names)} trees", size="sm"),
                               color="green", variant="light"),
-                    get_distmat_index(),
+                    distmat_idx,
                     False,   # export-rf-button enabled
                     False,   # compute-rf-trace-button enabled
                     False,   # re-enable compute-rf-button

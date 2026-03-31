@@ -84,11 +84,14 @@ def load_distmat_as_lists(name):
 def get_distmat_index():
     """Return lightweight metadata dict suitable for dcc.Store (no paths, no matrix).
 
+    The names list is kept server-side only (too large for JSON with long tree names).
+    The browser only needs the file_breakdown and tree count.
+
     Returns:
-        {"name1": {"names": [...], "file_breakdown": {...}}, ...}
+        {"name1": {"n_trees": int, "file_breakdown": {...}}, ...}
     """
     return {
-        k: {"names": v["names"], "file_breakdown": v.get("file_breakdown", {})}
+        k: {"n_trees": len(v["names"]), "file_breakdown": v.get("file_breakdown", {})}
         for k, v in _distmat_index.items()
     }
 

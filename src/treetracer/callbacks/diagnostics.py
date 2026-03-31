@@ -253,15 +253,13 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return no_update, no_update
 
-        # Extract tree names from the first (only) distance matrix (compact format)
+        # Extract group names from file_breakdown (groups are the keys)
         compact = next(iter(stored_distmats.values()), None)
-        if not compact or "names" not in compact:
+        if not compact:
             return no_update, no_update
 
-        tree_names = compact["names"]
-        all_groups = sorted(set(
-            name.rsplit("/", 1)[0] for name in tree_names if "/" in name
-        ))
+        breakdown = compact.get("file_breakdown", {})
+        all_groups = sorted(breakdown.keys())
         if not all_groups:
             return no_update, no_update
 

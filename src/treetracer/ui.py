@@ -447,7 +447,7 @@ def add_navbar():
                     dcc.Store(id="within-run-highlight-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Background computation polling
-                    dcc.Interval(id="compute-poll-interval", interval=500, disabled=True),
+                    dcc.Interval(id="compute-poll-interval", interval=1500, disabled=True),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),

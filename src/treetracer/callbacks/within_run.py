@@ -13,11 +13,15 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                             selected_treenums=None, treenum_range=None,
                             color_gradient=True, dragmode="zoom"):
     """Build 3 linked 2D scatterplots in subplots with matched axes."""
+    range_str = f" (trees {treenum_range[0]}–{treenum_range[1]})" if treenum_range else ""
     fig = make_subplots(
         rows=1, cols=3,
-        subplot_titles=[f"{x} vs {y}", f"{x} vs {z}", f"{y} vs {z}"],
+        subplot_titles=[f"{x} vs {y}{range_str}", f"{x} vs {z}{range_str}", f"{y} vs {z}{range_str}"],
         horizontal_spacing=0.06,
     )
+    # Smaller subplot title font
+    for ann in fig.layout.annotations:
+        ann.font.size = 11
 
     mode = "lines+markers" if show_lines else "markers"
     colorscale = "Blues"
@@ -55,9 +59,15 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
         # In-range points: colored by treenum gradient or flat color
         if len(df_in) > 0:
             if color_gradient:
+                tmin = int(df_in["treenum"].min())
+                tmax = int(df_in["treenum"].max())
                 marker_dict = dict(
                     color=df_in["treenum"].values, colorscale=colorscale, size=7,
-                    colorbar=dict(title="Tree #", x=1.02, len=0.9) if show_cb else None,
+                    cmin=tmin, cmax=tmax,
+                    colorbar=dict(
+                        title="Tree #", x=1.02, len=0.9,
+                        tick0=tmin, dtick=max(1, (tmax - tmin) // 5),
+                    ) if show_cb else None,
                     showscale=show_cb,
                 )
             else:
@@ -487,6 +497,30 @@ def register_within_run_callbacks():
         return dmc.Notification(title="Trees Exported",
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show", autoClose=4000, id="export-trees-notification")
+
+    # Export plot as PDF
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("within-run-export-pdf", "n_clicks"),
+        State("within-run-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def export_within_run_pdf(n_clicks, fig_dict):
+        if not n_clicks or not fig_dict:
+            return no_update
+        from ._helpers import _save_file_dialog
+        import plotly.graph_objects as go
+        path = _save_file_dialog(default_filename="within_run.pdf")
+        if not path:
+            return no_update
+        fig = go.Figure(fig_dict)
+        fig.update_layout(template="simple_white")
+        fig.write_image(path, width=1800, height=500, scale=2)
+        from ..logger import add_log
+        add_log(f"Exported within-run plot to {path}")
+        return dmc.Notification(title="PDF Exported", message=f"Saved to {path}",
+                                color="green", action="show", autoClose=3000,
+                                id="export-wr-pdf-notification")
 
     # ------ PLOT RENDERING ------
 

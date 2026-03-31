@@ -230,6 +230,8 @@ def _add_within_run_panel():
                            variant="filled", color="green", size="xs",
                            disabled=True,
                            leftSection=DashIconify(icon="tabler:download", width=14)),
+                dmc.Button("Export PDF", id="within-run-export-pdf",
+                           variant="light", size="xs"),
             ], align="center", gap="sm", wrap="nowrap",
                id="within-run-controls-paper",
                style={"display": "none"}),

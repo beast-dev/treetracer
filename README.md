@@ -7,9 +7,9 @@ TreeTracer is a desktop application for visualizing and analyzing phylogenetic t
 ## Features
 
 - **Load NEXUS `.trees` files** directly — no preprocessing required
-- **RF distance computation** via compiled Rust extension (`rapidtrees`) — 10,000 trees in ~10s
-- **MDS/PCoA embedding** with up to 6 dimensions
-- **Between-run analysis**: 3D scatter + three 2D projections with synchronized legends
+- **RF distance computation** via compiled Rust extension (`rapidtrees`)
+- **MDS/PCoA embedding** 
+- **Between-run analysis**: 3D scatter + three 2D projections
 - **Within-run analysis**: linked 2D scatter with gradient coloring, sliding window animation, and point selection (click/box/lasso)
 - **Diagnostics**: log-likelihood traces, RF distance traces with burn-in, KDE density panels
 - **Export**: selected trees as NEXUS `.trees` files, plots as PDF
@@ -151,35 +151,9 @@ hdiutil create -volname TreeTracer \
 
 ### How it works
 
-The build uses [PyApp](https://github.com/ofek/pyapp) (by Astral, the makers of `uv`):
+The build uses [PyApp](https://github.com/ofek/pyapp)
 
 1. `build.sh` builds a Python wheel and compiles a Rust binary that embeds it
 2. `make_macos_app.sh` wraps the binary in a `.app` bundle with icon and `Info.plist`
 3. On first launch, the binary downloads Python 3.13 via `uv`, creates an isolated venv, and installs all dependencies
 4. Subsequent launches are instant (cached environment)
-
-### Cross-platform
-
-| Platform | Build on | Output |
-|----------|----------|--------|
-| macOS (Apple Silicon) | M1/M2/M3/M4 Mac | `TreeTracer.app` |
-| macOS (Intel) | Intel Mac | `TreeTracer.app` |
-| Linux | Linux machine or CI | `TreeTracer` binary |
-| Windows | Windows machine or CI | `TreeTracer.exe` |
-
----
-
-## Documentation
-
-Full developer documentation is in [`docs/`](docs/):
-
-- [**Architecture overview**](docs/README.md) — module map, data flow, key stores
-- [**UI layout**](docs/ui.md) — all components, IDs, and store formats
-- [**Callbacks**](docs/callbacks/README.md) — 45 callbacks across 6 modules
-- [**Packaging**](docs/packaging.md) — PyApp build process, `.app` bundles, distribution
-
----
-
-## License
-
-See [LICENSE](LICENSE).

@@ -5,15 +5,28 @@ from ..logger import get_logs, clear_logs
 
 
 def register_shell_callbacks():
-    # Sidebar collapse callback
+
+    # ------ SIDEBAR TOGGLE ------
+
     @callback(
+        Output("navbar", "style"),
+        Output("sidebar-visible", "data"),
         Output("appshell", "navbar"),
-        Input("burger", "opened"),
-        State("appshell", "navbar"),
+        Input("sidebar-toggle", "n_clicks"),
+        State("sidebar-visible", "data"),
+        prevent_initial_call=True,
     )
-    def toggle_navbar(opened, navbar):
-        navbar["collapsed"] = {"mobile": not opened}
-        return navbar
+    def toggle_sidebar(n_clicks, is_visible):
+        if n_clicks:
+            new_state = not is_visible
+            if new_state:
+                style = {}
+                navbar = {"width": 300, "breakpoint": "sm", "collapsed": {"mobile": True}}
+            else:
+                style = {"display": "none"}
+                navbar = {"width": 0, "breakpoint": "sm", "collapsed": {"mobile": True}}
+            return style, new_state, navbar
+        return no_update, no_update, no_update
 
     # ------ ABOUT MODAL CALLBACK ------
 

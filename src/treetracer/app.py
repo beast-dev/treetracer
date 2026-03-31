@@ -3,6 +3,7 @@ from dash import Dash
 from .ui import add_header, add_navbar, add_main_body, add_footer
 from .callbacks import register_callbacks
 import sys
+import logging
 import threading
 
 
@@ -28,10 +29,12 @@ def create_dash_app():
         padding="md",
         id="appshell",
     )
-    app.layout = dmc.MantineProvider([
-        dmc.NotificationProvider(position="top-right"),
-        layout,
-    ])
+    app.layout = dmc.MantineProvider(
+        [
+            dmc.NotificationProvider(position="top-right"),
+            layout,
+        ],
+    )
     return app
 
 
@@ -42,6 +45,9 @@ def main():
     try:
         app = create_dash_app()
         register_callbacks(app)
+
+        # Suppress Flask's per-request logging (noisy with polling intervals)
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         # Start Dash server in a background thread (no debug/reloader)
         server_thread = threading.Thread(
@@ -61,7 +67,7 @@ def main():
                 time.sleep(0.5)
 
         # Open native desktop window
-        webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1400, height=900)
+        webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1600, height=900)
         webview.start()
 
     except Exception as e:

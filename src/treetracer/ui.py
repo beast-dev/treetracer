@@ -10,11 +10,14 @@ def add_header():
     return dmc.AppShellHeader(
         dmc.Group(
             [
-                dmc.Burger(
-                    id="burger",
-                    size="sm",
-                    hiddenFrom="sm",
-                    opened=False,
+                dmc.Tooltip(
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:layout-sidebar-left-collapse", width=28),
+                        id="sidebar-toggle",
+                        variant="subtle",
+                        size="xl",
+                    ),
+                    label="Toggle Sidebar",
                 ),
                 dmc.Image(src=logo_path, w=50, fit="contain"),
                 dmc.Title("TreeTracer", c="blue"),
@@ -190,7 +193,7 @@ def _add_within_run_panel():
                         size="xs",
                         styles={"markLabel": {"fontSize": "10px"}},
                     ),
-                ], style={"width": "500px", "alignSelf": "center"}),
+                ], style={"width": "420px", "alignSelf": "center"}),
                 dmc.Text("Window:", size="xs", fw=500, style={"alignSelf": "center"}),
                 dmc.NumberInput(
                     id="within-run-window-size",
@@ -474,7 +477,8 @@ def add_navbar():
                     dcc.Interval(id="compute-poll-interval", interval=1500, disabled=True),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
-                    dcc.Interval(id="log-poll-interval", interval=500, n_intervals=0),
+                    dcc.Store(id="sidebar-visible", storage_type="memory", data=True),
+                    dcc.Interval(id="log-poll-interval", interval=2000, n_intervals=0),
                     dmc.Alert(
                         id="trees-validation-alert",
                         title="",

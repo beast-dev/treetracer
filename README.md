@@ -33,15 +33,37 @@ brew install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### 2. Clone and run
+#### 2. Install system dependencies (Linux only)
+
+TreeTracer uses pywebview for its native desktop window. On Linux, this requires GTK WebKit system packages:
+
+```bash
+# Ubuntu/Debian
+sudo apt install libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
+    python3-gi python3-gi-cairo gir1.2-gtk-3.0 zenity
+```
+
+#### 3. Clone and run
 
 ```bash
 git clone https://github.com/beast-dev/treetracer.git
 cd treetracer
+
+# macOS — just run directly:
+uv run treetracer
+
+# Linux — needs access to system GObject bindings:
+uv venv --system-site-packages
 uv run treetracer
 ```
 
-This opens TreeTracer in a native desktop window. `uv` handles Python installation and all dependencies automatically.
+This opens TreeTracer in a native desktop window. `uv` handles Python installation and all pip dependencies automatically. On Linux, `--system-site-packages` is needed so the venv can access system-installed GTK/GObject libraries.
+
+**Alternative (Linux, no root):** If you can't install system packages, use the Qt backend instead:
+```bash
+uv add qtpy pyqt6 pyqt6-webengine
+uv run treetracer
+```
 
 ### Option 2: Download pre-built app
 

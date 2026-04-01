@@ -39,36 +39,46 @@ def create_dash_app():
 
 
 def main():
-    """Main entry point for the TreeTracer application."""
-    import webview
+    """Main entry point for the TreeTracer application.
+
+    Usage:
+        uv run treetracer             # native desktop window (default)
+        uv run treetracer --browser   # browser mode with debug for development
+    """
+    browser_mode = "--browser" in sys.argv
 
     try:
         app = create_dash_app()
         register_callbacks(app)
 
-        # Suppress Flask's per-request logging (noisy with polling intervals)
-        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+        if browser_mode:
+            import webbrowser
+            threading.Timer(1.0, lambda: webbrowser.open_new("http://127.0.0.1:8050/")).start()
+            app.run(debug=True, host="127.0.0.1", port=8050)
+        else:
+            import webview
 
-        # Start Dash server in a background thread (no debug/reloader)
-        server_thread = threading.Thread(
-            target=lambda: app.run(host="127.0.0.1", port=8050, debug=False),
-            daemon=True,
-        )
-        server_thread.start()
+            # Suppress Flask's per-request logging
+            logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-        # Wait for server to be ready
-        import time
-        import urllib.request
-        for _ in range(30):
-            try:
-                urllib.request.urlopen("http://127.0.0.1:8050/", timeout=1)
-                break
-            except Exception:
-                time.sleep(0.5)
+            server_thread = threading.Thread(
+                target=lambda: app.run(host="127.0.0.1", port=8050, debug=False),
+                daemon=True,
+            )
+            server_thread.start()
 
-        # Open native desktop window
-        webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1600, height=900)
-        webview.start()
+            # Wait for server to be ready
+            import time
+            import urllib.request
+            for _ in range(30):
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:8050/", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1600, height=900)
+            webview.start()
 
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

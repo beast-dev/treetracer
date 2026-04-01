@@ -7,7 +7,7 @@ import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..state import save_distmat, load_distmat, load_distmat_as_lists, get_distmat_index, next_distmat_name
+from ..state import save_distmat, load_distmat, get_distmat_index, next_distmat_name, get_distmat_path, register_distmat
 from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
 
 
@@ -196,15 +196,17 @@ def register_compute_callbacks():
             f"{len(translate_maps)} translate map(s), {n_taxa} taxa"
         )
 
-        # Store metadata for poll_completion
+        # Store metadata for process_completion
+        save_path = get_distmat_path(rf_name)
         _rf_meta["name"] = rf_name
         _rf_meta["file_breakdown"] = file_breakdown
+        _rf_meta["save_path"] = save_path
 
-        # Submit RF computation to a separate process (own GIL — main process stays free)
+        # Submit RF computation — worker saves .npy directly, no matrix pickle transfer
         from ..rf._worker import compute_rf
         global _rf_future
         _rf_future = _get_executor().submit(
-            compute_rf, names, newicks, translate_maps, map_indices,
+            compute_rf, names, newicks, translate_maps, map_indices, save_path,
         )
 
         # Return immediately: show computing indicator, enable polling, disable button
@@ -275,7 +277,7 @@ def register_compute_callbacks():
             return no_update, no_update, no_update
 
         try:
-            tree_names, matrix_lists = load_distmat_as_lists(selected_distmat)
+            tree_names, _ = load_distmat(selected_distmat)
         except KeyError:
             msg = "Selected distance matrix not available. Please recompute RF distances."
             add_log(msg, "ERROR")
@@ -285,16 +287,17 @@ def register_compute_callbacks():
         n_components = min(6, n - 1)
         add_log(f"Computing MDS from {selected_distmat} ({n}x{n}) in background process...")
 
-        # Store metadata for poll_completion to build the result
         _mds_meta["tree_names"] = tree_names
         _mds_meta["selected_distmat"] = selected_distmat
         _mds_meta["n_components"] = n_components
 
-        # Submit to subprocess
+        # Pass file path to subprocess — reads .npy directly, no pickle transfer
         from ..rf._worker import compute_mds_worker
+        from ..state import _distmat_index
+        matrix_path = _distmat_index[selected_distmat]["path"]
         global _mds_future
         _mds_future = _get_executor().submit(
-            compute_mds_worker, matrix_lists, n_components,
+            compute_mds_worker, matrix_path, n_components,
         )
 
         computing_indicator = dmc.Alert(
@@ -396,16 +399,22 @@ def register_compute_callbacks():
         result_key = f"{selected_distmat}/{selected_run}"
         add_log(f"Within-run MDS: extracting {n}x{n} submatrix from {selected_distmat} for {selected_run}")
 
+        # Save submatrix to a temp file and pass path to worker
+        import tempfile
+        sub_path = tempfile.mktemp(suffix=".npy", prefix="treetracer_wr_")
+        np.save(sub_path, sub_matrix)
+
         _wr_mds_meta["tree_names"] = sub_names
         _wr_mds_meta["selected_distmat"] = selected_distmat
         _wr_mds_meta["selected_run"] = selected_run
         _wr_mds_meta["n_components"] = n_components
         _wr_mds_meta["result_key"] = result_key
+        _wr_mds_meta["sub_path"] = sub_path
 
         from ..rf._worker import compute_mds_worker
         global _wr_mds_future
         _wr_mds_future = _get_executor().submit(
-            compute_mds_worker, sub_matrix.tolist(), n_components,
+            compute_mds_worker, sub_path, n_components,
         )
 
         indicator = dmc.Alert(
@@ -415,8 +424,8 @@ def register_compute_callbacks():
         )
         return indicator, False, True
 
-    # ------ UNIFIED POLL CALLBACK (RF + between-run MDS + within-run MDS) ------
-    # Single callback handles all completion to avoid duplicate-output conflicts.
+    # ------ POLL + PROCESS: checks futures, processes results in one round trip ------
+    # Processing is fast (<20ms) since workers save to disk — no large pickle transfer.
 
     @callback(
         # RF outputs (5)
@@ -445,27 +454,27 @@ def register_compute_callbacks():
     def poll_completion(n_intervals, current_wr_results):
         global _rf_future, _mds_future, _wr_mds_future
 
-        # --- defaults: no change ---
-        rf_out = [no_update] * 5    # rf-output, distmat, export-rf, rf-trace-btn, rf-btn
-        mds_out = [no_update] * 5   # mds-store, mds-output, export-mds, plot-config, mds-btn
-        wr_mds_out = [no_update] * 3  # wr-results-store, wr-mds-output, wr-mds-btn
+        rf_done = _rf_future is not None and _rf_future.done()
+        mds_done = _mds_future is not None and _mds_future.done()
+        wr_done = _wr_mds_future is not None and _wr_mds_future.done()
+
+        if not rf_done and not mds_done and not wr_done:
+            return (no_update,) * 15
+
+        rf_out = [no_update] * 5
+        mds_out = [no_update] * 5
+        wr_mds_out = [no_update] * 3
         notif = no_update
 
-        # --- Check RF ---
-        if _rf_future is not None and _rf_future.done():
+        # --- Process RF ---
+        if rf_done:
             try:
-                result_names, matrix, elapsed = _rf_future.result()
+                result_names, elapsed = _rf_future.result()
             except Exception as e:
                 msg = f"RF computation failed: {e}"
                 add_log(msg, "ERROR")
                 _rf_future = None
-                rf_out = [
-                    dmc.Text(msg, c="red"),  # compute-rf-output
-                    no_update,               # distmat-store
-                    no_update,               # export-rf-button
-                    no_update,               # compute-rf-trace-button
-                    False,                   # re-enable compute-rf-button
-                ]
+                rf_out = [dmc.Text(msg, c="red"), no_update, no_update, no_update, False]
                 notif = dmc.Notification(title="RF Computation Error", message=msg,
                                          color="red", action="show", autoClose=6000,
                                          id="compute-rf-notification")
@@ -473,39 +482,32 @@ def register_compute_callbacks():
                 _rf_future = None
                 rf_name = _rf_meta.get("name", "RF")
                 file_breakdown = _rf_meta.get("file_breakdown", {})
-                save_distmat(rf_name, result_names, matrix, file_breakdown=file_breakdown)
+                # Matrix already saved to disk by the worker — just register it
+                register_distmat(rf_name, result_names, _rf_meta["save_path"],
+                                 file_breakdown=file_breakdown)
                 add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
                 add_log(f"RF computation took {elapsed:.2f}s")
-                distmat_idx = get_distmat_index()
                 rf_out = [
                     dmc.Alert(title=f"RF Distance Matrix ({rf_name})",
                               children=dmc.Text(f"{len(result_names)} x {len(result_names)} trees", size="sm"),
                               color="green", variant="light"),
-                    distmat_idx,
-                    False,   # export-rf-button enabled
-                    False,   # compute-rf-trace-button enabled
-                    False,   # re-enable compute-rf-button
+                    get_distmat_index(),
+                    False, False, False,
                 ]
                 notif = dmc.Notification(
                     title=f"RF Distances Computed ({rf_name})",
                     message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
                     color="green", action="show", autoClose=3000, id="compute-rf-notification")
 
-        # --- Check MDS ---
-        if _mds_future is not None and _mds_future.done():
+        # --- Process MDS ---
+        if mds_done:
             try:
                 embedding_list, elapsed = _mds_future.result()
             except Exception as e:
                 msg = f"MDS computation failed: {e}"
                 add_log(msg, "ERROR")
                 _mds_future = None
-                mds_out = [
-                    no_update,
-                    dmc.Text(msg, c="red"),
-                    no_update, no_update,
-                    False,   # re-enable mds button
-                ]
-                # Only overwrite notif if RF didn't already set one
+                mds_out = [no_update, dmc.Text(msg, c="red"), no_update, no_update, False]
                 if notif is no_update:
                     notif = dmc.Notification(title="MDS Error", message=msg, color="red",
                                              action="show", autoClose=6000, id="compute-mds-notification")
@@ -544,9 +546,7 @@ def register_compute_callbacks():
                     dmc.Alert(title="MDS Embedding",
                               children=dmc.Text(f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups", size="sm"),
                               color="blue", variant="light"),
-                    False,   # export-mds-button enabled
-                    {},      # plot-config-store reset
-                    False,   # re-enable mds button
+                    False, {}, False,
                 ]
                 if notif is no_update:
                     notif = dmc.Notification(
@@ -554,8 +554,13 @@ def register_compute_callbacks():
                         message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
                         color="green", action="show", autoClose=3000, id="compute-mds-notification")
 
-        # --- Check Within-run MDS ---
-        if _wr_mds_future is not None and _wr_mds_future.done():
+        # --- Process Within-run MDS ---
+        if wr_done:
+            # Clean up temp submatrix file
+            import os
+            sub_path = _wr_mds_meta.get("sub_path")
+            if sub_path and os.path.exists(sub_path):
+                os.remove(sub_path)
             try:
                 embedding_list, elapsed = _wr_mds_future.result()
             except Exception as e:
@@ -605,12 +610,11 @@ def register_compute_callbacks():
                         message=f"{result_key}: {len(tree_names)} trees in {elapsed:.2f}s",
                         color="green", action="show", autoClose=3000, id="compute-wr-mds-notification")
 
-        # --- Disable interval only when no jobs are pending ---
-        something_finished = (rf_out[0] is not no_update or mds_out[0] is not no_update or wr_mds_out[0] is not no_update)
+        # Re-enable interval if any jobs are still running
         any_running = ((_rf_future is not None and not _rf_future.done()) or
                        (_mds_future is not None and not _mds_future.done()) or
                        (_wr_mds_future is not None and not _wr_mds_future.done()))
-        poll_disabled = (not any_running) if something_finished else no_update
+        poll_disabled = not any_running
 
         return (*rf_out, *mds_out, *wr_mds_out, notif, poll_disabled)
 

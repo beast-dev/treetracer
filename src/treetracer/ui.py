@@ -298,11 +298,7 @@ def add_main_body():
                         ], gap="xs"),
                     ], justify="space-between"),
                     dmc.Space(h=10),
-                    dcc.Loading(
-                        html.Div(id="compute-rf-output"),
-                        type="circle",
-                        parent_style={"minHeight": "50px"},
-                    ),
+                    html.Div(id="compute-rf-output"),
                     # MDS Embedding section
                     dmc.Divider(my="lg"),
                     dmc.Title("MDS Embedding", order=4),
@@ -345,11 +341,7 @@ def add_main_body():
                         ], gap="xs"),
                     ], justify="space-between"),
                     dmc.Space(h=10),
-                    dcc.Loading(
-                        html.Div(id="compute-mds-output"),
-                        type="circle",
-                        parent_style={"minHeight": "50px"},
-                    ),
+                    html.Div(id="compute-mds-output"),
                     # Within-run MDS section
                     dmc.Divider(my="lg"),
                     dmc.Title("Within-run MDS", order=4),
@@ -382,11 +374,7 @@ def add_main_body():
                     ], align="flex-end", gap="lg"),
                     html.Div(id="wr-mds-info"),
                     dmc.Space(h=10),
-                    dcc.Loading(
-                        html.Div(id="compute-wr-mds-output"),
-                        type="circle",
-                        parent_style={"minHeight": "50px"},
-                    ),
+                    html.Div(id="compute-wr-mds-output"),
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
@@ -474,7 +462,7 @@ def add_navbar():
                     dcc.Store(id="within-run-mds-results-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Background computation polling
-                    dcc.Interval(id="compute-poll-interval", interval=1500, disabled=True),
+                    dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Store(id="sidebar-visible", storage_type="memory", data=True),

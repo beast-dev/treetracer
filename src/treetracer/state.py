@@ -40,6 +40,21 @@ def next_distmat_name():
     return f"RF_{_distmat_counter:03d}"
 
 
+def get_distmat_path(name):
+    """Return the .npy file path for a matrix name (creates temp dir if needed)."""
+    d = _ensure_tmpdir()
+    return os.path.join(d, name.replace("/", "_") + ".npy")
+
+
+def register_distmat(name, names, path, file_breakdown=None):
+    """Register a matrix that was already saved to disk by a subprocess worker."""
+    _distmat_index[name] = {
+        "names": list(names),
+        "path": path,
+        "file_breakdown": file_breakdown or {},
+    }
+
+
 def save_distmat(name, names, matrix, file_breakdown=None):
     """Save an RF distance matrix as uint16 .npy and register it.
 

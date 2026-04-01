@@ -277,9 +277,10 @@ def register_diagnostics_callbacks():
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
         State("distmat-store", "data"),
+        State("rf-burnin-input", "value"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats):
+    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats, burnin):
         """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
         if not n_clicks:
             return no_update, no_update, no_update, no_update
@@ -377,7 +378,11 @@ def register_diagnostics_callbacks():
         trace_df = pd.DataFrame(all_records)
         trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
 
-        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0)
+        try:
+            burnin = int(burnin) if burnin else 0
+        except (ValueError, TypeError):
+            burnin = 0
+        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=burnin)
 
         notification = dmc.Notification(
             title="RF Trace Computed",

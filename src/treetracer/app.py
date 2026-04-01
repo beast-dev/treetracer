@@ -80,11 +80,21 @@ def main():
             webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1600, height=900)
             webview.start()
 
+            # Webview window closed — clean up subprocess workers and temp files
+            from .callbacks.compute import _executor
+            if _executor is not None:
+                _executor.shutdown(wait=False, cancel_futures=True)
+            from .state import clear_all_distmats
+            clear_all_distmats()
+
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-    return 0
+
+    # Force exit to kill any lingering subprocess workers
+    import os
+    os._exit(0)
 
 
 if __name__ == "__main__":

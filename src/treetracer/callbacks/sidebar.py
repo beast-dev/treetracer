@@ -33,39 +33,44 @@ def register_sidebar_callbacks():
         if not n_clicks:
             return no_update, no_update, no_update, no_update, no_update, no_update
 
-        file_path = _open_file_dialog()
-        if not file_path:
+        file_paths = _open_file_dialog()
+        if not file_paths:
             return no_update, no_update, no_update, no_update, no_update, False
 
         stored_summaries = stored_summaries or {}
-        filename = os.path.basename(file_path)
+        tree_service = get_tree_service()
+        loaded_count = 0
+        errors = []
+        taxa_warnings = []
 
-        if not file_path.endswith(".trees"):
-            msg = f"Only .trees files are allowed. '{filename}' was rejected."
-            add_log(msg, "ERROR")
-            return no_update, msg, {"display": "block"}, no_update, no_update, False
+        for file_path in file_paths:
+            filename = os.path.basename(file_path)
 
-        # If a file with the same name is already loaded, append _N suffix before the extension
-        original_filename = filename
-        if filename in stored_summaries:
-            name_base, name_ext = os.path.splitext(filename)
-            n = 2
-            while f"{name_base}_{n}{name_ext}" in stored_summaries:
-                n += 1
-            filename = f"{name_base}_{n}{name_ext}"
-            add_log(f"File with name '{original_filename}' already loaded. Using '{filename}' as group name.", "WARNING")
+            if not file_path.endswith(".trees"):
+                errors.append(f"'{filename}' is not a .trees file")
+                add_log(f"Skipped {filename}: not a .trees file", "WARNING")
+                continue
 
-        print(f"Loading {filename}...")
-        add_log(f"Loading {filename}...")
+            # Deduplicate names
+            original_filename = filename
+            if filename in stored_summaries:
+                name_base, name_ext = os.path.splitext(filename)
+                n = 2
+                while f"{name_base}_{n}{name_ext}" in stored_summaries:
+                    n += 1
+                filename = f"{name_base}_{n}{name_ext}"
+                add_log(f"'{original_filename}' already loaded. Using '{filename}'.", "WARNING")
 
-        try:
-            tree_service = get_tree_service()
-            result = tree_service.load_nexus_file(
-                file_path, file_source=filename
-            )
+            add_log(f"Loading {filename}...")
 
-            if result["success"]:
-                # Store only lightweight summary, not every offset row
+            try:
+                result = tree_service.load_nexus_file(file_path, file_source=filename)
+
+                if not result["success"]:
+                    errors.append(f"'{filename}': {result.get('error', 'Unknown error')}")
+                    add_log(f"Error loading {filename}: {result.get('error')}", "ERROR")
+                    continue
+
                 trees_per_group = {}
                 offset_df = tree_service.db_manager._trees
                 file_rows = offset_df[offset_df["file_source"] == filename]
@@ -76,7 +81,6 @@ def register_sidebar_callbacks():
                         .to_dict()
                     )
 
-                # Fetch translate map early so we can store n_taxa
                 new_translate = tree_service.db_manager.get_translate_map(filename)
 
                 stored_summaries[filename] = {
@@ -86,66 +90,49 @@ def register_sidebar_callbacks():
                     "trees_per_group": trees_per_group,
                     "path": file_path,
                 }
-                print(f"Loaded {filename}: {result['trees_loaded']} trees")
-                add_log(
-                    f"Loaded {filename}: {result['trees_loaded']} trees"
-                )
+                loaded_count += 1
+                add_log(f"Loaded {filename}: {result['trees_loaded']} trees")
 
-                # Check for taxa mismatch against previously loaded files
-                taxa_warning = None
-                if new_translate and stored_summaries:
+                # Check taxa mismatch
+                if new_translate:
                     new_taxa = set(new_translate.values())
-                    mismatched_files = []
                     for other_file in stored_summaries:
                         if other_file == filename:
                             continue
                         other_translate = tree_service.db_manager.get_translate_map(other_file)
-                        if other_translate is None:
-                            continue
-                        other_taxa = set(other_translate.values())
-                        if new_taxa != other_taxa:
-                            mismatched_files.append(
-                                f"{other_file} has {len(other_taxa)} taxa"
-                            )
+                        if other_translate and set(other_translate.values()) != new_taxa:
+                            taxa_warnings.append(f"{filename} vs {other_file}")
+                            break
 
-                    if mismatched_files:
-                        taxa_warning = (
-                            f"{filename} has {len(new_taxa)} taxa but "
-                            + ", ".join(mismatched_files)
-                        )
-                        add_log(f"Taxa mismatch warning: {taxa_warning}", "WARNING")
+            except Exception as e:
+                errors.append(f"'{filename}': {str(e)}")
+                add_log(f"Error processing {filename}: {e}", "ERROR")
 
-                rename_note = ""
-                if filename != original_filename:
-                    rename_note = f" (renamed from '{original_filename}')"
-
-                if taxa_warning:
-                    notification = dmc.Notification(
-                        title="Trees Loaded — Taxa Mismatch",
-                        message=f"Loaded {result['trees_loaded']} trees as '{filename}'{rename_note}. WARNING: {taxa_warning}",
-                        color="yellow",
-                        action="show",
-                        autoClose=5000,
-                        id="load-notification",
-                    )
-                else:
-                    notification = dmc.Notification(
-                        title="Trees Loaded" if not rename_note else "Trees Loaded (Renamed)",
-                        message=f"Loaded {result['trees_loaded']} trees as '{filename}'{rename_note}.",
-                        color="green" if not rename_note else "yellow",
-                        action="show",
-                        autoClose=5000 if rename_note else 3000,
-                        id="load-notification",
-                    )
-                return stored_summaries, "", {"display": "none"}, no_update, notification, False
-            else:
-                msg = f"Error loading {filename}: {result.get('error', 'Unknown error')}"
-                add_log(msg, "ERROR")
-                return no_update, msg, {"display": "block"}, no_update, no_update, False
-        except Exception as e:
-            msg = f"Error processing {filename}: {str(e)}"
-            add_log(msg, "ERROR")
+        if loaded_count == 0 and errors:
+            msg = "Failed to load: " + "; ".join(errors)
             return no_update, msg, {"display": "block"}, no_update, no_update, False
+
+        # Build notification
+        msg_parts = [f"Loaded {loaded_count} file(s)"]
+        if errors:
+            msg_parts.append(f"{len(errors)} failed")
+        if taxa_warnings:
+            msg_parts.append("taxa mismatch detected")
+            add_log(f"Taxa mismatch: {', '.join(taxa_warnings)}", "WARNING")
+
+        color = "green"
+        if taxa_warnings or errors:
+            color = "yellow"
+
+        notification = dmc.Notification(
+            title=" — ".join(msg_parts),
+            message=f"Successfully loaded {loaded_count} .trees file(s).",
+            color=color,
+            action="show",
+            autoClose=4000,
+            id="load-notification",
+        )
+        return stored_summaries, "", {"display": "none"}, no_update, notification, False
 
     # Callback to display loaded trees info in the sidebar
     @callback(
@@ -432,7 +419,7 @@ def register_sidebar_callbacks():
             return (
                 {},          # distmat-store
                 {},          # plot-config-store
-                None,        # mds-result-store
+                {},          # mds-result-store
                 html.Div(),  # plot-display
                 {},          # tree-offset-store
                 html.Div(),  # compute-rf-output

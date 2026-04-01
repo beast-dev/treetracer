@@ -253,13 +253,16 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return no_update, no_update
 
-        # Extract group names from file_breakdown (groups are the keys)
+        # Extract group names from groups_per_file (actual tree name prefixes)
         compact = next(iter(stored_distmats.values()), None)
         if not compact:
             return no_update, no_update
 
-        breakdown = compact.get("file_breakdown", {})
-        all_groups = sorted(breakdown.keys())
+        groups_per_file = compact.get("groups_per_file", {})
+        all_groups = sorted(set(g for groups in groups_per_file.values() for g in groups))
+        if not all_groups:
+            # Fallback: use file_breakdown keys
+            all_groups = sorted(compact.get("file_breakdown", {}).keys())
         if not all_groups:
             return no_update, no_update
 

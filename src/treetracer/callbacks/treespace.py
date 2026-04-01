@@ -13,8 +13,14 @@ def register_treespace_callbacks():
         Output("plot-config-store", "data"),
         Input("mds-result-store", "data"),
     )
-    def generate_plot_config_from_mds(mds_result):
-        if not mds_result or not mds_result.get("data"):
+    def generate_plot_config_from_mds(mds_results):
+        if not mds_results:
+            return {}
+
+        # Use the most recently added MDS result
+        last_key = list(mds_results.keys())[-1]
+        mds_result = mds_results[last_key]
+        if not mds_result.get("data"):
             return {}
 
         metadata = mds_result["metadata"]

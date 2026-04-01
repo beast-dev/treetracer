@@ -266,70 +266,111 @@ def add_main_body():
             ),
             dmc.TabsPanel(
                 html.Div([
-                    # RF Distances section
+                    # RF Distances section — two columns
                     dmc.Title("RF Distances", order=4),
-                    html.Div(id="compute-trees-table"),
-                    dmc.Space(h=10),
-                    dmc.Group([
-                        dmc.Button(
-                            "Compute RF Distances",
-                            id="compute-rf-button",
-                            variant="filled",
-                            color="green",
-                            size="md",
-                            disabled=True,
-                        ),
-                        dmc.Group([
-                            dmc.Button(
-                                "Load RF Matrix",
-                                id="load-rf-button",
-                                variant="outline",
-                                color="green",
+                    dmc.Grid([
+                        # Left column: file selection + compute
+                        dmc.GridCol([
+                            html.Div(id="compute-trees-table"),
+                            dmc.Space(h=10),
+                            dmc.Group([
+                                dmc.Button(
+                                    "Compute RF Distances",
+                                    id="compute-rf-button",
+                                    variant="filled",
+                                    color="green",
+                                    size="sm",
+                                    disabled=True,
+                                ),
+                                dmc.Button(
+                                    "Load RF Matrix",
+                                    id="load-rf-button",
+                                    variant="outline",
+                                    color="green",
+                                    size="sm",
+                                ),
+                            ], gap="xs"),
+                        ], span=6),
+                        # Right column: computed matrices
+                        dmc.GridCol([
+                            dmc.Group([
+                                dmc.Text("Computed Matrices", fw=600, size="sm"),
+                                dmc.Badge("0", id="rf-matrix-count", variant="light",
+                                          color="gray", size="sm"),
+                            ], gap="xs", mb="xs"),
+                            dmc.Select(
+                                id="rf-matrix-select",
+                                placeholder="No matrices computed yet",
+                                data=[],
+                                value=None,
                                 size="sm",
                             ),
+                            html.Div(id="rf-matrix-info", style={"marginTop": "6px"}),
+                            dmc.Space(h=10),
                             dmc.Button(
-                                "Export RF Matrix",
+                                "Export Selected",
                                 id="export-rf-button",
                                 variant="outline",
                                 color="blue",
                                 size="sm",
                                 disabled=True,
+                                leftSection=DashIconify(icon="tabler:download", width=14),
                             ),
-                        ], gap="xs"),
-                    ], justify="space-between"),
+                        ], span=6),
+                    ], gutter="lg"),
                     dmc.Space(h=10),
                     html.Div(id="compute-rf-output"),
-                    # MDS Embedding section
+                    # Between-run MDS section
                     dmc.Divider(my="lg"),
-                    dmc.Title("MDS Embedding", order=4),
-                    dmc.Select(
-                        id="mds-distmat-select",
-                        label="Distance Matrix",
-                        placeholder="No distance matrix available",
-                        data=[],
-                        value=None,
-                        w=400,
-                    ),
-                    html.Div(id="mds-distmat-info"),
-                    html.Div(id="mds-status-text"),
-                    dmc.Space(h=10),
-                    dmc.Group([
-                        dmc.Button(
-                            "Compute MDS",
-                            id="compute-mds-button",
-                            variant="filled",
-                            color="blue",
-                            size="md",
-                            disabled=True,
-                        ),
-                        dmc.Group([
-                            dmc.Button(
-                                "Load MDS",
-                                id="load-mds-button",
-                                variant="outline",
-                                color="green",
+                    dmc.Title("Between-run MDS", order=4),
+                    dmc.Grid([
+                        # Left: compute controls
+                        dmc.GridCol([
+                            dmc.Select(
+                                id="mds-distmat-select",
+                                label="RF Matrix",
+                                placeholder="No distance matrix available",
+                                data=[],
+                                value=None,
                                 size="sm",
                             ),
+                            html.Div(id="mds-distmat-info", style={"marginTop": "6px"}),
+                            html.Div(id="mds-status-text"),
+                            dmc.Space(h=10),
+                            dmc.Group([
+                                dmc.Button(
+                                    "Compute MDS",
+                                    id="compute-mds-button",
+                                    variant="filled",
+                                    color="blue",
+                                    size="sm",
+                                    disabled=True,
+                                ),
+                                dmc.Button(
+                                    "Load MDS",
+                                    id="load-mds-button",
+                                    variant="outline",
+                                    color="green",
+                                    size="sm",
+                                ),
+                            ], gap="xs"),
+                        ], span=6),
+                        # Right: computed MDS results
+                        dmc.GridCol([
+                            dmc.Group([
+                                dmc.Text("Computed MDS", fw=600, size="sm"),
+                                dmc.Badge("0", id="mds-result-count", variant="light",
+                                          color="gray", size="sm"),
+                            ], gap="xs", mb="xs"),
+                            dmc.Select(
+                                id="mds-result-select",
+                                placeholder="No MDS results yet",
+                                data=[],
+                                value=None,
+                                size="sm",
+                            ),
+                            html.Div(id="mds-result-info", style={"marginTop": "6px"}),
+                            dmc.Space(h=10),
                             dmc.Button(
                                 "Export MDS",
                                 id="export-mds-button",
@@ -337,42 +378,73 @@ def add_main_body():
                                 color="blue",
                                 size="sm",
                                 disabled=True,
+                                leftSection=DashIconify(icon="tabler:download", width=14),
                             ),
-                        ], gap="xs"),
-                    ], justify="space-between"),
+                        ], span=6),
+                    ], gutter="lg"),
                     dmc.Space(h=10),
                     html.Div(id="compute-mds-output"),
                     # Within-run MDS section
                     dmc.Divider(my="lg"),
                     dmc.Title("Within-run MDS", order=4),
-                    dmc.Group([
-                        dmc.Select(
-                            id="wr-mds-distmat-select",
-                            label="RF Matrix",
-                            placeholder="No distance matrix available",
-                            data=[],
-                            value=None,
-                            w=300,
-                        ),
-                        dmc.Select(
-                            id="wr-mds-run-select",
-                            label="Run",
-                            placeholder="Select a run",
-                            data=[],
-                            value=None,
-                            w=300,
-                        ),
-                        dmc.Button(
-                            "Compute Within-run MDS",
-                            id="compute-wr-mds-button",
-                            variant="filled",
-                            color="violet",
-                            size="md",
-                            disabled=True,
-                            style={"alignSelf": "flex-end"},
-                        ),
-                    ], align="flex-end", gap="lg"),
-                    html.Div(id="wr-mds-info"),
+                    dmc.Grid([
+                        # Left: compute controls
+                        dmc.GridCol([
+                            dmc.Select(
+                                id="wr-mds-distmat-select",
+                                label="RF Matrix",
+                                placeholder="No distance matrix available",
+                                data=[],
+                                value=None,
+                                size="sm",
+                            ),
+                            dmc.Select(
+                                id="wr-mds-run-select",
+                                label="Run",
+                                placeholder="Select a run",
+                                data=[],
+                                value=None,
+                                size="sm",
+                                style={"marginTop": "6px"},
+                            ),
+                            html.Div(id="wr-mds-info", style={"marginTop": "6px"}),
+                            dmc.Space(h=10),
+                            dmc.Button(
+                                "Compute Within-run MDS",
+                                id="compute-wr-mds-button",
+                                variant="filled",
+                                color="violet",
+                                size="sm",
+                                disabled=True,
+                            ),
+                        ], span=6),
+                        # Right: computed within-run MDS results
+                        dmc.GridCol([
+                            dmc.Group([
+                                dmc.Text("Computed Within-run MDS", fw=600, size="sm"),
+                                dmc.Badge("0", id="wr-mds-result-count", variant="light",
+                                          color="gray", size="sm"),
+                            ], gap="xs", mb="xs"),
+                            dmc.Select(
+                                id="wr-mds-result-select",
+                                placeholder="No within-run MDS results yet",
+                                data=[],
+                                value=None,
+                                size="sm",
+                            ),
+                            html.Div(id="wr-mds-result-info", style={"marginTop": "6px"}),
+                            dmc.Space(h=10),
+                            dmc.Button(
+                                "Export Within-run MDS",
+                                id="export-wr-mds-button",
+                                variant="outline",
+                                color="violet",
+                                size="sm",
+                                disabled=True,
+                                leftSection=DashIconify(icon="tabler:download", width=14),
+                            ),
+                        ], span=6),
+                    ], gutter="lg"),
                     dmc.Space(h=10),
                     html.Div(id="compute-wr-mds-output"),
                 ], style={"padding": "10px"}),

@@ -46,12 +46,13 @@ def get_distmat_path(name):
     return os.path.join(d, name.replace("/", "_") + ".npy")
 
 
-def register_distmat(name, names, path, file_breakdown=None):
+def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
     """Register a matrix that was already saved to disk by a subprocess worker."""
     _distmat_index[name] = {
         "names": list(names),
         "path": path,
         "file_breakdown": file_breakdown or {},
+        "groups_per_file": groups_per_file or {},
     }
 
 
@@ -106,7 +107,11 @@ def get_distmat_index():
         {"name1": {"n_trees": int, "file_breakdown": {...}}, ...}
     """
     return {
-        k: {"n_trees": len(v["names"]), "file_breakdown": v.get("file_breakdown", {})}
+        k: {
+            "n_trees": len(v["names"]),
+            "file_breakdown": v.get("file_breakdown", {}),
+            "groups_per_file": v.get("groups_per_file", {}),
+        }
         for k, v in _distmat_index.items()
     }
 

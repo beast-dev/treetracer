@@ -183,12 +183,16 @@ def register_compute_callbacks():
             file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
         ]
 
-        # Build file breakdown: {group_name: n_trees} keyed by group_name
-        # (group_name is the prefix in tree names like "group_name/tree_001")
+        # Build file breakdown: {file_source: n_trees} and groups-per-file mapping
         file_breakdown = {}
+        groups_per_file = {}  # file_source -> set of group_names
         for t in sampled_trees:
+            fs = t["file_source"]
             gn = t["group_name"]
-            file_breakdown[gn] = file_breakdown.get(gn, 0) + 1
+            file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
+            groups_per_file.setdefault(fs, set()).add(gn)
+        # Convert sets to lists for JSON serialization
+        groups_per_file = {k: sorted(v) for k, v in groups_per_file.items()}
 
         rf_name = next_distmat_name()
         add_log(
@@ -200,6 +204,7 @@ def register_compute_callbacks():
         save_path = get_distmat_path(rf_name)
         _rf_meta["name"] = rf_name
         _rf_meta["file_breakdown"] = file_breakdown
+        _rf_meta["groups_per_file"] = groups_per_file
         _rf_meta["save_path"] = save_path
 
         # Submit RF computation — worker saves .npy directly, no matrix pickle transfer
@@ -222,6 +227,46 @@ def register_compute_callbacks():
             variant="light",
         )
         return no_update, computing_indicator, False, True
+
+    # ------ RF MATRIX LIST (right column) ------
+
+    @callback(
+        Output("rf-matrix-select", "data"),
+        Output("rf-matrix-select", "value"),
+        Output("rf-matrix-count", "children"),
+        Output("rf-matrix-count", "color"),
+        Output("export-rf-button", "disabled"),
+        Input("distmat-store", "data"),
+    )
+    def update_rf_matrix_list(distmat_data):
+        if not distmat_data:
+            return [], None, "0", "gray", True
+        options = [
+            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
+            for k, v in distmat_data.items()
+        ]
+        last_key = list(distmat_data.keys())[-1]
+        count = str(len(distmat_data))
+        return options, last_key, count, "blue", False
+
+    # Show file breakdown badges when an RF matrix is selected
+    @callback(
+        Output("rf-matrix-info", "children"),
+        Input("rf-matrix-select", "value"),
+        State("distmat-store", "data"),
+        prevent_initial_call=True,
+    )
+    def show_rf_matrix_info(selected, distmat_data):
+        if not selected or not distmat_data or selected not in distmat_data:
+            return html.Div()
+        breakdown = distmat_data[selected].get("file_breakdown", {})
+        n = distmat_data[selected].get("n_trees", 0)
+        badges = [
+            dmc.Badge(f"{f}: {c}", variant="light", color="blue", size="sm")
+            for f, c in breakdown.items()
+        ]
+        badges.append(dmc.Badge(f"Total: {n}", variant="light", color="grape", size="sm"))
+        return dmc.Group(badges, gap=4)
 
     # ------ MDS SECTION ON COMPUTE TAB ------
 
@@ -381,9 +426,16 @@ def register_compute_callbacks():
         except KeyError:
             return dmc.Text("Matrix not found on disk.", c="red"), no_update, no_update
 
-        # Find indices for trees belonging to the selected run
+        # Find indices for trees belonging to the selected file
+        # Look up which group_names belong to this file_source
+        from ..state import _distmat_index
+        groups_per_file = _distmat_index.get(selected_distmat, {}).get("groups_per_file", {})
+        run_groups = set(groups_per_file.get(selected_run, []))
+        if not run_groups:
+            # Fallback: try matching tree name prefix directly
+            run_groups = {selected_run}
         indices = [i for i, name in enumerate(names)
-                   if str(name).split("/")[0].strip() == selected_run]
+                   if str(name).split("/")[0].strip() in run_groups]
 
         if len(indices) < 2:
             msg = f"Only {len(indices)} tree(s) found for '{selected_run}'. Need at least 2."
@@ -431,7 +483,7 @@ def register_compute_callbacks():
         # RF outputs (5)
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("distmat-store", "data", allow_duplicate=True),
-        Output("export-rf-button", "disabled"),
+        Output("export-rf-button", "disabled", allow_duplicate=True),
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("compute-rf-button", "disabled", allow_duplicate=True),
         # Between-run MDS outputs (5)
@@ -448,10 +500,11 @@ def register_compute_callbacks():
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
+        State("mds-result-store", "data"),
         State("within-run-mds-results-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_completion(n_intervals, current_wr_results):
+    def poll_completion(n_intervals, current_mds_results, current_wr_results):
         global _rf_future, _mds_future, _wr_mds_future
 
         rf_done = _rf_future is not None and _rf_future.done()
@@ -483,8 +536,10 @@ def register_compute_callbacks():
                 rf_name = _rf_meta.get("name", "RF")
                 file_breakdown = _rf_meta.get("file_breakdown", {})
                 # Matrix already saved to disk by the worker — just register it
+                groups_per_file = _rf_meta.get("groups_per_file", {})
                 register_distmat(rf_name, result_names, _rf_meta["save_path"],
-                                 file_breakdown=file_breakdown)
+                                 file_breakdown=file_breakdown,
+                                 groups_per_file=groups_per_file)
                 add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
                 add_log(f"RF computation took {elapsed:.2f}s")
                 rf_out = [
@@ -536,16 +591,20 @@ def register_compute_callbacks():
                     "MIN_TREENUM": int(mds_df["treenum"].min()),
                     "MAX_TREENUM": int(mds_df["treenum"].max()),
                 }
-                mds_result = {"metadata": metadata, "data": mds_df.to_dict("records")}
+                mds_entry = {"metadata": metadata, "data": mds_df.to_dict("records")}
+
+                # Merge into existing results dict
+                all_mds = current_mds_results or {}
+                all_mds[mds_filename] = mds_entry
 
                 n_groups = len(mds_df["group"].unique())
                 add_log(f"PCoA completed in {elapsed:.2f}s: {len(mds_df)} points, {n_components}D, {n_groups} groups")
 
                 mds_out = [
-                    mds_result,
-                    dmc.Alert(title="MDS Embedding",
+                    all_mds,
+                    dmc.Alert(title="MDS Embedding Complete",
                               children=dmc.Text(f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups", size="sm"),
-                              color="blue", variant="light"),
+                              color="green", variant="light"),
                     False, {}, False,
                 ]
                 if notif is no_update:
@@ -623,20 +682,19 @@ def register_compute_callbacks():
     @callback(
         Output("notifications-container", "children", allow_duplicate=True),
         Input("export-rf-button", "n_clicks"),
-        State("distmat-store", "data"),
+        State("rf-matrix-select", "value"),
         prevent_initial_call=True,
     )
-    def export_rf_matrix(n_clicks, distmat_data):
-        if not n_clicks or not distmat_data:
+    def export_rf_matrix(n_clicks, selected_matrix):
+        if not n_clicks or not selected_matrix:
             return no_update
-        rf_filename = next(iter(distmat_data))
-        path = _save_file_dialog(default_filename=rf_filename)
+        path = _save_file_dialog(default_filename=f"{selected_matrix}.tsv")
         if not path:
             return no_update
         try:
-            names, arr = load_distmat(rf_filename)
+            names, arr = load_distmat(selected_matrix)
         except KeyError:
-            add_log("No matrix available for export.", "ERROR")
+            add_log(f"Matrix '{selected_matrix}' not available for export.", "ERROR")
             return no_update
         df = pd.DataFrame(arr, index=names, columns=names)
         df.to_csv(path, sep="\t")
@@ -654,16 +712,20 @@ def register_compute_callbacks():
         Output("notifications-container", "children", allow_duplicate=True),
         Input("export-mds-button", "n_clicks"),
         State("mds-result-store", "data"),
+        State("mds-result-select", "value"),
         prevent_initial_call=True,
     )
-    def export_mds(n_clicks, mds_result):
-        if not n_clicks or not mds_result or not mds_result.get("data"):
+    def export_mds(n_clicks, mds_results, selected_mds):
+        if not n_clicks or not mds_results or not selected_mds:
             return no_update
-        metadata = mds_result["metadata"]
+        entry = mds_results.get(selected_mds)
+        if not entry or not entry.get("data"):
+            return no_update
+        metadata = entry["metadata"]
         path = _save_file_dialog(default_filename=metadata["filename"])
         if not path:
             return no_update
-        mds_df = pd.DataFrame(mds_result["data"])
+        mds_df = pd.DataFrame(entry["data"])
         cols = metadata["dimensions"] + ["tree", "group", "treenum"]
         export_df = mds_df[[c for c in cols if c in mds_df.columns]]
         export_df.to_csv(path, sep="\t", index=False)
@@ -675,6 +737,113 @@ def register_compute_callbacks():
             action="show",
             autoClose=3000,
             id="export-mds-notification",
+        )
+
+    # ------ BETWEEN-RUN MDS RESULT LIST (right column) ------
+
+    @callback(
+        Output("mds-result-select", "data"),
+        Output("mds-result-select", "value"),
+        Output("mds-result-count", "children"),
+        Output("mds-result-count", "color"),
+        Output("export-mds-button", "disabled", allow_duplicate=True),
+        Input("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_mds_result_list(mds_results):
+        if not mds_results:
+            return [], None, "0", "gray", True
+        options = []
+        for key, entry in mds_results.items():
+            meta = entry.get("metadata", {})
+            n_groups = len(meta.get("groups", []))
+            label = f"{key} — {meta.get('rows', '?')} trees, {n_groups} groups"
+            options.append({"value": key, "label": label})
+        last_key = list(mds_results.keys())[-1]
+        count = str(len(mds_results))
+        return options, last_key, count, "blue", False
+
+    @callback(
+        Output("mds-result-info", "children"),
+        Input("mds-result-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def show_mds_result_info(selected, mds_results):
+        if not selected or not mds_results or selected not in mds_results:
+            return html.Div()
+        meta = mds_results[selected].get("metadata", {})
+        badges = [
+            dmc.Badge(f"{g}", variant="light", color="blue", size="sm")
+            for g in meta.get("groups", [])
+        ]
+        badges.append(dmc.Badge(f"{meta.get('rows', '?')} trees", variant="light", color="grape", size="sm"))
+        return dmc.Group(badges, gap=4)
+
+    # ------ WITHIN-RUN MDS RESULT LIST (right column) ------
+
+    @callback(
+        Output("wr-mds-result-select", "data"),
+        Output("wr-mds-result-select", "value"),
+        Output("wr-mds-result-count", "children"),
+        Output("wr-mds-result-count", "color"),
+        Output("export-wr-mds-button", "disabled"),
+        Input("within-run-mds-results-store", "data"),
+    )
+    def update_wr_mds_result_list(wr_results):
+        if not wr_results:
+            return [], None, "0", "gray", True
+        options = [
+            {"value": k, "label": f"{v.get('file', k)} ({v['n_trees']} trees) [{v.get('source_distmat', '?')}]"}
+            for k, v in wr_results.items()
+        ]
+        last_key = list(wr_results.keys())[-1]
+        count = str(len(wr_results))
+        return options, last_key, count, "violet", False
+
+    @callback(
+        Output("wr-mds-result-info", "children"),
+        Input("wr-mds-result-select", "value"),
+        State("within-run-mds-results-store", "data"),
+        prevent_initial_call=True,
+    )
+    def show_wr_mds_result_info(selected, wr_results):
+        if not selected or not wr_results or selected not in wr_results:
+            return html.Div()
+        result = wr_results[selected]
+        badges = [
+            dmc.Badge(f"File: {result.get('file', '?')}", variant="light", color="blue", size="sm"),
+            dmc.Badge(f"Source: {result.get('source_distmat', '?')}", variant="light", color="teal", size="sm"),
+            dmc.Badge(f"{result.get('n_trees', '?')} trees", variant="light", color="grape", size="sm"),
+        ]
+        return dmc.Group(badges, gap=4)
+
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("export-wr-mds-button", "n_clicks"),
+        State("wr-mds-result-select", "value"),
+        State("within-run-mds-results-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_wr_mds(n_clicks, selected, wr_results):
+        if not n_clicks or not selected or not wr_results or selected not in wr_results:
+            return no_update
+        result = wr_results[selected]
+        default_name = f"within_run_{result.get('file', 'mds')}.tsv".replace("/", "_")
+        path = _save_file_dialog(default_filename=default_name)
+        if not path:
+            return no_update
+        mds_df = pd.DataFrame(result["data"])
+        dims = result.get("dimensions", [])
+        cols = dims + ["tree", "treenum"]
+        export_df = mds_df[[c for c in cols if c in mds_df.columns]]
+        export_df.to_csv(path, sep="\t", index=False)
+        add_log(f"Exported within-run MDS to {path}")
+        return dmc.Notification(
+            title="Within-run MDS Exported",
+            message=f"Saved to {path}",
+            color="green", action="show", autoClose=3000,
+            id="export-wr-mds-notification",
         )
 
     # ------ LOAD RF / MDS FROM FILE ------
@@ -755,9 +924,10 @@ def register_compute_callbacks():
         Output("export-mds-button", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("load-mds-button", "n_clicks"),
+        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def load_mds(n_clicks):
+    def load_mds(n_clicks, current_mds_results):
         if not n_clicks:
             return no_update, no_update, no_update, no_update
 
@@ -850,4 +1020,6 @@ def register_compute_callbacks():
             id="load-mds-notification",
         )
 
-        return mds_result, output_indicator, False, notification
+        all_mds = current_mds_results or {}
+        all_mds[mds_filename] = mds_result
+        return all_mds, output_indicator, False, notification

@@ -261,7 +261,6 @@ def register_sidebar_callbacks():
             return no_update, no_update, notification
 
         add_log(f"Downsampling {filename} to {n} trees...")
-        add_log(f"Downsampling {filename} to {n} trees...")
 
         tree_service = get_tree_service()
         tree_service.db_manager.downsample_trees(filename, n)
@@ -282,7 +281,6 @@ def register_sidebar_callbacks():
             stored_summaries[filename]["groups"] = list(trees_per_group.keys())
             stored_summaries[filename]["trees_per_group"] = trees_per_group
 
-        add_log(f"Downsampled {filename} to {len(file_rows)} trees")
         add_log(f"Downsampled {filename} to {len(file_rows)} trees")
         notification = dmc.Notification(
             title="Trees Downsampled",
@@ -321,7 +319,6 @@ def register_sidebar_callbacks():
             return no_update, no_update, no_update
 
         add_log(f"Resetting {filename}...")
-        add_log(f"Resetting {filename}...")
 
         tree_service = get_tree_service()
 
@@ -348,7 +345,6 @@ def register_sidebar_callbacks():
         stored_summaries[filename]["groups"] = list(trees_per_group.keys())
         stored_summaries[filename]["trees_per_group"] = trees_per_group
 
-        add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
         add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
         notification = dmc.Notification(
             title="Trees Reset",

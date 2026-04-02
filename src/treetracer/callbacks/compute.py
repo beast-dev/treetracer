@@ -12,7 +12,7 @@ from ..state import (save_distmat, load_distmat, get_distmat_index, next_distmat
                       store_mds_result, get_mds_results_index,
                       store_wr_mds_result, get_wr_mds_results_index,
                       clear_all_mds_results)
-from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
+from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names, extract_group
 
 
 # Separate-process computation — has its own GIL, so the main process stays responsive.
@@ -439,7 +439,7 @@ def register_compute_callbacks():
             # Fallback: try matching tree name prefix directly
             run_groups = {selected_run}
         indices = [i for i, name in enumerate(names)
-                   if str(name).split("/")[0].strip() in run_groups]
+                   if extract_group(name) in run_groups]
 
         if len(indices) < 2:
             msg = f"Only {len(indices)} tree(s) found for '{selected_run}'. Need at least 2."
@@ -577,7 +577,7 @@ def register_compute_callbacks():
                 mdscols = [f"MDS{i+1}" for i in range(n_components)]
                 mds_df = pd.DataFrame(embedding_list, columns=mdscols)
                 mds_df["tree"] = tree_names
-                mds_df["group"] = mds_df["tree"].apply(lambda x: str(x).split("/")[0].strip())
+                mds_df["group"] = mds_df["tree"].apply(extract_group)
                 mds_df["group"] = mds_df["group"].astype(str)
                 group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
                 mds_df["group_col"] = mds_df["group"].map(group_mapping)
@@ -895,7 +895,7 @@ def register_compute_callbacks():
         # Build file breakdown from group prefixes in tree names
         file_breakdown = {}
         for n in names:
-            group = n.split("/")[0] if "/" in n else "(ungrouped)"
+            group = extract_group(n) if "/" in n else "(ungrouped)"
             file_breakdown[group] = file_breakdown.get(group, 0) + 1
         save_distmat(filename, names, df.values.tolist(), file_breakdown=file_breakdown)
         stored_distmats = get_distmat_index()

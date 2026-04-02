@@ -71,23 +71,14 @@ def register_sidebar_callbacks():
                     add_log(f"Error loading {filename}: {result.get('error')}", "ERROR")
                     continue
 
-                trees_per_group = {}
-                offset_df = tree_service.db_manager._trees
-                file_rows = offset_df[offset_df["file_source"] == filename]
-                if len(file_rows) > 0:
-                    trees_per_group = (
-                        file_rows.groupby("group_name", observed=True)
-                        .size()
-                        .to_dict()
-                    )
-
+                summary = tree_service.compute_file_summary(filename)
                 new_translate = tree_service.db_manager.get_translate_map(filename)
 
                 stored_summaries[filename] = {
-                    "total_trees": result["trees_loaded"],
+                    "total_trees": summary["total_trees"],
                     "n_taxa": len(new_translate) if new_translate else 0,
-                    "groups": list(trees_per_group.keys()),
-                    "trees_per_group": trees_per_group,
+                    "groups": summary["groups"],
+                    "trees_per_group": summary["trees_per_group"],
                     "path": file_path,
                 }
                 loaded_count += 1
@@ -266,25 +257,14 @@ def register_sidebar_callbacks():
         tree_service.db_manager.downsample_trees(filename, n)
 
         # Recompute summary from the DataFrame
-        offset_df = tree_service.db_manager._trees
-        file_rows = offset_df[offset_df["file_source"] == filename]
-        trees_per_group = {}
-        if len(file_rows) > 0:
-            trees_per_group = (
-                file_rows.groupby("group_name", observed=True)
-                .size()
-                .to_dict()
-            )
-
+        summary = tree_service.compute_file_summary(filename)
         if filename in stored_summaries:
-            stored_summaries[filename]["total_trees"] = len(file_rows)
-            stored_summaries[filename]["groups"] = list(trees_per_group.keys())
-            stored_summaries[filename]["trees_per_group"] = trees_per_group
+            stored_summaries[filename].update(summary)
 
-        add_log(f"Downsampled {filename} to {len(file_rows)} trees")
+        add_log(f"Downsampled {filename} to {summary['total_trees']} trees")
         notification = dmc.Notification(
             title="Trees Downsampled",
-            message=f"Downsampled {filename} to {len(file_rows)} trees.",
+            message=f"Downsampled {filename} to {summary['total_trees']} trees.",
             color="orange",
             action="show",
             autoClose=4000,
@@ -331,24 +311,13 @@ def register_sidebar_callbacks():
             return no_update, no_update, no_update
 
         # Recompute summary
-        offset_df = tree_service.db_manager._trees
-        file_rows = offset_df[offset_df["file_source"] == filename]
-        trees_per_group = {}
-        if len(file_rows) > 0:
-            trees_per_group = (
-                file_rows.groupby("group_name", observed=True)
-                .size()
-                .to_dict()
-            )
+        summary = tree_service.compute_file_summary(filename)
+        stored_summaries[filename].update(summary)
 
-        stored_summaries[filename]["total_trees"] = len(file_rows)
-        stored_summaries[filename]["groups"] = list(trees_per_group.keys())
-        stored_summaries[filename]["trees_per_group"] = trees_per_group
-
-        add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
+        add_log(f"Reset {filename}: reloaded {summary['total_trees']} trees from disk")
         notification = dmc.Notification(
             title="Trees Reset",
-            message=f"Reloaded {len(file_rows)} trees from {filename}.",
+            message=f"Reloaded {summary['total_trees']} trees from {filename}.",
             color="orange",
             action="show",
             autoClose=4000,

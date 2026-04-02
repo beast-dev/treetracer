@@ -275,15 +275,26 @@ class TreeService:
         return result
 
     def prepare_trees_for_rf_analysis(self, sampled_trees: List[Dict[str, Any]]) -> List[str]:
-        """Extract newick strings for Robinson-Foulds distance computation.
-        
-        Args:
-            sampled_trees: List of tree dictionaries from get_sample_for_analysis
-            
-        Returns:
-            List of newick strings ready for RF distance libraries
-        """
+        """Extract newick strings for Robinson-Foulds distance computation."""
         return [tree['newick'] for tree in sampled_trees]
+
+    def compute_file_summary(self, file_source: str) -> Dict[str, Any]:
+        """Compute summary stats for a loaded file (trees per group, total, etc.)."""
+        self.db_manager.flush()
+        df = self.db_manager._trees
+        file_rows = df[df["file_source"] == file_source]
+        trees_per_group = {}
+        if len(file_rows) > 0:
+            trees_per_group = (
+                file_rows.groupby("group_name", observed=True)
+                .size()
+                .to_dict()
+            )
+        return {
+            "total_trees": len(file_rows),
+            "groups": list(trees_per_group.keys()),
+            "trees_per_group": trees_per_group,
+        }
     
 
 

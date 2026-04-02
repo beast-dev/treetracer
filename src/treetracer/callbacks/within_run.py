@@ -26,6 +26,9 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     mode = "lines+markers" if show_lines else "markers"
     colorscale = "Blues"
 
+    # Pre-compute tree labels once for the whole DataFrame
+    tree_labels = df["tree"].str.split("/").str[-1].str.strip()
+
     # Split into in-range and out-of-range points
     if treenum_range is not None:
         in_mask = (df["treenum"] >= treenum_range[0]) & (df["treenum"] <= treenum_range[1])
@@ -51,7 +54,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                 marker=dict(color="lightgrey", size=5, opacity=0.4),
                 hoverinfo="skip",
                 showlegend=False,
-                customdata=list(zip(df_out["treenum"], df_out["tree"].str.split("/").str[-1].str.strip())),
+                customdata=list(zip(df_out["treenum"], tree_labels[out_mask])),
                 selected=dict(marker=dict(opacity=0.4)),
                 unselected=dict(marker=dict(opacity=0.4)),
             ), row=row, col=col)
@@ -79,7 +82,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                 marker=marker_dict,
                 line=dict(color="rgba(120,120,120,0.4)", width=1),
                 hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra></extra>",
-                customdata=list(zip(df_in["treenum"], df_in["tree"].str.split("/").str[-1].str.strip())),
+                customdata=list(zip(df_in["treenum"], tree_labels[in_mask])),
                 showlegend=False,
                 selected=dict(marker=dict(opacity=1)),
                 unselected=dict(marker=dict(opacity=1)),
@@ -87,7 +90,8 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
 
         # Red-outlined markers for selected trees
         if selected_treenums:
-            sel = df[df["treenum"].isin(selected_treenums)]
+            sel_mask = df["treenum"].isin(selected_treenums)
+            sel = df[sel_mask]
             if len(sel) > 0:
                 fig.add_trace(go.Scatter(
                     x=sel[xcol].values, y=sel[ycol].values,
@@ -97,7 +101,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
                         color="rgba(0,0,0,0)",
                         line=dict(color="red", width=1.5),
                     ),
-                    customdata=list(zip(sel["treenum"], sel["tree"].str.split("/").str[-1].str.strip())),
+                    customdata=list(zip(sel["treenum"], tree_labels[sel_mask])),
                     hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
                     showlegend=False,
                 ), row=row, col=col)

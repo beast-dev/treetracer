@@ -3,6 +3,16 @@ import subprocess
 import sys
 
 
+def extract_group(tree_name):
+    """Extract the group prefix from a tree name (everything before the first /)."""
+    return str(tree_name).split("/")[0].strip()
+
+
+def extract_tree_label(tree_name):
+    """Extract the tree label from a tree name (everything after the last /)."""
+    return str(tree_name).split("/")[-1].strip()
+
+
 def _has_zenity():
     return shutil.which("zenity") is not None
 

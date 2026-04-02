@@ -8,7 +8,8 @@ import pandas as pd
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import (save_distmat, load_distmat, get_distmat_index, next_distmat_name,
-                      get_distmat_path, register_distmat,
+                      get_distmat_path, register_distmat, get_distmat_file_path,
+                      get_distmat_groups_per_file,
                       store_mds_result, get_mds_results_index,
                       store_wr_mds_result, get_wr_mds_results_index,
                       clear_all_mds_results)
@@ -29,8 +30,17 @@ _wr_mds_meta = {}      # metadata needed by poll_completion to build within-run 
 def _get_executor():
     global _executor
     if _executor is None:
+        import atexit
         _executor = ProcessPoolExecutor(max_workers=1)
+        atexit.register(_shutdown_executor)
     return _executor
+
+
+def _shutdown_executor():
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=False, cancel_futures=True)
+        _executor = None
 
 
 def register_compute_callbacks():
@@ -342,8 +352,7 @@ def register_compute_callbacks():
 
         # Pass file path to subprocess — reads .npy directly, no pickle transfer
         from ..rf._worker import compute_mds_worker
-        from ..state import _distmat_index
-        matrix_path = _distmat_index[selected_distmat]["path"]
+        matrix_path = get_distmat_file_path(selected_distmat)
         global _mds_future
         _mds_future = _get_executor().submit(
             compute_mds_worker, matrix_path, n_components,
@@ -431,9 +440,7 @@ def register_compute_callbacks():
             return dmc.Text("Matrix not found on disk.", c="red"), no_update, no_update
 
         # Find indices for trees belonging to the selected file
-        # Look up which group_names belong to this file_source
-        from ..state import _distmat_index
-        groups_per_file = _distmat_index.get(selected_distmat, {}).get("groups_per_file", {})
+        groups_per_file = get_distmat_groups_per_file(selected_distmat)
         run_groups = set(groups_per_file.get(selected_run, []))
         if not run_groups:
             # Fallback: try matching tree name prefix directly
@@ -457,7 +464,8 @@ def register_compute_callbacks():
 
         # Save submatrix to a temp file and pass path to worker
         import tempfile
-        sub_path = tempfile.mktemp(suffix=".npy", prefix="treetracer_wr_")
+        fd, sub_path = tempfile.mkstemp(suffix=".npy", prefix="treetracer_wr_")
+        os.close(fd)  # Close the fd; np.save will open by path
         np.save(sub_path, sub_matrix)
 
         _wr_mds_meta["tree_names"] = sub_names
@@ -616,11 +624,7 @@ def register_compute_callbacks():
 
         # --- Process Within-run MDS ---
         if wr_done:
-            # Clean up temp submatrix file
-            import os
             sub_path = _wr_mds_meta.get("sub_path")
-            if sub_path and os.path.exists(sub_path):
-                os.remove(sub_path)
             try:
                 embedding_list, elapsed = _wr_mds_future.result()
             except Exception as e:
@@ -669,6 +673,12 @@ def register_compute_callbacks():
                         title=f"Within-run MDS Complete",
                         message=f"{result_key}: {len(tree_names)} trees in {elapsed:.2f}s",
                         color="green", action="show", autoClose=3000, id=notif_id())
+            # Always clean up temp submatrix file
+            if sub_path:
+                try:
+                    os.remove(sub_path)
+                except OSError:
+                    pass
 
         # Re-enable interval if any jobs are still running
         any_running = ((_rf_future is not None and not _rf_future.done()) or

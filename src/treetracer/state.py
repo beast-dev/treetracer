@@ -16,6 +16,7 @@ import numpy as np
 _tmpdir = None
 _distmat_index = {}  # name -> {"names": list[str], "path": str, "file_breakdown": dict}
 _distmat_counter = 0  # auto-incrementing ID for unique matrix names
+_MAX_DISTMATS = 50   # evict oldest when exceeded
 
 
 def _ensure_tmpdir():
@@ -48,6 +49,16 @@ def get_distmat_path(name):
 
 def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
     """Register a matrix that was already saved to disk by a subprocess worker."""
+    # Evict oldest if at capacity
+    if len(_distmat_index) >= _MAX_DISTMATS and name not in _distmat_index:
+        oldest = next(iter(_distmat_index))
+        old_path = _distmat_index[oldest].get("path")
+        if old_path:
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
+        del _distmat_index[oldest]
     _distmat_index[name] = {
         "names": list(names),
         "path": path,
@@ -120,6 +131,16 @@ def has_distmat(name):
     return name in _distmat_index
 
 
+def get_distmat_file_path(name):
+    """Return the .npy file path for a stored matrix."""
+    return _distmat_index[name]["path"]
+
+
+def get_distmat_groups_per_file(name):
+    """Return the groups_per_file mapping for a stored matrix."""
+    return _distmat_index.get(name, {}).get("groups_per_file", {})
+
+
 def clear_all_distmats():
     """Remove all .npy files from disk and reset the index."""
     global _distmat_counter
@@ -141,10 +162,14 @@ def clear_all_distmats():
 
 _mds_results = {}       # key -> {"metadata": {...}, "data": list[dict]}
 _wr_mds_results = {}    # key -> {"file": str, "source_distmat": str, "dimensions": [...], "n_trees": int, "data": list[dict]}
+_MAX_MDS_RESULTS = 50   # evict oldest when exceeded
 
 
 def store_mds_result(key, result):
     """Store a between-run MDS result server-side."""
+    if len(_mds_results) >= _MAX_MDS_RESULTS and key not in _mds_results:
+        oldest = next(iter(_mds_results))
+        del _mds_results[oldest]
     _mds_results[key] = result
 
 
@@ -171,6 +196,9 @@ def get_mds_results_index():
 
 def store_wr_mds_result(key, result):
     """Store a within-run MDS result server-side."""
+    if len(_wr_mds_results) >= _MAX_MDS_RESULTS and key not in _wr_mds_results:
+        oldest = next(iter(_wr_mds_results))
+        del _wr_mds_results[oldest]
     _wr_mds_results[key] = result
 
 

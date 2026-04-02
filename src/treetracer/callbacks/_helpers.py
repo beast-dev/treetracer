@@ -3,6 +3,16 @@ import subprocess
 import sys
 
 
+def _escape_for_applescript(s):
+    """Escape a string for use inside AppleScript double quotes."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _escape_for_python_string(s):
+    """Escape a string for use inside Python single-quoted string."""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def extract_group(tree_name):
     """Extract the group prefix from a tree name (everything before the first /)."""
     return str(tree_name).split("/")[0].strip()
@@ -23,7 +33,7 @@ def _save_file_dialog(default_filename="output.tsv"):
         cmd = [
             "osascript", "-e",
             'POSIX path of (choose file name with prompt '
-            '"Save file as" default name "' + default_filename + '")',
+            '"Save file as" default name "' + _escape_for_applescript(default_filename) + '")',
         ]
     elif _has_zenity():
         cmd = [
@@ -40,7 +50,7 @@ def _save_file_dialog(default_filename="output.tsv"):
             "root = tk.Tk(); root.withdraw(); "
             "print(filedialog.asksaveasfilename("
             "title='Save file as', "
-            "initialfile='" + default_filename + "', "
+            "initialfile='" + _escape_for_python_string(default_filename) + "', "
             "defaultextension='.tsv', "
             "filetypes=[('TSV files', '*.tsv'), ('All files', '*.*')])); "
             "root.destroy()",

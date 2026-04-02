@@ -9,7 +9,7 @@ import pandas as pd
 
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
-from ..state import load_distmat
+from ..ess.rf_trace import compute_rf_trace_data
 from ._helpers import _save_file_dialog
 
 
@@ -299,87 +299,17 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return (
                 dmc.Text("Please compute RF distances first (Distances tab).", c="red"),
-                no_update,
-                no_update,
-                no_update,
-            )
-
-        # Load matrix from disk (stored as uint16 .npy)
-        distmat_key = next(iter(stored_distmats))
-        try:
-            distmat_names, distmat_matrix = load_distmat(distmat_key)
-        except KeyError:
-            return (
-                dmc.Text("Distance matrix not available. Please recompute RF distances.", c="red"),
                 no_update, no_update, no_update,
             )
-        # Build name→index lookup for O(1) distance access
-        name_to_idx = {n: i for i, n in enumerate(distmat_names)}
 
-        add_log(f"Computing RF trace to {ref_position} tree of group '{ref_group}' (using pre-computed matrix)...")
+        distmat_key = next(iter(stored_distmats))
+        result, ref_name = compute_rf_trace_data(distmat_key, ref_group, ref_position)
 
-        # Build ordered tree list: prefer DB if trees are loaded, otherwise derive from distmat names
-        tree_service = get_tree_service()
-        tree_service.db_manager.flush()
-        all_df = tree_service.db_manager._trees
+        # If result is a string, it's an error message
+        if isinstance(result, str):
+            return dmc.Text(result, c="red"), no_update, no_update, no_update
 
-        if len(all_df) > 0:
-            # Trees loaded in DB — use DB ordering
-            all_df = all_df.sort_values('id')
-            tree_names = all_df['name'].tolist()
-            tree_groups = all_df['group_name'].tolist()
-            tree_file_sources = all_df['file_source'].tolist()
-        else:
-            # No tree files loaded — derive from distance matrix names
-            tree_names = distmat_names
-            tree_groups = [
-                name.rsplit("/", 1)[0] if "/" in name else name
-                for name in tree_names
-            ]
-            tree_file_sources = ["(from distance matrix)"] * len(tree_names)
-
-        # Filter to reference group and pick first/last
-        ref_trees_in_group = [
-            name for name, grp in zip(tree_names, tree_groups) if grp == ref_group
-        ]
-
-        if not ref_trees_in_group:
-            msg = f"No trees found in group '{ref_group}'."
-            add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update, no_update
-
-        ref_name = ref_trees_in_group[0] if ref_position == "first" else ref_trees_in_group[-1]
-        add_log(f"Reference tree: name='{ref_name}' ({ref_position} of group '{ref_group}')")
-
-        if ref_name not in name_to_idx:
-            msg = f"Reference tree '{ref_name}' not found in distance matrix."
-            add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update, no_update
-
-        ref_idx = name_to_idx[ref_name]
-
-        # --- Look up RF distance for every tree from the pre-computed matrix ---
-        # Exclude the reference tree itself (RF=0 skews the axes)
-        all_records = []
-        for tree_name, group, file_source in zip(tree_names, tree_groups, tree_file_sources):
-            if tree_name == ref_name:
-                continue
-            if tree_name not in name_to_idx:
-                add_log(f"Tree '{tree_name}' not found in distance matrix, skipping.", "WARNING")
-                continue
-            tree_idx = name_to_idx[tree_name]
-            all_records.append({
-                'rf_distance': int(distmat_matrix[ref_idx, tree_idx]),
-                'group': group,
-                'name': tree_name,
-                'file_source': file_source,
-            })
-
-        if not all_records:
-            return dmc.Text("No trees available for RF trace.", c="dimmed"), no_update, no_update, no_update
-
-        trace_df = pd.DataFrame(all_records)
-        trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
+        trace_df = result
 
         try:
             burnin = int(burnin) if burnin else 0
@@ -389,7 +319,7 @@ def register_diagnostics_callbacks():
 
         notification = dmc.Notification(
             title="RF Trace Computed",
-            message=f"Computed RF distances for {len(all_records)} trees to {ref_position} tree of {ref_group}.",
+            message=f"Computed RF distances for {len(trace_df)} trees to {ref_position} tree of {ref_group}.",
             color="green",
             action="show",
             autoClose=3000,

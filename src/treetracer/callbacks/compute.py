@@ -5,7 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import pandas as pd
 
-from ..logger import add_log
+from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import (save_distmat, load_distmat, get_distmat_index, next_distmat_name,
                       get_distmat_path, register_distmat,
@@ -117,7 +117,7 @@ def register_compute_callbacks():
                 color="yellow",
                 action="show",
                 autoClose=6000,
-                id="compute-rf-notification",
+                id=notif_id(),
             ), no_update, no_update, no_update
 
         # Collect taxa counts for selected files
@@ -141,7 +141,7 @@ def register_compute_callbacks():
                 color="red",
                 action="show",
                 autoClose=6000,
-                id="compute-rf-notification",
+                id=notif_id(),
             ), no_update, no_update, no_update
 
         # --- All taxa counts match — extract data then submit RF to subprocess ---
@@ -169,7 +169,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return dmc.Notification(
                 title="RF Error", message=msg, color="red",
-                action="show", autoClose=6000, id="compute-rf-notification",
+                action="show", autoClose=6000, id=notif_id(),
             ), no_update, no_update, no_update
 
         names = [t["name"] for t in sampled_trees]
@@ -532,7 +532,7 @@ def register_compute_callbacks():
                 rf_out = [dmc.Text(msg, c="red"), no_update, no_update, no_update, False]
                 notif = dmc.Notification(title="RF Computation Error", message=msg,
                                          color="red", action="show", autoClose=6000,
-                                         id="compute-rf-notification")
+                                         id=notif_id())
             else:
                 _rf_future = None
                 rf_name = _rf_meta.get("name", "RF")
@@ -554,7 +554,7 @@ def register_compute_callbacks():
                 notif = dmc.Notification(
                     title=f"RF Distances Computed ({rf_name})",
                     message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
-                    color="green", action="show", autoClose=3000, id="compute-rf-notification")
+                    color="green", action="show", autoClose=3000, id=notif_id())
 
         # --- Process MDS ---
         if mds_done:
@@ -567,7 +567,7 @@ def register_compute_callbacks():
                 mds_out = [no_update, dmc.Text(msg, c="red"), no_update, no_update, False]
                 if notif is no_update:
                     notif = dmc.Notification(title="MDS Error", message=msg, color="red",
-                                             action="show", autoClose=6000, id="compute-mds-notification")
+                                             action="show", autoClose=6000, id=notif_id())
             else:
                 _mds_future = None
                 tree_names = [str(n) for n in _mds_meta["tree_names"]]
@@ -612,7 +612,7 @@ def register_compute_callbacks():
                     notif = dmc.Notification(
                         title="MDS Computed",
                         message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
-                        color="green", action="show", autoClose=3000, id="compute-mds-notification")
+                        color="green", action="show", autoClose=3000, id=notif_id())
 
         # --- Process Within-run MDS ---
         if wr_done:
@@ -630,7 +630,7 @@ def register_compute_callbacks():
                 wr_mds_out = [no_update, dmc.Text(msg, c="red"), False]
                 if notif is no_update:
                     notif = dmc.Notification(title="Within-run MDS Error", message=msg, color="red",
-                                             action="show", autoClose=6000, id="compute-wr-mds-notification")
+                                             action="show", autoClose=6000, id=notif_id())
             else:
                 _wr_mds_future = None
                 tree_names = _wr_mds_meta["tree_names"]
@@ -668,7 +668,7 @@ def register_compute_callbacks():
                     notif = dmc.Notification(
                         title=f"Within-run MDS Complete",
                         message=f"{result_key}: {len(tree_names)} trees in {elapsed:.2f}s",
-                        color="green", action="show", autoClose=3000, id="compute-wr-mds-notification")
+                        color="green", action="show", autoClose=3000, id=notif_id())
 
         # Re-enable interval if any jobs are still running
         any_running = ((_rf_future is not None and not _rf_future.done()) or
@@ -706,7 +706,7 @@ def register_compute_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-rf-notification",
+            id=notif_id(),
         )
 
     @callback(
@@ -738,7 +738,7 @@ def register_compute_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-mds-notification",
+            id=notif_id(),
         )
 
     # ------ BETWEEN-RUN MDS RESULT LIST (right column) ------
@@ -847,7 +847,7 @@ def register_compute_callbacks():
             title="Within-run MDS Exported",
             message=f"Saved to {path}",
             color="green", action="show", autoClose=3000,
-            id="export-wr-mds-notification",
+            id=notif_id(),
         )
 
     # ------ LOAD RF / MDS FROM FILE ------
@@ -877,7 +877,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Load Error", message=msg, color="red",
-                action="show", autoClose=8000, id="load-rf-notification",
+                action="show", autoClose=8000, id=notif_id(),
             ), no_update
 
         # Validate tree names have group prefix
@@ -887,7 +887,7 @@ def register_compute_callbacks():
             add_log(f"RF load validation failed: {err_msg}", "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Invalid Tree Names", message=err_msg, color="red",
-                action="show", autoClose=8000, id="load-rf-notification",
+                action="show", autoClose=8000, id=notif_id(),
             ), no_update
 
         filename = os.path.basename(file_path)
@@ -917,7 +917,7 @@ def register_compute_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="load-rf-notification",
+            id=notif_id(),
         )
 
         return stored_distmats, output_indicator, False, notification, False
@@ -945,7 +945,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Load Error", message=msg, color="red",
-                action="show", autoClose=8000, id="load-mds-notification",
+                action="show", autoClose=8000, id=notif_id(),
             )
 
         if "group" not in mds_df.columns:
@@ -953,7 +953,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id="load-mds-notification",
+                action="show", autoClose=8000, id=notif_id(),
             )
 
         if mds_df["group"].isna().any() or (mds_df["group"].astype(str).str.strip() == "").any():
@@ -961,7 +961,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id="load-mds-notification",
+                action="show", autoClose=8000, id=notif_id(),
             )
 
         mds_df["group"] = mds_df["group"].astype(str)
@@ -983,7 +983,7 @@ def register_compute_callbacks():
             add_log(msg, "ERROR")
             return no_update, no_update, no_update, dmc.Notification(
                 title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id="load-mds-notification",
+                action="show", autoClose=8000, id=notif_id(),
             )
 
         metadata = {
@@ -1020,7 +1020,7 @@ def register_compute_callbacks():
             color="green",
             action="show",
             autoClose=6000,
-            id="load-mds-notification",
+            id=notif_id(),
         )
 
         store_mds_result(mds_filename, mds_result)

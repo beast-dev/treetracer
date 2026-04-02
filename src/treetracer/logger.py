@@ -30,3 +30,12 @@ def get_logs():
 def clear_logs():
     """Clear all log entries."""
     _log_queue.clear()
+
+
+_notif_counter = 0
+
+def notif_id(prefix: str = "notif") -> str:
+    """Generate a unique notification ID to prevent Mantine from deduplicating."""
+    global _notif_counter
+    _notif_counter += 1
+    return f"{prefix}-{_notif_counter}"

@@ -7,7 +7,7 @@ from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
 
-from ..logger import add_log
+from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import load_distmat
 from ._helpers import _save_file_dialog
@@ -393,7 +393,7 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="rf-trace-notification",
+            id=notif_id(),
         )
 
         store_data = trace_df.to_dict("records")
@@ -450,7 +450,7 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-lnl-trace-notification",
+            id=notif_id(),
         )
 
     @callback(
@@ -475,5 +475,5 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-rf-trace-notification",
+            id=notif_id(),
         )

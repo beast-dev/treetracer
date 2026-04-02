@@ -459,7 +459,7 @@ def register_within_run_callbacks():
 
         if not tree_names:
             return dmc.Notification(title="Export Error", message="No matching trees found.",
-                                    color="red", action="show", autoClose=4000, id="export-trees-notification")
+                                    color="red", action="show", autoClose=4000, id=notif_id())
 
         # Look up trees in the tree manager and export
         from ..db.tree_service import get_tree_service
@@ -473,7 +473,7 @@ def register_within_run_callbacks():
         if len(matched) == 0:
             return dmc.Notification(title="Export Error",
                                     message="Selected trees not found in database. They may have been cleared.",
-                                    color="red", action="show", autoClose=4000, id="export-trees-notification")
+                                    color="red", action="show", autoClose=4000, id=notif_id())
 
         file_source = matched["file_source"].iloc[0]
         path = _save_file_dialog(default_filename=f"selected_{len(matched)}_trees.trees")
@@ -495,13 +495,13 @@ def register_within_run_callbacks():
                 out.write(b"End;\n")
         except Exception as e:
             return dmc.Notification(title="Export Error", message=str(e),
-                                    color="red", action="show", autoClose=6000, id="export-trees-notification")
+                                    color="red", action="show", autoClose=6000, id=notif_id())
 
-        from ..logger import add_log
+        from ..logger import add_log, notif_id
         add_log(f"Exported {len(matched)} selected trees to {path}")
         return dmc.Notification(title="Trees Exported",
                                 message=f"Exported {len(matched)} trees to {path}",
-                                color="green", action="show", autoClose=4000, id="export-trees-notification")
+                                color="green", action="show", autoClose=4000, id=notif_id())
 
     # Export plot as PDF
     @callback(
@@ -521,11 +521,11 @@ def register_within_run_callbacks():
         fig = go.Figure(fig_dict)
         fig.update_layout(template="simple_white")
         fig.write_image(path, width=1800, height=500, scale=2)
-        from ..logger import add_log
+        from ..logger import add_log, notif_id
         add_log(f"Exported within-run plot to {path}")
         return dmc.Notification(title="PDF Exported", message=f"Saved to {path}",
                                 color="green", action="show", autoClose=3000,
-                                id="export-wr-pdf-notification")
+                                id=notif_id())
 
     # ------ PLOT RENDERING ------
 

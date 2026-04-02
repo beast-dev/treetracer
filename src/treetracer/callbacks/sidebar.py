@@ -2,7 +2,7 @@ from dash import html, callback, clientside_callback, Input, Output, State, no_u
 import dash_mantine_components as dmc
 import os
 
-from ..logger import add_log
+from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import clear_all_distmats, clear_all_mds_results
 from ._helpers import _open_file_dialog
@@ -130,7 +130,7 @@ def register_sidebar_callbacks():
             color=color,
             action="show",
             autoClose=4000,
-            id="load-notification",
+            id=notif_id(),
         )
         return stored_summaries, "", {"display": "none"}, no_update, notification, False
 
@@ -256,7 +256,7 @@ def register_sidebar_callbacks():
                 color="yellow",
                 action="show",
                 autoClose=4000,
-                id="downsample-skip-notification",
+                id=notif_id(),
             )
             return no_update, no_update, notification
 
@@ -290,7 +290,7 @@ def register_sidebar_callbacks():
             color="orange",
             action="show",
             autoClose=4000,
-            id="downsample-notification",
+            id=notif_id(),
         )
         return stored_summaries, no_update, notification
 
@@ -356,7 +356,7 @@ def register_sidebar_callbacks():
             color="orange",
             action="show",
             autoClose=4000,
-            id="reset-notification",
+            id=notif_id(),
         )
         return stored_summaries, no_update, notification
 
@@ -408,7 +408,7 @@ def register_sidebar_callbacks():
                 color="blue",
                 action="show",
                 autoClose=3000,
-                id="clear-notification",
+                id=notif_id(),
             )
             empty_sidebar = dmc.Text(
                 "No trees loaded. Click the upload button above to load a .trees file.",

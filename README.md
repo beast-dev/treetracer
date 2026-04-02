@@ -38,9 +38,15 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 TreeTracer uses pywebview for its native desktop window. On Linux, this requires GTK WebKit system packages:
 
 ```bash
-# Ubuntu/Debian
+# Ubuntu 24.04+
 sudo apt install libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
-    python3-gi python3-gi-cairo gir1.2-gtk-3.0 zenity
+    gir1.2-gtk-3.0 libgirepository-2.0-dev libcairo2-dev \
+    pkg-config zenity
+
+# Ubuntu 22.04
+sudo apt install libwebkit2gtk-4.0-dev gir1.2-webkit2-4.0 \
+    gir1.2-gtk-3.0 libgirepository-1.0-dev libcairo2-dev \
+    pkg-config zenity
 ```
 
 #### 3. Clone and run
@@ -52,12 +58,12 @@ cd treetracer
 # macOS — just run directly:
 uv run treetracer
 
-# Linux — needs access to system GObject bindings:
-uv venv --system-site-packages
+# Linux — install PyGObject bindings, then run:
+uv add PyGObject pycairo
 uv run treetracer
 ```
 
-This opens TreeTracer in a native desktop window. `uv` handles Python installation and all pip dependencies automatically. On Linux, `--system-site-packages` is needed so the venv can access system-installed GTK/GObject libraries.
+This opens TreeTracer in a native desktop window. `uv` handles Python installation and all pip dependencies automatically. On Linux, `PyGObject` and `pycairo` are compiled from source against the system GTK/GObject headers installed via `apt`.
 
 **Alternative (Linux, no root):** If you can't install system packages, use the Qt backend instead:
 ```bash

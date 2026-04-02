@@ -249,7 +249,6 @@ def register_sidebar_callbacks():
         current_total = stored_summaries.get(filename, {}).get("total_trees", 0)
         if n >= current_total:
             msg = f"Requested {n} trees but {filename} only has {current_total}. No downsampling performed."
-            print(msg)
             add_log(msg, "WARNING")
             notification = dmc.Notification(
                 title="Downsample Skipped",
@@ -261,7 +260,7 @@ def register_sidebar_callbacks():
             )
             return no_update, no_update, notification
 
-        print(f"Downsampling {filename} to {n} trees...")
+        add_log(f"Downsampling {filename} to {n} trees...")
         add_log(f"Downsampling {filename} to {n} trees...")
 
         tree_service = get_tree_service()
@@ -283,7 +282,7 @@ def register_sidebar_callbacks():
             stored_summaries[filename]["groups"] = list(trees_per_group.keys())
             stored_summaries[filename]["trees_per_group"] = trees_per_group
 
-        print(f"Downsampled {filename} to {len(file_rows)} trees")
+        add_log(f"Downsampled {filename} to {len(file_rows)} trees")
         add_log(f"Downsampled {filename} to {len(file_rows)} trees")
         notification = dmc.Notification(
             title="Trees Downsampled",
@@ -321,7 +320,7 @@ def register_sidebar_callbacks():
         if not file_path:
             return no_update, no_update, no_update
 
-        print(f"Resetting {filename}...")
+        add_log(f"Resetting {filename}...")
         add_log(f"Resetting {filename}...")
 
         tree_service = get_tree_service()
@@ -349,7 +348,7 @@ def register_sidebar_callbacks():
         stored_summaries[filename]["groups"] = list(trees_per_group.keys())
         stored_summaries[filename]["trees_per_group"] = trees_per_group
 
-        print(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
+        add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
         add_log(f"Reset {filename}: reloaded {len(file_rows)} trees from disk")
         notification = dmc.Notification(
             title="Trees Reset",

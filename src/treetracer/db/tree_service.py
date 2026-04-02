@@ -61,7 +61,8 @@ class TreeService:
             )
             
             total_time = time.time() - start_time
-            print(f"Total loading time: {total_time:.2f}s")
+            from ..logger import add_log
+            add_log(f"Total loading time: {total_time:.2f}s")
             
             stats = self.db_manager.get_database_stats()
             

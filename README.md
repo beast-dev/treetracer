@@ -109,3 +109,14 @@ The build uses [PyApp](https://github.com/ofek/pyapp)
 2. `make_macos_app.sh` wraps the binary in a `.app` bundle with icon and `Info.plist`
 3. On first launch, the binary downloads Python 3.13 via `uv`, creates an isolated venv, and installs all dependencies
 4. Subsequent launches are instant (cached environment)
+
+---
+
+## TODO
+
+### Convergence Diagnostics
+
+- [ ] **ESS computation**
+- [ ] **Pseudo ESS** 
+- [ ] **ASDSF (Average Standard Deviation of Split Frequencies)** 
+- [ ] **Frechet correlation ESS** 

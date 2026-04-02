@@ -18,89 +18,68 @@ def make_plot_grid():
 
 
 def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
-    mode_2d = "lines+markers" if show_lines else "markers"
-    mode_3d = "lines+markers" if show_lines else "markers"
+    mode = "lines+markers" if show_lines else "markers"
+
+    # 2D panels: (x_col, y_col, row, col)
+    panels_2d = [
+        (x, y, 1, 2),
+        (x, z, 2, 2),
+        (y, z, 3, 2),
+    ]
+
     for i, gr in enumerate(GROUPS):
         group_data = df[df["group"] == gr]
-        # Invisible legend-only trace with large marker
+        color = COLOR_DICT[gr]
+        tree_short = group_data["tree"].str.split("/").str[-1].str.strip()
+        customdata = list(zip(group_data["treenum"], tree_short))
+        hover = f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>"
+
+        # Invisible legend-only trace
         fig.add_trace(
             go.Scatter(
                 x=[None], y=[None],
                 mode="markers",
                 name=gr,
                 showlegend=True,
-                marker=dict(color=COLOR_DICT[gr], size=10),
+                marker=dict(color=color, size=10),
                 legendgroup=gr,
                 legendrank=i,
             ),
-            row=1,
-            col=2,
+            row=1, col=2,
         )
+
+        # 3D scatter
         fig.add_trace(
             go.Scatter3d(
-                x=group_data[x],
-                y=group_data[y],
-                z=group_data[z],
-                mode=mode_3d,
+                x=group_data[x], y=group_data[y], z=group_data[z],
+                mode=mode,
                 name=gr,
                 showlegend=False,
-                marker=dict(color=COLOR_DICT[gr], size=4),
-                line=dict(color=COLOR_DICT[gr], width=1),
+                marker=dict(color=color, size=4),
+                line=dict(color=color, width=1),
                 legendgroup=gr,
-                hovertemplate=f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>",
-                customdata=list(zip(group_data["treenum"], group_data["tree"].str.split("/").str[-1].str.strip())),
+                hovertemplate=hover,
+                customdata=customdata,
             ),
-            row=1,
-            col=1,
-        )  # scatter 3D
-        fig.add_trace(
-            go.Scatter(
-                x=group_data[x],
-                y=group_data[y],
-                mode=mode_2d,
-                name=gr,
-                showlegend=False,  # Show legend for proper sync
-                marker=dict(color=COLOR_DICT[gr]),
-                line=dict(color=COLOR_DICT[gr], width=1),
-                legendgroup=gr,  # Add legend group for synchronization
-                hovertemplate=f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>",
-                customdata=list(zip(group_data["treenum"], group_data["tree"].str.split("/").str[-1].str.strip())),
-            ),
-            row=1,
-            col=2,
-        )  # scatter 2D - 1
-        fig.add_trace(
-            go.Scatter(
-                x=group_data[x],
-                y=group_data[z],
-                mode=mode_2d,
-                name=gr,
-                showlegend=False,  # Show legend for proper sync
-                marker=dict(color=COLOR_DICT[gr]),
-                line=dict(color=COLOR_DICT[gr], width=1),
-                legendgroup=gr,  # Add legend group for synchronization
-                hovertemplate=f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>",
-                customdata=list(zip(group_data["treenum"], group_data["tree"].str.split("/").str[-1].str.strip())),
-            ),
-            row=2,
-            col=2,
-        )  # scatter 2D - 2
-        fig.add_trace(
-            go.Scatter(
-                x=group_data[y],
-                y=group_data[z],
-                mode=mode_2d,
-                name=gr,
-                showlegend=False,  # Hide duplicate legends
-                marker=dict(color=COLOR_DICT[gr]),
-                line=dict(color=COLOR_DICT[gr], width=1),
-                legendgroup=gr,  # Add legend group
-                hovertemplate=f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>",
-                customdata=list(zip(group_data["treenum"], group_data["tree"].str.split("/").str[-1].str.strip())),
-            ),
-            row=3,
-            col=2,
+            row=1, col=1,
         )
+
+        # Three 2D projections
+        for xcol, ycol, row, col in panels_2d:
+            fig.add_trace(
+                go.Scatter(
+                    x=group_data[xcol], y=group_data[ycol],
+                    mode=mode,
+                    name=gr,
+                    showlegend=False,
+                    marker=dict(color=color),
+                    line=dict(color=color, width=1),
+                    legendgroup=gr,
+                    hovertemplate=hover,
+                    customdata=customdata,
+                ),
+                row=row, col=col,
+            )
 
     fig.update_layout(
         template="simple_white",
@@ -111,24 +90,17 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
         ),
         legend=dict(
             orientation="h",
-            yanchor="top",
-            y=-0.15,
-            xanchor="center",
-            x=0.5,
+            yanchor="top", y=-0.15,
+            xanchor="center", x=0.5,
             bgcolor="rgba(0,0,0,0)",
             font=dict(size=14),
             itemsizing="constant",
         ),
+        legend_itemwidth=40,
         uirevision="constant",
         margin=dict(l=2, r=20, t=25, b=10),
     )
-    fig.update_layout(legend_itemwidth=40)
 
-    fig.update_xaxes(title_text=x, row=1, col=2)
-    fig.update_yaxes(title_text=y, row=1, col=2)
-
-    fig.update_xaxes(title_text=x, row=2, col=2)
-    fig.update_yaxes(title_text=z, row=2, col=2)
-
-    fig.update_xaxes(title_text=y, row=3, col=2)
-    fig.update_yaxes(title_text=z, row=3, col=2)
+    for xcol, ycol, row, col in panels_2d:
+        fig.update_xaxes(title_text=xcol, row=row, col=col)
+        fig.update_yaxes(title_text=ycol, row=row, col=col)

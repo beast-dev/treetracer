@@ -77,85 +77,9 @@ Download `TreeTracer.app` (macOS) from the releases page. Double-click to run �
 
 ---
 
-## Development Setup
-
-### Reference environment
-
-- **Machine**: MacBook Pro 14" (M4 Pro, 2024)
-- **OS**: macOS 15.x (Sequoia)
-- **Python**: 3.13 (managed by `uv`)
-- **Rust**: 1.91+ (for `rapidtrees` and packaging via PyApp)
-
-### Prerequisites
-
-| Tool | Install | Purpose |
-|------|---------|---------|
-| `uv` | `brew install uv` | Python package manager, venv, and runner |
-| Rust | [rustup.rs](https://rustup.rs/) | Required for `rapidtrees` (RF distances) and packaging |
-| Xcode CLI tools | `xcode-select --install` | C compiler for some Python packages (macOS) |
-
-### Getting started
-
-```bash
-git clone https://github.com/beast-dev/treetracer.git
-cd treetracer
-
-# Install dependencies and run (uv handles everything)
-uv run treetracer
-
-# Run Python commands (always use uv run)
-uv run python -c "import treetracer; print('OK')"
-```
-
-### Project structure
-
-```
-src/treetracer/
-├── app.py              # Dash app creation, server startup, desktop mode
-├── ui.py               # Full UI layout (all components, stores, tabs)
-├── state.py            # Server-side storage (RF matrices on disk as uint16 .npy)
-├── logger.py           # In-memory logging system
-├── plot_utils.py       # Between-run Plotly figure construction
-├── __init__.py          # Package entry point (exports main)
-├── __main__.py          # Enables `python -m treetracer`
-├── assets/             # Static assets (icons, CSS)
-├── callbacks/          # All Dash callback logic
-│   ├── compute.py      # RF computation, MDS, within-run MDS (async subprocess)
-│   ├── treespace.py    # Between-run 3D/2D scatter visualization
-│   ├── within_run.py   # Within-run visualization, selection, animation, export
-│   ├── diagnostics.py  # LnL traces, RF traces, PDF export
-│   ├── sidebar.py      # File loading, downsampling, clear data
-│   ├── shell.py        # Navbar, about modal, log panel
-│   └── _helpers.py     # Native file dialogs, validation
-├── db/                 # Tree data layer
-│   ├── tree_manager.py # Pandas DataFrame with byte-offset newick I/O
-│   ├── tree_service.py # High-level API for tree operations
-│   └── process_trees.py # NEXUS streaming parser
-└── rf/                 # Computation layer
-    ├── rf.py           # RF distance wrappers (rapidtrees)
-    ├── _worker.py      # Subprocess workers (RF + MDS)
-    └── mds.py          # Classical PCoA via eigendecomposition
-```
-
-### Key dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `dash` | ≥4.1.0 | Web framework |
-| `dash-mantine-components` | 2.x | UI component library (React 18) |
-| `rapidtrees` | 0.3.0 | Rust-compiled RF distance computation |
-| `plotly` | latest | Interactive charting |
-| `pandas` | latest | DataFrame operations |
-| `numpy` | latest | Matrix operations |
-| `scipy` | latest | KDE for diagnostic traces |
-| `kaleido` | latest | PDF export |
-| `pywebview` | ≥6.1 | Native desktop window |
-
----
-
 ## Packaging & Distribution
 
-TreeTracer can be packaged as a standalone desktop application (~3 MB) that end users double-click to run. See [docs/packaging.md](docs/packaging.md) for full details.
+TreeTracer can be packaged as a standalone desktop application (~3 MB) that end users double-click to run.
 
 ### Quick build (macOS)
 

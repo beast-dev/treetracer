@@ -61,7 +61,8 @@ class TreeService:
             )
             
             total_time = time.time() - start_time
-            print(f"Total loading time: {total_time:.2f}s")
+            from ..logger import add_log
+            add_log(f"Total loading time: {total_time:.2f}s")
             
             stats = self.db_manager.get_database_stats()
             
@@ -108,8 +109,11 @@ class TreeService:
         
         # Build filters
         filters = {}
-        if file_sources and len(file_sources) == 1:
-            filters['file_source'] = file_sources[0]
+        if file_sources:
+            if len(file_sources) == 1:
+                filters['file_source'] = file_sources[0]
+            else:
+                filters['file_sources'] = file_sources
         if group_names and len(group_names) == 1:
             filters['group_name'] = group_names[0]
         

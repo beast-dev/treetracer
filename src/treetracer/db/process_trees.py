@@ -13,6 +13,8 @@ import time
 import os
 from typing import Tuple, Dict, Any
 
+from ..logger import add_log
+
 
 def parse_tree_line_metadata(left_part: str) -> Tuple[str, Dict[str, Any]]:
     """Parse tree line to extract name and metadata from square brackets.
@@ -129,7 +131,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
     Returns:
         Total number of trees inserted
     """
-    print(f"Streaming trees (offset mode) directly to database...")
+    add_log("Streaming trees (offset mode) directly to database...")
 
     # Register the source file so db_manager can read newicks back later
     db_manager.register_source_file(file_source, nexus_file)
@@ -172,7 +174,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                     db_manager.set_source_preamble(
                         file_source, preamble_bytes, translate_map
                     )
-                print(f"Captured preamble ({len(preamble_bytes)} bytes, "
+                add_log(f"Captured preamble ({len(preamble_bytes)} bytes, "
                       f"{len(translate_map)} taxa in Translate)")
 
             eq_pos = stripped.find(b' = ')
@@ -199,7 +201,7 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                     db_manager.set_source_preamble(
                         file_source, preamble_bytes, translate_map
                     )
-                print(f"No Translate block; extracted {len(translate_map)} taxa from first tree")
+                add_log(f"No Translate block; extracted {len(translate_map)} taxa from first tree")
 
             leading_ws = len(raw_line) - len(raw_line.lstrip())
             newick_offset = line_start + leading_ws + newick_start_in_stripped
@@ -227,13 +229,13 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
                 trees_in_current_transaction += inserted
                 batch_data = []
 
-                print(f"Inserted batch of {inserted} trees in {batch_time:.2f}s (total: {total_inserted})")
+                add_log(f"Inserted batch of {inserted} trees in {batch_time:.2f}s (total: {total_inserted})")
 
                 if trees_in_current_transaction >= transaction_size:
                     commit_start = time.time()
                     db_manager.get_connection().execute("COMMIT")
                     commit_time = time.time() - commit_start
-                    print(f"  Committed transaction ({trees_in_current_transaction} trees in {commit_time:.2f}s)")
+                    add_log(f"Committed transaction ({trees_in_current_transaction} trees in {commit_time:.2f}s)")
                     trees_in_current_transaction = 0
                     db_manager.get_connection().execute("BEGIN TRANSACTION")
 
@@ -244,17 +246,17 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
         batch_time = time.time() - batch_start
         total_inserted += inserted
         trees_in_current_transaction += inserted
-        print(f"Final batch of {inserted} trees in {batch_time:.2f}s")
+        add_log(f"Final batch of {inserted} trees in {batch_time:.2f}s")
 
     if trees_in_current_transaction > 0:
         db_manager.get_connection().execute("COMMIT")
-        print(f"  Final commit ({trees_in_current_transaction} trees)")
+        add_log(f"Final commit ({trees_in_current_transaction} trees)")
 
     # Flush pending rows
     if hasattr(db_manager, 'flush'):
         db_manager.flush()
 
     total_time = time.time() - start_time
-    print(f"Streaming complete: {total_inserted} trees in {total_time:.2f}s")
+    add_log(f"Streaming complete: {total_inserted} trees in {total_time:.2f}s")
 
     return total_inserted

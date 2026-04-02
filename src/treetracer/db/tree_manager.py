@@ -176,7 +176,9 @@ class TreeManagerPandas:
 
         # Apply filters
         if filters:
-            if 'file_source' in filters:
+            if 'file_sources' in filters:
+                df = df[df['file_source'].isin(filters['file_sources'])]
+            elif 'file_source' in filters:
                 df = df[df['file_source'] == filters['file_source']]
             if 'group_name' in filters:
                 df = df[df['group_name'] == filters['group_name']]

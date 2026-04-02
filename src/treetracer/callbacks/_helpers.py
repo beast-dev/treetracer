@@ -45,17 +45,22 @@ def _save_file_dialog(default_filename="output.tsv"):
 
 
 def _open_file_dialog():
-    """Open a native file picker and return the selected path."""
+    """Open a native file picker with multi-select and return a list of paths."""
     if sys.platform == "darwin":
         cmd = [
             "osascript", "-e",
-            'POSIX path of (choose file of type {"trees"} '
-            'with prompt "Select a .trees file")',
+            'set theFiles to (choose file of type {"trees"} '
+            'with prompt "Select .trees file(s)" with multiple selections allowed)\n'
+            'set output to ""\n'
+            'repeat with f in theFiles\n'
+            '  set output to output & POSIX path of f & "\n"\n'
+            'end repeat\n'
+            'return output',
         ]
     elif _has_zenity():
         cmd = [
-            "zenity", "--file-selection",
-            "--title=Select a .trees file",
+            "zenity", "--file-selection", "--multiple", "--separator=\n",
+            "--title=Select .trees file(s)",
             "--file-filter=Trees files | *.trees",
             "--file-filter=All files | *",
         ]
@@ -64,15 +69,17 @@ def _open_file_dialog():
             sys.executable, "-c",
             "import tkinter as tk; from tkinter import filedialog; "
             "root = tk.Tk(); root.withdraw(); "
-            "print(filedialog.askopenfilename("
-            "title='Select a .trees file', "
-            "filetypes=[('Trees files', '*.trees'), ('All files', '*.*')])); "
+            "paths = filedialog.askopenfilenames("
+            "title='Select .trees file(s)', "
+            "filetypes=[('Trees files', '*.trees'), ('All files', '*.*')]); "
+            "print('\\n'.join(paths)); "
             "root.destroy()",
         ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+            paths = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+            return paths if paths else None
     except Exception:
         pass
     return None

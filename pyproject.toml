@@ -19,6 +19,7 @@ dependencies = [
     "numpy",
     "scipy",
     "kaleido",
+    "pywebview>=6.1",
 ]
 
 [project.scripts]

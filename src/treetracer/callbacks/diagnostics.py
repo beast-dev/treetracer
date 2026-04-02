@@ -7,7 +7,7 @@ from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
 
-from ..logger import add_log
+from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import load_distmat
 from ._helpers import _save_file_dialog
@@ -253,13 +253,16 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return no_update, no_update
 
-        # Extract group names from file_breakdown (groups are the keys)
+        # Extract group names from groups_per_file (actual tree name prefixes)
         compact = next(iter(stored_distmats.values()), None)
         if not compact:
             return no_update, no_update
 
-        breakdown = compact.get("file_breakdown", {})
-        all_groups = sorted(breakdown.keys())
+        groups_per_file = compact.get("groups_per_file", {})
+        all_groups = sorted(set(g for groups in groups_per_file.values() for g in groups))
+        if not all_groups:
+            # Fallback: use file_breakdown keys
+            all_groups = sorted(compact.get("file_breakdown", {}).keys())
         if not all_groups:
             return no_update, no_update
 
@@ -277,9 +280,10 @@ def register_diagnostics_callbacks():
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
         State("distmat-store", "data"),
+        State("rf-burnin-input", "value"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats):
+    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats, burnin):
         """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
         if not n_clicks:
             return no_update, no_update, no_update, no_update
@@ -377,7 +381,11 @@ def register_diagnostics_callbacks():
         trace_df = pd.DataFrame(all_records)
         trace_df['treenum'] = trace_df.groupby('group').cumcount() + 1
 
-        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0)
+        try:
+            burnin = int(burnin) if burnin else 0
+        except (ValueError, TypeError):
+            burnin = 0
+        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=burnin)
 
         notification = dmc.Notification(
             title="RF Trace Computed",
@@ -385,7 +393,7 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="rf-trace-notification",
+            id=notif_id(),
         )
 
         store_data = trace_df.to_dict("records")
@@ -442,7 +450,7 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-lnl-trace-notification",
+            id=notif_id(),
         )
 
     @callback(
@@ -467,5 +475,5 @@ def register_diagnostics_callbacks():
             color="green",
             action="show",
             autoClose=3000,
-            id="export-rf-trace-notification",
+            id=notif_id(),
         )

@@ -4,16 +4,24 @@ import plotly.express as px
 import pandas as pd
 
 from ..logger import add_log
+from ..state import get_mds_result
 from ..plot_utils import make_plot_grid, add_trace_multiplot
 
 
 def register_treespace_callbacks():
-    # Auto-generate plot config when MDS result changes
+    # Auto-generate plot config when MDS result index changes
     @callback(
         Output("plot-config-store", "data"),
         Input("mds-result-store", "data"),
     )
-    def generate_plot_config_from_mds(mds_result):
+    def generate_plot_config_from_mds(mds_index):
+        if not mds_index:
+            return {}
+
+        # Use the most recently added MDS result
+        last_key = list(mds_index.keys())[-1]
+        # Read full data from server-side store (not from dcc.Store)
+        mds_result = get_mds_result(last_key)
         if not mds_result or not mds_result.get("data"):
             return {}
 

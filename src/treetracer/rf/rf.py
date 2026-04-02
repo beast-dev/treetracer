@@ -1,12 +1,13 @@
 """Robinson-Foulds distance computation backed by rapidtrees.
 
-Provides rf_distance_from_newicks for trees already in memory (newick strings
-+ translate map), returning (names, matrix) where matrix is a symmetric
-list-of-lists of ints.
+Uses the iterator API: each newick is parsed into a compact snapshot and
+the raw string is discarded. The result is a numpy uint32 array via
+zero-copy from the Rust side.
 """
 
 from typing import Dict, List, Tuple
 
+import numpy as np
 import rapidtrees
 
 
@@ -14,46 +15,38 @@ import rapidtrees
 # Core distance functions
 # ---------------------------------------------------------------------------
 
-def rf_distance_from_newicks(
+def rf_distance_from_newick_iter(
     names: List[str],
-    newicks: List[str],
+    newick_iter,
     translate_maps: List[Dict[str, str]],
     map_indices: List[int] | None = None,
     rooted: bool = False,
-) -> Tuple[List[str], List[List[int]]]:
-    """Compute pairwise RF distances from newick strings and translate maps.
+) -> Tuple[List[str], np.ndarray]:
+    """Compute pairwise RF distances from a lazy iterator of newick strings.
+
+    Each newick is parsed into a compact snapshot and the raw string is
+    discarded — only one newick is in memory at a time. The result is
+    returned as a numpy uint32 array via zero-copy from the Rust side.
 
     Args:
         names: Tree identifiers (one per newick).
-        newicks: Newick strings (may contain BEAST annotations).
+        newick_iter: Iterator yielding newick strings. Must yield exactly
+            len(names) strings.
         translate_maps: List of translate maps. When all trees share the same
             map, pass a single-element list.
-        map_indices: Per-tree index into *translate_maps*. Defaults to all-zero
-            (every tree uses the first map).
-        rooted: If True compare clades (rooted RF); if False compare
-            bipartitions (unrooted RF, matches R phangorn default).
+        map_indices: Per-tree index into *translate_maps*. Defaults to all-zero.
+        rooted: If True compare clades; if False compare bipartitions.
 
     Returns:
-        (names, matrix) — tree identifiers and symmetric distance matrix.
+        (names, matrix) where matrix is an n×n numpy uint32 array.
     """
     if map_indices is None:
-        map_indices = [0] * len(newicks)
-    return rapidtrees.pairwise_rf_from_newicks(
-        names, newicks, translate_maps, map_indices, rooted=rooted,
+        map_indices = [0] * len(names)
+    names_out, matrix_bytes = rapidtrees.pairwise_rf_from_newick_iter(
+        names, newick_iter, translate_maps, map_indices, rooted=rooted,
     )
+    n = len(names_out)
+    matrix = np.frombuffer(matrix_bytes, dtype=np.uint32).reshape(n, n).copy()
+    return names_out, matrix
 
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def matrix_to_dict(
-    names: List[str],
-    matrix: List[List[int]],
-) -> Dict[str, Dict[str, int]]:
-    """Convert (names, matrix) into a nested dict keyed by tree name."""
-    return {
-        names[i]: {names[j]: matrix[i][j] for j in range(len(names))}
-        for i in range(len(names))
-    }

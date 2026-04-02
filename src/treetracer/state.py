@@ -40,6 +40,22 @@ def next_distmat_name():
     return f"RF_{_distmat_counter:03d}"
 
 
+def get_distmat_path(name):
+    """Return the .npy file path for a matrix name (creates temp dir if needed)."""
+    d = _ensure_tmpdir()
+    return os.path.join(d, name.replace("/", "_") + ".npy")
+
+
+def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
+    """Register a matrix that was already saved to disk by a subprocess worker."""
+    _distmat_index[name] = {
+        "names": list(names),
+        "path": path,
+        "file_breakdown": file_breakdown or {},
+        "groups_per_file": groups_per_file or {},
+    }
+
+
 def save_distmat(name, names, matrix, file_breakdown=None):
     """Save an RF distance matrix as uint16 .npy and register it.
 
@@ -91,7 +107,11 @@ def get_distmat_index():
         {"name1": {"n_trees": int, "file_breakdown": {...}}, ...}
     """
     return {
-        k: {"n_trees": len(v["names"]), "file_breakdown": v.get("file_breakdown", {})}
+        k: {
+            "n_trees": len(v["names"]),
+            "file_breakdown": v.get("file_breakdown", {}),
+            "groups_per_file": v.get("groups_per_file", {}),
+        }
         for k, v in _distmat_index.items()
     }
 
@@ -110,3 +130,69 @@ def clear_all_distmats():
             pass
     _distmat_index.clear()
     _distmat_counter = 0
+
+
+# ---------------------------------------------------------------------------
+# Server-side MDS result storage
+# ---------------------------------------------------------------------------
+# MDS results (between-run and within-run) are stored server-side to avoid
+# sending coordinate data through JSON callback responses. Only lightweight
+# metadata (n_trees, groups, dimensions) goes through dcc.Store.
+
+_mds_results = {}       # key -> {"metadata": {...}, "data": list[dict]}
+_wr_mds_results = {}    # key -> {"file": str, "source_distmat": str, "dimensions": [...], "n_trees": int, "data": list[dict]}
+
+
+def store_mds_result(key, result):
+    """Store a between-run MDS result server-side."""
+    _mds_results[key] = result
+
+
+def get_mds_result(key):
+    """Get a between-run MDS result by key."""
+    return _mds_results.get(key)
+
+
+def get_mds_results_index():
+    """Return lightweight metadata for dcc.Store (no coordinate data)."""
+    return {
+        k: {
+            "filename": v["metadata"]["filename"],
+            "source_distmat": v["metadata"].get("source_distmat", "?"),
+            "rows": v["metadata"]["rows"],
+            "dimensions": v["metadata"]["dimensions"],
+            "groups": v["metadata"]["groups"],
+            "MIN_TREENUM": v["metadata"]["MIN_TREENUM"],
+            "MAX_TREENUM": v["metadata"]["MAX_TREENUM"],
+        }
+        for k, v in _mds_results.items()
+    }
+
+
+def store_wr_mds_result(key, result):
+    """Store a within-run MDS result server-side."""
+    _wr_mds_results[key] = result
+
+
+def get_wr_mds_result(key):
+    """Get a within-run MDS result by key."""
+    return _wr_mds_results.get(key)
+
+
+def get_wr_mds_results_index():
+    """Return lightweight metadata for dcc.Store (no coordinate data)."""
+    return {
+        k: {
+            "file": v.get("file", "?"),
+            "source_distmat": v.get("source_distmat", "?"),
+            "n_trees": v.get("n_trees", 0),
+            "dimensions": v.get("dimensions", []),
+        }
+        for k, v in _wr_mds_results.items()
+    }
+
+
+def clear_all_mds_results():
+    """Clear all server-side MDS results."""
+    _mds_results.clear()
+    _wr_mds_results.clear()

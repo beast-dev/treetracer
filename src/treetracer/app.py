@@ -77,22 +77,22 @@ def main():
                 except Exception:
                     time.sleep(0.5)
 
-            webview.create_window("TreeTracer", "http://127.0.0.1:8050/", width=1600, height=900)
-            webview.start()
+            def _on_closed():
+                """Force-kill all subprocesses when the window closes."""
+                import os
+                os._exit(0)
 
-            # Webview window closed — clean up subprocess workers and temp files
-            from .callbacks.compute import _executor
-            if _executor is not None:
-                _executor.shutdown(wait=False, cancel_futures=True)
-            from .state import clear_all_distmats
-            clear_all_distmats()
+            window = webview.create_window("TreeTracer", "http://127.0.0.1:8050/",
+                                           width=1600, height=900)
+            window.events.closed += _on_closed
+            webview.start()
 
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
 
-    # Force exit to kill any lingering subprocess workers
+    # Fallback: force exit in case webview.start() returns without triggering closed event
     import os
     os._exit(0)
 

@@ -45,6 +45,10 @@ class TreeManagerPandas:
 
     def register_source_file(self, file_source: str, file_path: str):
         """Register the original file path for a given file_source."""
+        # Close existing handle if re-registering (e.g., after reset)
+        if file_source in self._source_handles:
+            self._source_handles[file_source].close()
+            del self._source_handles[file_source]
         self._source_files[file_source] = os.path.abspath(file_path)
 
     def _get_source_handle(self, file_source: str):
@@ -280,6 +284,14 @@ class TreeManagerPandas:
             self._source_handles.clear()
             self._source_preambles.clear()
             self._source_translate.clear()
+
+    def __del__(self):
+        """Close all open file handles on garbage collection."""
+        for fh in self._source_handles.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
 
 
 # Global singleton

@@ -4,7 +4,7 @@ import os
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..state import clear_all_distmats
+from ..state import clear_all_distmats, clear_all_mds_results
 from ._helpers import _open_file_dialog
 
 
@@ -396,6 +396,7 @@ def register_sidebar_callbacks():
             add_log("Data cleared")
             # Clear all server-side distance matrices from disk
             clear_all_distmats()
+            clear_all_mds_results()
             # Also clear the tree service database
             try:
                 tree_service = get_tree_service()

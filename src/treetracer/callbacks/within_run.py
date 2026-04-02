@@ -126,11 +126,16 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     return fig
 
 
-def _get_active_result(selected_key, results):
-    """Helper to resolve the active MDS result from store."""
-    if not selected_key or not results or selected_key not in results:
+def _get_active_result(selected_key, results_index):
+    """Helper to resolve the active MDS result from server-side store.
+
+    The dcc.Store (results_index) only has metadata. Full data is read
+    from the server-side store in state.py.
+    """
+    if not selected_key or not results_index or selected_key not in results_index:
         return None
-    return results[selected_key]
+    from ..state import get_wr_mds_result
+    return get_wr_mds_result(selected_key)
 
 
 def register_within_run_callbacks():

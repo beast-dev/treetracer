@@ -7,7 +7,11 @@ import pandas as pd
 
 from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..state import save_distmat, load_distmat, get_distmat_index, next_distmat_name, get_distmat_path, register_distmat
+from ..state import (save_distmat, load_distmat, get_distmat_index, next_distmat_name,
+                      get_distmat_path, register_distmat,
+                      store_mds_result, get_mds_results_index,
+                      store_wr_mds_result, get_wr_mds_results_index,
+                      clear_all_mds_results)
 from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names
 
 
@@ -500,11 +504,9 @@ def register_compute_callbacks():
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
-        State("mds-result-store", "data"),
-        State("within-run-mds-results-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_completion(n_intervals, current_mds_results, current_wr_results):
+    def poll_completion(n_intervals):
         global _rf_future, _mds_future, _wr_mds_future
 
         rf_done = _rf_future is not None and _rf_future.done()
@@ -593,15 +595,14 @@ def register_compute_callbacks():
                 }
                 mds_entry = {"metadata": metadata, "data": mds_df.to_dict("records")}
 
-                # Merge into existing results dict
-                all_mds = current_mds_results or {}
-                all_mds[mds_filename] = mds_entry
+                # Store full result server-side, send only metadata through dcc.Store
+                store_mds_result(mds_filename, mds_entry)
 
                 n_groups = len(mds_df["group"].unique())
                 add_log(f"PCoA completed in {elapsed:.2f}s: {len(mds_df)} points, {n_components}D, {n_groups} groups")
 
                 mds_out = [
-                    all_mds,
+                    get_mds_results_index(),  # lightweight metadata only
                     dmc.Alert(title="MDS Embedding Complete",
                               children=dmc.Text(f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups", size="sm"),
                               color="green", variant="light"),
@@ -651,13 +652,13 @@ def register_compute_callbacks():
                     "data": mds_df.to_dict("records"),
                 }
 
-                all_results = current_wr_results or {}
-                all_results[result_key] = result_entry
+                # Store full result server-side, send only metadata through dcc.Store
+                store_wr_mds_result(result_key, result_entry)
 
                 add_log(f"Within-run MDS complete: {result_key}, {len(tree_names)} trees in {elapsed:.2f}s")
 
                 wr_mds_out = [
-                    all_results,
+                    get_wr_mds_results_index(),  # lightweight metadata only
                     dmc.Alert(title=f"Within-run MDS: {result_key}",
                               children=dmc.Text(f"{len(tree_names)} trees, {n_components} components in {elapsed:.2f}s", size="sm"),
                               color="green", variant="light"),
@@ -715,10 +716,11 @@ def register_compute_callbacks():
         State("mds-result-select", "value"),
         prevent_initial_call=True,
     )
-    def export_mds(n_clicks, mds_results, selected_mds):
-        if not n_clicks or not mds_results or not selected_mds:
+    def export_mds(n_clicks, mds_index, selected_mds):
+        if not n_clicks or not mds_index or not selected_mds:
             return no_update
-        entry = mds_results.get(selected_mds)
+        from ..state import get_mds_result
+        entry = get_mds_result(selected_mds)
         if not entry or not entry.get("data"):
             return no_update
         metadata = entry["metadata"]
@@ -750,17 +752,16 @@ def register_compute_callbacks():
         Input("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def update_mds_result_list(mds_results):
-        if not mds_results:
+    def update_mds_result_list(mds_index):
+        if not mds_index:
             return [], None, "0", "gray", True
         options = []
-        for key, entry in mds_results.items():
-            meta = entry.get("metadata", {})
+        for key, meta in mds_index.items():
             n_groups = len(meta.get("groups", []))
             label = f"{key} — {meta.get('rows', '?')} trees, {n_groups} groups"
             options.append({"value": key, "label": label})
-        last_key = list(mds_results.keys())[-1]
-        count = str(len(mds_results))
+        last_key = list(mds_index.keys())[-1]
+        count = str(len(mds_index))
         return options, last_key, count, "blue", False
 
     @callback(
@@ -769,10 +770,10 @@ def register_compute_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def show_mds_result_info(selected, mds_results):
-        if not selected or not mds_results or selected not in mds_results:
+    def show_mds_result_info(selected, mds_index):
+        if not selected or not mds_index or selected not in mds_index:
             return html.Div()
-        meta = mds_results[selected].get("metadata", {})
+        meta = mds_index[selected]
         badges = [
             dmc.Badge(f"{g}", variant="light", color="blue", size="sm")
             for g in meta.get("groups", [])
@@ -825,10 +826,13 @@ def register_compute_callbacks():
         State("within-run-mds-results-store", "data"),
         prevent_initial_call=True,
     )
-    def export_wr_mds(n_clicks, selected, wr_results):
-        if not n_clicks or not selected or not wr_results or selected not in wr_results:
+    def export_wr_mds(n_clicks, selected, wr_index):
+        if not n_clicks or not selected or not wr_index or selected not in wr_index:
             return no_update
-        result = wr_results[selected]
+        from ..state import get_wr_mds_result
+        result = get_wr_mds_result(selected)
+        if not result:
+            return no_update
         default_name = f"within_run_{result.get('file', 'mds')}.tsv".replace("/", "_")
         path = _save_file_dialog(default_filename=default_name)
         if not path:
@@ -924,10 +928,9 @@ def register_compute_callbacks():
         Output("export-mds-button", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("load-mds-button", "n_clicks"),
-        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def load_mds(n_clicks, current_mds_results):
+    def load_mds(n_clicks):
         if not n_clicks:
             return no_update, no_update, no_update, no_update
 
@@ -1020,6 +1023,5 @@ def register_compute_callbacks():
             id="load-mds-notification",
         )
 
-        all_mds = current_mds_results or {}
-        all_mds[mds_filename] = mds_result
-        return all_mds, output_indicator, False, notification
+        store_mds_result(mds_filename, mds_result)
+        return get_mds_results_index(), output_indicator, False, notification

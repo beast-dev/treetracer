@@ -130,3 +130,69 @@ def clear_all_distmats():
             pass
     _distmat_index.clear()
     _distmat_counter = 0
+
+
+# ---------------------------------------------------------------------------
+# Server-side MDS result storage
+# ---------------------------------------------------------------------------
+# MDS results (between-run and within-run) are stored server-side to avoid
+# sending coordinate data through JSON callback responses. Only lightweight
+# metadata (n_trees, groups, dimensions) goes through dcc.Store.
+
+_mds_results = {}       # key -> {"metadata": {...}, "data": list[dict]}
+_wr_mds_results = {}    # key -> {"file": str, "source_distmat": str, "dimensions": [...], "n_trees": int, "data": list[dict]}
+
+
+def store_mds_result(key, result):
+    """Store a between-run MDS result server-side."""
+    _mds_results[key] = result
+
+
+def get_mds_result(key):
+    """Get a between-run MDS result by key."""
+    return _mds_results.get(key)
+
+
+def get_mds_results_index():
+    """Return lightweight metadata for dcc.Store (no coordinate data)."""
+    return {
+        k: {
+            "filename": v["metadata"]["filename"],
+            "source_distmat": v["metadata"].get("source_distmat", "?"),
+            "rows": v["metadata"]["rows"],
+            "dimensions": v["metadata"]["dimensions"],
+            "groups": v["metadata"]["groups"],
+            "MIN_TREENUM": v["metadata"]["MIN_TREENUM"],
+            "MAX_TREENUM": v["metadata"]["MAX_TREENUM"],
+        }
+        for k, v in _mds_results.items()
+    }
+
+
+def store_wr_mds_result(key, result):
+    """Store a within-run MDS result server-side."""
+    _wr_mds_results[key] = result
+
+
+def get_wr_mds_result(key):
+    """Get a within-run MDS result by key."""
+    return _wr_mds_results.get(key)
+
+
+def get_wr_mds_results_index():
+    """Return lightweight metadata for dcc.Store (no coordinate data)."""
+    return {
+        k: {
+            "file": v.get("file", "?"),
+            "source_distmat": v.get("source_distmat", "?"),
+            "n_trees": v.get("n_trees", 0),
+            "dimensions": v.get("dimensions", []),
+        }
+        for k, v in _wr_mds_results.items()
+    }
+
+
+def clear_all_mds_results():
+    """Clear all server-side MDS results."""
+    _mds_results.clear()
+    _wr_mds_results.clear()

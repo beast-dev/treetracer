@@ -77,10 +77,23 @@ def main():
                 except Exception:
                     time.sleep(0.5)
 
-            def _on_closed():
-                """Force-kill all subprocesses when the window closes."""
+            def _kill_process_tree():
+                """Kill all child processes (subprocess workers, resource trackers) then exit."""
                 import os
+                import psutil
+                try:
+                    parent = psutil.Process(os.getpid())
+                    for child in parent.children(recursive=True):
+                        try:
+                            child.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                except Exception:
+                    pass
                 os._exit(0)
+
+            def _on_closed():
+                _kill_process_tree()
 
             window = webview.create_window("TreeTracer", "http://127.0.0.1:8050/",
                                            width=1600, height=900)
@@ -92,8 +105,18 @@ def main():
         import traceback
         traceback.print_exc(file=sys.stderr)
 
-    # Fallback: force exit in case webview.start() returns without triggering closed event
+    # Fallback
     import os
+    import psutil
+    try:
+        parent = psutil.Process(os.getpid())
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except Exception:
+        pass
     os._exit(0)
 
 

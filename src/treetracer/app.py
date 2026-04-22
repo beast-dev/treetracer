@@ -9,7 +9,18 @@ import threading
 
 def create_dash_app():
     app = Dash(
-        __name__, external_stylesheets=dmc.styles.ALL, suppress_callback_exceptions=True
+        __name__,
+        external_stylesheets=dmc.styles.ALL,
+        suppress_callback_exceptions=True,
+        title="TreeTracer",
+    )
+
+    # Use the SVG logo as the browser tab favicon (PNG fallback for older browsers).
+    # Dash's default {%favicon%} looks for assets/favicon.ico; we override it here.
+    app.index_string = app.index_string.replace(
+        "{%favicon%}",
+        '<link rel="icon" type="image/svg+xml" href="/assets/treetracer-icon.svg">'
+        '<link rel="alternate icon" type="image/png" href="/assets/treetracer-icon.png">',
     )
 
     layout = dmc.AppShell(
@@ -34,6 +45,8 @@ def create_dash_app():
             dmc.NotificationProvider(position="top-right"),
             layout,
         ],
+        id="mantine-provider",
+        forceColorScheme="light",
     )
     return app
 

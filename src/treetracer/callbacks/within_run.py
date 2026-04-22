@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
+from ..theme import get_template
+
 
 TREETRACER_BLUE = "#228be6"
 
@@ -121,7 +123,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     fig.update_yaxes(title_text=z, row=1, col=3)
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         margin=dict(l=50, r=40, t=40, b=45),
         dragmode=dragmode,
         uirevision="within-run",
@@ -523,7 +525,7 @@ def register_within_run_callbacks():
         if not path:
             return no_update
         fig = go.Figure(fig_dict)
-        fig.update_layout(template="simple_white")
+        fig.update_layout(template=get_template())
         fig.write_image(path, width=1800, height=500, scale=2)
         from ..logger import add_log, notif_id
         add_log(f"Exported within-run plot to {path}")
@@ -543,13 +545,14 @@ def register_within_run_callbacks():
         Input("within-run-show-lines", "checked"),
         Input("within-run-color-gradient", "checked"),
         Input("within-run-selected-trees-store", "data"),
+        Input("plotly-template-store", "data"),
         State("within-run-result-select", "value"),
         State("within-run-mds-results-store", "data"),
         State("within-run-dragmode", "value"),
         prevent_initial_call=True,
     )
     def auto_update_plot(dim_x, dim_y, dim_z, treenum_range,
-                         show_lines, color_gradient, selected,
+                         show_lines, color_gradient, selected, _,
                          selected_key, results, dragmode):
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not all([dim_x, dim_y, dim_z]):

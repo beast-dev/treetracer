@@ -156,18 +156,18 @@ def register_treespace_callbacks():
             Output("plot-button", "children", allow_duplicate=True),
         ],
         Input("plot-button", "n_clicks"),
+        Input("plotly-template-store", "data"),
         [
             State("dim-x-select", "value"),
             State("dim-y-select", "value"),
             State("dim-z-select", "value"),
             State(component_id="treenum-slider", component_property="value"),
             State("show-lines-checkbox", "checked"),
-            State("plot-container", "children"),
             State("plot-config-store", "data")
         ],
         prevent_initial_call=True,
     )
-    def update_graph_on_button_click(n_clicks, dim_x, dim_y, dim_z, treenum_range, show_lines, current_plot, plot_config):
+    def update_graph_on_button_click(n_clicks, _, dim_x, dim_y, dim_z, treenum_range, show_lines, plot_config):
         if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
             return no_update, no_update
 

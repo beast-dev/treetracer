@@ -1,5 +1,6 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from .theme import get_template
 
 
 def make_plot_grid():
@@ -82,7 +83,7 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
             )
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         scene=dict(
             xaxis=dict(title=dict(text=x)),
             yaxis=dict(title=dict(text=y)),

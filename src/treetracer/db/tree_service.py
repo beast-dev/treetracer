@@ -81,11 +81,11 @@ class TreeService:
             }
     
     
-    def get_sample_for_analysis(self, 
+    def get_sample_for_analysis(self,
                                file_sources: Optional[List[str]] = None,
                                group_names: Optional[List[str]] = None,
                                sample_size: int = 500,
-                               strategy: str = 'stratified') -> Dict[str, Any]:
+                               strategy: str = 'uniform') -> Dict[str, Any]:
         """Get a sample of trees for phylogenetic analysis.
         
         Supports multiple sampling strategies and filtering options.

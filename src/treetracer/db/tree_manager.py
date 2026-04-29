@@ -166,13 +166,17 @@ class TreeManagerPandas:
     def get_trees_sample(self,
                         filters: Optional[Dict[str, Any]] = None,
                         limit: int = 500,
-                        strategy: str = 'random') -> List[Dict[str, Any]]:
+                        strategy: str = 'uniform') -> List[Dict[str, Any]]:
         """Sample trees. Returns dicts with 'newick' key (read from file).
 
         Strategies:
+            uniform    - evenly spaced by insertion order (default)
             random     - uniform random sample
-            uniform    - evenly spaced by insertion order
             stratified - proportional per group_name
+
+        All strategies return trees sorted by id (= MCMC iteration order
+        within each file), so downstream consumers can rely on chronological
+        ordering for trace plots and trajectory lines.
         """
         self.flush()
 
@@ -214,6 +218,7 @@ class TreeManagerPandas:
         else:
             sampled = df.head(limit)
 
+        sampled = sampled.sort_values('id')
         return self._resolve_newick(sampled)
 
     # ------------------------------------------------------------------
@@ -260,8 +265,9 @@ class TreeManagerPandas:
         file_df = self._trees[mask]
         if len(file_df) <= n:
             return  # nothing to do
-        keep = file_df.sample(n=n)
+        keep = file_df.sample(n=n).sort_values('id')
         self._trees = pd.concat([self._trees[~mask], keep], ignore_index=True)
+        self._trees = self._trees.sort_values('id').reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # Clear / cleanup

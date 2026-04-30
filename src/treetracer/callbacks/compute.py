@@ -166,11 +166,7 @@ def register_compute_callbacks():
         )
         add_log(f"Fetching all {total_trees} trees from {len(selected_files)} files...")
 
-        sample = tree_service.get_sample_for_analysis(
-            file_sources=selected_files,
-            sample_size=total_trees,
-            strategy="uniform",
-        )
+        sample = tree_service.get_trees_for_analysis(file_sources=selected_files)
         sampled_trees = sample["trees"]
         add_log(f"Retrieved {len(sampled_trees)} trees for RF computation")
 

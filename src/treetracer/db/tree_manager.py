@@ -163,6 +163,27 @@ class TreeManagerPandas:
             })
         return trees
 
+    def _apply_filters(self, df: pd.DataFrame,
+                       filters: Optional[Dict[str, Any]]) -> pd.DataFrame:
+        """Apply file_source(s) and group_name filters."""
+        if not filters:
+            return df
+        if 'file_sources' in filters:
+            df = df[df['file_source'].isin(filters['file_sources'])]
+        elif 'file_source' in filters:
+            df = df[df['file_source'] == filters['file_source']]
+        if 'group_name' in filters:
+            df = df[df['group_name'] == filters['group_name']]
+        return df
+
+    def get_trees(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Return all trees matching ``filters`` in id (MCMC iteration) order."""
+        self.flush()
+        df = self._apply_filters(self._trees, filters)
+        if len(df) == 0:
+            return []
+        return self._resolve_newick(df.sort_values('id'))
+
     def get_trees_sample(self,
                         filters: Optional[Dict[str, Any]] = None,
                         limit: int = 500,
@@ -179,47 +200,24 @@ class TreeManagerPandas:
         ordering for trace plots and trajectory lines.
         """
         self.flush()
-
-        df = self._trees
-
-        # Apply filters
-        if filters:
-            if 'file_sources' in filters:
-                df = df[df['file_source'].isin(filters['file_sources'])]
-            elif 'file_source' in filters:
-                df = df[df['file_source'] == filters['file_source']]
-            if 'group_name' in filters:
-                df = df[df['group_name'] == filters['group_name']]
-
+        df = self._apply_filters(self._trees, filters)
         if len(df) == 0:
             return []
 
+        n = min(limit, len(df))
         if strategy == 'random':
-            n = min(limit, len(df))
             sampled = df.sample(n=n)
-
-        elif strategy == 'uniform':
-            if len(df) <= limit:
-                sampled = df
-            else:
-                step = max(1, len(df) // limit)
-                sampled = df.iloc[::step].head(limit)
-
         elif strategy == 'stratified':
-            groups = df['group_name'].unique()
             total = len(df)
-            parts = []
-            for g in groups:
-                g_df = df[df['group_name'] == g]
-                n_g = max(1, int(len(g_df) / total * limit))
-                n_g = min(n_g, len(g_df))
-                parts.append(g_df.sample(n=n_g))
-            sampled = pd.concat(parts)
-        else:
-            sampled = df.head(limit)
+            sampled = pd.concat([
+                g.sample(n=min(max(1, int(len(g) / total * limit)), len(g)))
+                for _, g in df.groupby('group_name', observed=True)
+            ])
+        else:  # 'uniform' (default)
+            step = max(1, len(df) // limit)
+            sampled = df.iloc[::step].head(limit)
 
-        sampled = sampled.sort_values('id')
-        return self._resolve_newick(sampled)
+        return self._resolve_newick(sampled.sort_values('id'))
 
     # ------------------------------------------------------------------
     # Statistics
@@ -258,16 +256,30 @@ class TreeManagerPandas:
     # Downsample
     # ------------------------------------------------------------------
 
-    def downsample_trees(self, file_source: str, n: int):
-        """Randomly keep only n trees for the given file_source, dropping the rest."""
+    def downsample_trees(self, file_source: str, n: int, strategy: str = 'uniform'):
+        """Keep only n trees for the given file_source, dropping the rest.
+
+        Strategies:
+            uniform - every k-th tree (k = total // n), preserves chain coverage
+            random  - random subset
+        """
         self.flush()
         mask = self._trees['file_source'] == file_source
-        file_df = self._trees[mask]
+        file_df = self._trees[mask].sort_values('id')
         if len(file_df) <= n:
             return  # nothing to do
-        keep = file_df.sample(n=n).sort_values('id')
-        self._trees = pd.concat([self._trees[~mask], keep], ignore_index=True)
-        self._trees = self._trees.sort_values('id').reset_index(drop=True)
+
+        if strategy == 'random':
+            keep = file_df.sample(n=n)
+        else:  # 'uniform' (default)
+            step = max(1, len(file_df) // n)
+            keep = file_df.iloc[::step].head(n)
+
+        self._trees = (
+            pd.concat([self._trees[~mask], keep], ignore_index=True)
+            .sort_values('id')
+            .reset_index(drop=True)
+        )
 
     # ------------------------------------------------------------------
     # Clear / cleanup

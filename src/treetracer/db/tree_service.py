@@ -81,6 +81,37 @@ class TreeService:
             }
     
     
+    def get_trees_for_analysis(self,
+                              file_sources: Optional[List[str]] = None,
+                              group_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Return all trees for the given files/groups in MCMC iteration order.
+
+        Used by RF/MDS pipelines after the user has already downsampled at
+        load time — no further subsampling is needed here.
+        """
+        filters = self._build_filters(file_sources, group_names)
+        trees = self.db_manager.get_trees(filters=filters)
+        return {
+            'trees': trees,
+            'sample_size': len(trees),
+            'filters_applied': filters,
+            'ready_for_analysis': True,
+        }
+
+    def _build_filters(self,
+                       file_sources: Optional[List[str]],
+                       group_names: Optional[List[str]]) -> Dict[str, Any]:
+        """Construct a filter dict for db_manager from optional lists."""
+        filters: Dict[str, Any] = {}
+        if file_sources:
+            if len(file_sources) == 1:
+                filters['file_source'] = file_sources[0]
+            else:
+                filters['file_sources'] = file_sources
+        if group_names and len(group_names) == 1:
+            filters['group_name'] = group_names[0]
+        return filters
+
     def get_sample_for_analysis(self,
                                file_sources: Optional[List[str]] = None,
                                group_names: Optional[List[str]] = None,
@@ -107,16 +138,8 @@ class TreeService:
             - strata_info: Breakdown by strata (for stratified sampling)
         """
         
-        # Build filters
-        filters = {}
-        if file_sources:
-            if len(file_sources) == 1:
-                filters['file_source'] = file_sources[0]
-            else:
-                filters['file_sources'] = file_sources
-        if group_names and len(group_names) == 1:
-            filters['group_name'] = group_names[0]
-        
+        filters = self._build_filters(file_sources, group_names)
+
         # Handle stratified sampling across multiple files/groups
         if strategy == 'stratified' and (
             (file_sources and len(file_sources) > 1) or 

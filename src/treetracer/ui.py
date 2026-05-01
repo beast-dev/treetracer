@@ -161,34 +161,52 @@ def _add_treespace_panel():
     """Build the Between-run Analysis tab panel content."""
     return html.Div([
         dmc.Stack([
-            # Row 1: MDS-result selector + dim selectors + info badges
+            # Row 1: MDS-result selector + dim selectors + info + selection-info
+            # badge (boxed). Same shape as the within-run panel.
+            # (Note: outer padding + Stack gap="xs" below match _add_within_run_panel
+            # so both tabs share identical spacing around the controls.)
             dmc.Paper(
                 dmc.Group([
-                    dmc.Select(
-                        label="MDS Result",
-                        id="treespace-result-select",
-                        placeholder="No MDS results yet",
-                        data=[],
-                        value=None,
-                        size="xs",
-                        w=300,
+                    html.Div(
+                        dmc.Select(
+                            label="MDS Result",
+                            id="treespace-result-select",
+                            placeholder="No MDS results yet",
+                            data=[], value=None, size="xs",
+                            style={"width": "100%"},
+                        ),
+                        style={"width": "300px", "flexShrink": 0, "flexGrow": 0},
                     ),
-                    dmc.Select(label="X", id="dim-x-select",
-                               data=[], value=None, size="xs", w=100),
-                    dmc.Select(label="Y", id="dim-y-select",
-                               data=[], value=None, size="xs", w=100),
-                    dmc.Select(label="Z", id="dim-z-select",
-                               data=[], value=None, size="xs", w=100),
+                    html.Div(
+                        dmc.Select(label="X", id="dim-x-select",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
+                    html.Div(
+                        dmc.Select(label="Y", id="dim-y-select",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
+                    html.Div(
+                        dmc.Select(label="Z", id="dim-z-select",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
                     html.Div(id="treespace-info"),
-                ], align="flex-end", gap="md"),
-                withBorder=True, p="xs", radius="sm",
+                    html.Div(id="treespace-selection-info"),
+                ], align="flex-end", gap="md", wrap="nowrap"),
+                withBorder=True, p="sm", radius="sm", shadow="xs", mt="sm",
+                style={"width": "100%"},
             ),
 
-            # Row 2: tree-number range slider + show-lines + Plot button
-            # (hidden until a result is selected)
+            # Row 2: all controls in a single horizontal row (hidden until a
+            # result is selected, no border) — mirrors the within-run layout.
             dmc.Group([
-                dmc.Stack([
-                    dmc.Text("Tree Number Range:", size="sm", fw=500),
+                dmc.Text("Trees:", size="xs", fw=500, style={"alignSelf": "center"}),
+                html.Div([
                     dmc.RangeSlider(
                         id="treenum-slider",
                         min=1, max=100, value=[1, 100],
@@ -196,29 +214,17 @@ def _add_treespace_panel():
                             {"value": 1, "label": "1"},
                             {"value": 100, "label": "100"},
                         ],
-                        step=1,
-                        styles={"label": {"top": "unset", "bottom": "-2rem"}},
+                        step=1, size="xs",
+                        styles={"markLabel": {"fontSize": "10px"}},
                     ),
-                ], gap="xs", style={"flex": 1}),
-                dmc.Checkbox(
-                    label="Show lines",
-                    id="show-lines-checkbox",
-                    checked=True,
-                ),
-                dmc.Button(
-                    "Plot",
-                    id="plot-button",
-                    variant="filled",
-                    color="blue",
-                    size="md",
-                ),
-            ], align="flex-end", gap="lg",
-                id="treespace-controls-paper",
-                style={"display": "none"}),
-
-            # Row 3: selection controls — dragmode, clear, reset zoom, exports
-            # (hidden until a result is selected)
-            dmc.Group([
+                ], style={"width": "420px", "alignSelf": "center"}),
+                dmc.Checkbox(label="Lines", id="show-lines-checkbox",
+                             checked=True, size="xs"),
+                dmc.Button("Plot", id="plot-button",
+                           variant="filled", color="blue", size="xs"),
+                dmc.Divider(orientation="vertical",
+                            style={"height": "24px", "alignSelf": "center"}),
+                # Selection tools
                 dmc.SegmentedControl(
                     id="treespace-dragmode",
                     data=[
@@ -239,9 +245,8 @@ def _add_treespace_panel():
                            leftSection=DashIconify(icon="tabler:download", width=14)),
                 dmc.Button("Export PDF", id="treespace-export-pdf",
                            variant="light", size="xs"),
-                html.Div(id="treespace-selection-info"),
             ], align="center", gap="sm", wrap="nowrap",
-                id="treespace-selection-controls",
+                id="treespace-controls-paper",
                 style={"display": "none"}),
 
             dcc.Store(id="treespace-selected-trees-store",
@@ -259,8 +264,8 @@ def _add_treespace_panel():
                 style={"height": "calc(100vh - 280px)"},
                 config={"doubleClick": False},
             ),
-        ]),
-    ])
+        ], gap="xs"),
+    ], style={"padding": "10px"})
 
 
 def _add_within_run_panel():
@@ -270,34 +275,49 @@ def _add_within_run_panel():
             # Row 1: Result + Run selectors + axis selectors + info (boxed)
             dmc.Paper(
                 dmc.Group([
-                    dmc.Select(
-                        label="MDS Result",
-                        id="within-run-result-select",
-                        placeholder="No MDS results yet",
-                        data=[],
-                        value=None,
-                        size="xs",
-                        w=300,
+                    html.Div(
+                        dmc.Select(
+                            label="MDS Result",
+                            id="within-run-result-select",
+                            placeholder="No MDS results yet",
+                            data=[], value=None, size="xs",
+                            style={"width": "100%"},
+                        ),
+                        style={"width": "300px", "flexShrink": 0, "flexGrow": 0},
                     ),
-                    dmc.Select(
-                        label="Run",
-                        id="within-run-run-select",
-                        placeholder="Run",
-                        data=[],
-                        value=None,
-                        size="xs",
-                        w=180,
+                    html.Div(
+                        dmc.Select(
+                            label="Run",
+                            id="within-run-run-select",
+                            placeholder="Run",
+                            data=[], value=None, size="xs",
+                            style={"width": "100%"},
+                        ),
+                        style={"width": "180px", "flexShrink": 0, "flexGrow": 0},
                     ),
-                    dmc.Select(label="X", id="within-run-dim-x",
-                               data=[], value=None, size="xs", w=100),
-                    dmc.Select(label="Y", id="within-run-dim-y",
-                               data=[], value=None, size="xs", w=100),
-                    dmc.Select(label="Z", id="within-run-dim-z",
-                               data=[], value=None, size="xs", w=100),
+                    html.Div(
+                        dmc.Select(label="X", id="within-run-dim-x",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
+                    html.Div(
+                        dmc.Select(label="Y", id="within-run-dim-y",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
+                    html.Div(
+                        dmc.Select(label="Z", id="within-run-dim-z",
+                                   data=[], value=None, size="xs",
+                                   style={"width": "100%"}),
+                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                    ),
                     html.Div(id="within-run-info"),
                     html.Div(id="within-run-selection-info"),
-                ], align="flex-end", gap="md"),
-                withBorder=True, p="xs", radius="sm",
+                ], align="flex-end", gap="md", wrap="nowrap"),
+                withBorder=True, p="sm", radius="sm", shadow="xs", mt="sm",
+                style={"width": "100%"},
             ),
 
             # Row 2: All controls (hidden until a result is selected, no border)
@@ -361,10 +381,16 @@ def _add_within_run_panel():
             dcc.Store(id="within-run-selected-trees-store", storage_type="memory"),
             dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
 
-            # Graph
-            dcc.Graph(figure={}, id="within-run-graph",
-                      style={"height": "calc(100vh - 280px)"},
-                      config={"doubleClick": False}),
+            # Graph — starts with the same placeholder message as between-run
+            # so the empty state is consistent across the two tabs.
+            dcc.Graph(
+                id="within-run-graph",
+                figure=placeholder_fig(
+                    "No MDS result selected. Compute an MDS in the Compute tab."
+                ),
+                style={"height": "calc(100vh - 280px)"},
+                config={"doubleClick": False},
+            ),
         ], gap="xs"),
     ], style={"padding": "10px"})
 

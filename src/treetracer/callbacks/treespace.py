@@ -1,3 +1,5 @@
+import re
+
 from dash import html, callback, Input, Output, Patch, State, no_update
 import dash_mantine_components as dmc
 import plotly.express as px
@@ -9,6 +11,96 @@ from ..state import get_mds_result
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
 )
+
+
+# Matches an integer taxon label that sits at a label position in newick —
+# right after `(` or `,`. Branch lengths come after `:` and aren't matched.
+_NEWICK_LABEL_RE = re.compile(r'(?<=[(,])(\d+)')
+
+# Matches the `tree NAME` token at the start of a NEXUS tree line.
+_TREE_NAME_RE = re.compile(r'^(\s*tree\s+)([^\s=]+)', re.IGNORECASE)
+
+# Used to stash NEXUS metadata blocks (e.g. ``[&rate=0.05]``) before
+# integer-label substitution so commas / digits inside them don't trip the
+# label regex. The placeholders use a NUL marker that won't appear in real
+# NEXUS content.
+_METADATA_BLOCK_RE = re.compile(r'\[[^\]]*\]')
+
+
+def _substitute_newick_labels(newick, mapping):
+    """Substitute integer taxon labels in a newick using ``mapping`` (a dict
+    of int-label-string → replacement-string). Labels not in the mapping
+    pass through unchanged.
+
+    NEXUS metadata blocks ``[...]`` are stashed first so any digits or
+    commas inside them aren't treated as labels.
+    """
+    if not mapping:
+        return newick
+    blocks = []
+
+    def _stash(match):
+        blocks.append(match.group(0))
+        return f'\x00{len(blocks) - 1}\x00'
+
+    stripped = _METADATA_BLOCK_RE.sub(_stash, newick)
+    transformed = _NEWICK_LABEL_RE.sub(
+        lambda m: mapping.get(m.group(1), m.group(1)),
+        stripped,
+    )
+    return re.sub(r'\x00(\d+)\x00',
+                  lambda m: blocks[int(m.group(1))],
+                  transformed)
+
+
+def _sanitize_tree_name_token(text):
+    """Make a string safe to use as an unquoted NEXUS tree name."""
+    return re.sub(r'[^A-Za-z0-9_.]', '_', text)
+
+
+def _rewrite_tree_line(line, new_name, label_remap):
+    """Take a raw NEXUS ``tree <name> = <newick>;`` line and emit it with
+    the name replaced and any integer labels remapped via ``label_remap``
+    (source int → canonical int). Pass an empty dict to leave labels alone.
+    """
+    renamed = _TREE_NAME_RE.sub(
+        lambda m: f'{m.group(1)}{new_name}',
+        line,
+        count=1,
+    )
+    return _substitute_newick_labels(renamed, label_remap)
+
+
+def _build_canonical_remaps(file_sources, get_translate_map, canonical_source):
+    """Build per-source ``int_label → canonical_int_label`` remaps.
+
+    Returns ``(remaps, missing_taxa)``:
+        remaps[source]      = dict (empty for sources whose translate already
+                              matches the canonical mapping).
+        missing_taxa        = set of taxa names present in some non-canonical
+                              source but absent from the canonical translate
+                              (caller should surface this as an export error).
+    """
+    canonical_translate = get_translate_map(canonical_source) or {}
+    canonical_taxon_to_int = {taxon: int_label
+                              for int_label, taxon in canonical_translate.items()}
+    remaps = {}
+    missing_taxa = set()
+    for source in file_sources:
+        if source == canonical_source:
+            remaps[source] = {}
+            continue
+        src_translate = get_translate_map(source) or {}
+        remap = {}
+        for src_int, taxon in src_translate.items():
+            canonical_int = canonical_taxon_to_int.get(taxon)
+            if canonical_int is None:
+                missing_taxa.add(taxon)
+                continue
+            if canonical_int != src_int:
+                remap[src_int] = canonical_int
+        remaps[source] = remap
+    return remaps, missing_taxa
 
 
 # Trace-layout invariants set by ``add_trace_multiplot_interleaved``:
@@ -97,7 +189,6 @@ def register_treespace_callbacks():
         Output("treenum-slider", "marks"),
         Output("treespace-info", "children"),
         Output("treespace-controls-paper", "style"),
-        Output("treespace-selection-controls", "style"),
         Output("graph", "figure", allow_duplicate=True),
         Output("plot-button", "children", allow_duplicate=True),
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
@@ -115,7 +206,6 @@ def register_treespace_callbacks():
             [], None,
             1, 100, [1, 100], [],
             html.Div(),
-            {"display": "none"},
             {"display": "none"},
             placeholder_fig("No MDS result selected. Compute an MDS in the Compute tab."),
             "Plot",
@@ -170,7 +260,6 @@ def register_treespace_callbacks():
             dim_options, z_default,
             MIN_TREENUM, MAX_TREENUM, [MIN_TREENUM, MAX_TREENUM], marks,
             info,
-            {"display": "flex"},
             {"display": "flex"},
             placeholder_fig("Click 'Plot' to visualize data"),
             "Plot",
@@ -488,25 +577,69 @@ def register_treespace_callbacks():
                 message="Selected trees not found in database. They may have been cleared.",
                 color="red", action="show", autoClose=4000, id=notif_id())
 
-        # Selected trees can come from multiple files; use the first matched
-        # row's preamble (good enough for parseability — runs share taxa).
-        file_source = matched["file_source"].iloc[0]
+        # Selected trees can come from multiple source files with different
+        # translate tables. We pick the FIRST matched row's source as
+        # canonical, write its preamble verbatim (which already includes the
+        # `Translate` block), and remap the integer taxon labels in every
+        # non-canonical tree's newick so they line up with the canonical
+        # numbering. Tree names get prefixed with the group identifier so
+        # cross-run STATE_X collisions are visible in the output.
+        canonical_source = matched["file_source"].iloc[0]
+        canonical_preamble = tree_service.db_manager._source_preambles.get(canonical_source)
+        unique_sources = list(matched["file_source"].unique())
+        remaps, missing_taxa = _build_canonical_remaps(
+            unique_sources,
+            tree_service.db_manager.get_translate_map,
+            canonical_source,
+        )
+        if missing_taxa:
+            sample = ", ".join(sorted(missing_taxa)[:5])
+            more = "…" if len(missing_taxa) > 5 else ""
+            return dmc.Notification(
+                title="Export Error",
+                message=(
+                    f"Cannot align translate tables: taxa [{sample}{more}] "
+                    f"are present in some selected runs but not in "
+                    f"{canonical_source}'s Translate block. "
+                    "Either deselect those runs or pick selections from runs "
+                    "with matching taxa."
+                ),
+                color="red", action="show", autoClose=8000, id=notif_id())
+
         path = _save_file_dialog(default_filename=f"selected_{len(matched)}_trees.trees")
         if not path:
             return no_update
 
-        preamble = tree_service.db_manager._source_preambles.get(file_source)
         try:
             with open(path, "wb") as out:
-                if preamble:
-                    out.write(preamble)
+                if canonical_preamble:
+                    out.write(canonical_preamble)
+                else:
+                    out.write(b"#NEXUS\n\nbegin trees;\n")
                 for _, row in matched.iterrows():
+                    file_source = row["file_source"]
                     line = tree_service.db_manager._read_newick(
-                        row["file_source"], int(row["line_offset"]),
-                        int(row["line_length"])
+                        file_source,
+                        int(row["line_offset"]),
+                        int(row["line_length"]),
                     )
-                    out.write(line.encode("utf-8") if isinstance(line, str) else line)
-                    out.write(b"\n")
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    db_name = row["name"]                      # "<group>/<orig>"
+                    group_name = row["group_name"]
+                    original_name = (
+                        db_name.split("/", 1)[1]
+                        if "/" in db_name else db_name
+                    )
+                    new_name = _sanitize_tree_name_token(
+                        f"{group_name}_{original_name}"
+                    )
+                    rewritten = _rewrite_tree_line(
+                        line, new_name, remaps.get(file_source, {}),
+                    )
+                    out.write(rewritten.encode("utf-8"))
+                    if not rewritten.endswith("\n"):
+                        out.write(b"\n")
                 out.write(b"End;\n")
         except Exception as e:
             return dmc.Notification(title="Export Error", message=str(e),

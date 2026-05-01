@@ -5,6 +5,7 @@ import os
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import clear_all_distmats, clear_all_mds_results
+from ..plot_utils import placeholder_fig
 from ._helpers import _open_file_dialog
 
 
@@ -503,7 +504,9 @@ def register_sidebar_callbacks():
                 None,            # within-run-treenum-range-store
                 {"display": "none"},  # within-run-controls-paper style
                 html.Div(),      # within-run-info
-                {},              # within-run-graph (empty figure)
+                placeholder_fig(  # within-run-graph: same empty-state as between-run
+                    "No MDS result selected. Compute an MDS in the Compute tab."
+                ),
                 [],              # within-run-selected-trees-store
             )
         return (no_update,) * 21

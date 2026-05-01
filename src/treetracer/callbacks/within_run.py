@@ -11,8 +11,17 @@ TREETRACER_BLUE = "#228be6"
 
 def _make_within_run_figure(df, x, y, z, show_lines=True,
                             selected_treenums=None, treenum_range=None,
-                            color_gradient=True, dragmode="zoom"):
-    """Build 3 linked 2D scatterplots in subplots with matched axes."""
+                            color_gradient=True, dragmode="zoom",
+                            axis_ranges=None):
+    """Build 3 linked 2D scatterplots in subplots with matched axes.
+
+    ``axis_ranges`` is an optional ``{column_name: (lo, hi)}`` dict. When
+    provided, each panel's x and y range is pinned to the given values
+    instead of letting Plotly auto-range. Use this to align scales across
+    plots — e.g., pass the global MDS extent so the within-run view shows
+    the run's points within the same coordinate window as the between-run
+    plot.
+    """
     range_str = f" (trees {treenum_range[0]}–{treenum_range[1]})" if treenum_range else ""
     fig = make_subplots(
         rows=1, cols=3,
@@ -120,6 +129,19 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     fig.update_xaxes(title_text=y, row=1, col=3)
     fig.update_yaxes(title_text=z, row=1, col=3)
 
+    # Pin axis ranges to the global MDS extent (if provided), so the within-run
+    # view sits in the same coordinate window as the between-run plot.
+    if axis_ranges:
+        if x in axis_ranges:
+            fig.update_xaxes(range=axis_ranges[x], row=1, col=1)
+            fig.update_xaxes(range=axis_ranges[x], row=1, col=2)
+        if y in axis_ranges:
+            fig.update_yaxes(range=axis_ranges[y], row=1, col=1)
+            fig.update_xaxes(range=axis_ranges[y], row=1, col=3)
+        if z in axis_ranges:
+            fig.update_yaxes(range=axis_ranges[z], row=1, col=2)
+            fig.update_yaxes(range=axis_ranges[z], row=1, col=3)
+
     fig.update_layout(
         template="simple_white",
         margin=dict(l=50, r=40, t=40, b=45),
@@ -131,38 +153,96 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
 
 
 def _get_active_result(selected_key, results_index):
-    """Helper to resolve the active MDS result from server-side store.
+    """Resolve a between-run MDS result from the server-side store.
 
-    The dcc.Store (results_index) only has metadata. Full data is read
-    from the server-side store in state.py.
+    The dcc.Store (``results_index``) only has metadata; full coordinate
+    data is read from ``state._mds_results`` via ``get_mds_result``. The
+    returned dict has the same shape as before — ``{"metadata": {...},
+    "data": [...]}`` where ``data`` is a list of per-tree dicts including
+    ``group``, ``treenum``, ``tree``, and the MDS dimension columns.
     """
     if not selected_key or not results_index or selected_key not in results_index:
         return None
-    from ..state import get_wr_mds_result
-    return get_wr_mds_result(selected_key)
+    from ..state import get_mds_result
+    return get_mds_result(selected_key)
+
+
+def _filter_to_run(mds_result, selected_run):
+    """Return the rows of ``mds_result['data']`` belonging to one run, plus
+    the global axis ranges computed from the *unfiltered* dataframe so the
+    within-run plot can be pinned to the between-run coordinate window.
+
+    Returns ``(df_run, axis_ranges)`` or ``(None, None)`` when the inputs are
+    incomplete.
+    """
+    if mds_result is None or not selected_run:
+        return None, None
+    df_full = pd.DataFrame(mds_result["data"])
+    if df_full.empty or "group" not in df_full.columns:
+        return None, None
+
+    # Global axis extents over every run, so we keep the bigger picture's scale.
+    dimensions = mds_result.get("metadata", {}).get("dimensions") or [
+        c for c in df_full.columns if c.startswith("MDS")
+    ]
+    axis_ranges = {
+        col: (float(df_full[col].min()), float(df_full[col].max()))
+        for col in dimensions if col in df_full.columns
+    }
+
+    df_run = df_full[df_full["group"] == selected_run].reset_index(drop=True)
+    if df_run.empty:
+        return None, axis_ranges
+
+    # Re-number trees within the run for the slider / color gradient. The
+    # input dataframe may already have a treenum column scoped to its group,
+    # but be defensive in case rows came in from a future filter.
+    if "treenum" not in df_run.columns or df_run["treenum"].isna().any():
+        df_run["treenum"] = range(1, len(df_run) + 1)
+    df_run["treenum"] = df_run["treenum"].astype(int)
+    return df_run, axis_ranges
 
 
 def register_within_run_callbacks():
 
-    # Populate result selector from computed within-run MDS results
+    # Populate result selector from between-run MDS results
     @callback(
         Output("within-run-result-select", "data"),
         Output("within-run-result-select", "value"),
-        Input("within-run-mds-results-store", "data"),
+        Input("mds-result-store", "data"),
         State("within-run-result-select", "value"),
     )
     def populate_result_selector(results, current_value):
         if not results:
             return [], None
         options = [
-            {"value": k, "label": f"{v.get('file', k)} ({v['n_trees']} trees) [{v.get('source_distmat', '?')}]"}
+            {"value": k, "label": f"{v.get('filename', k)} ({v['rows']} trees, {len(v.get('groups', []))} runs)"}
             for k, v in results.items()
         ]
         if current_value and current_value in results:
             return options, current_value
         return options, list(results.keys())[-1]
 
-    # When a result is selected, set up controls and render initial figure
+    # Populate run selector when a result is picked
+    @callback(
+        Output("within-run-run-select", "data"),
+        Output("within-run-run-select", "value"),
+        Input("within-run-result-select", "value"),
+        State("mds-result-store", "data"),
+        State("within-run-run-select", "value"),
+    )
+    def populate_run_selector(selected_key, results, current_run):
+        if not selected_key or not results or selected_key not in results:
+            return [], None
+        groups = results[selected_key].get("groups", [])
+        if not groups:
+            return [], None
+        options = [{"value": g, "label": g} for g in groups]
+        if current_run and current_run in groups:
+            return options, current_run
+        return options, groups[0]
+
+    # When a result + run is selected, set up controls and render initial figure
     @callback(
         Output("within-run-controls-paper", "style"),
         Output("within-run-dim-x", "data"),
@@ -182,29 +262,39 @@ def register_within_run_callbacks():
         Output("within-run-anim-interval", "disabled", allow_duplicate=True),
         Output("within-run-play-button", "children", allow_duplicate=True),
         Input("within-run-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
+        Input("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def load_result_for_visualization(selected_key, results):
+    def load_result_for_visualization(selected_key, selected_run, results):
         result = _get_active_result(selected_key, results)
-        if result is None:
+        if result is None or not selected_run:
             return (no_update,) * 17
 
-        mdscols = result["dimensions"]
-        n = result["n_trees"]
-        mds_df = pd.DataFrame(result["data"])
+        df_run, axis_ranges = _filter_to_run(result, selected_run)
+        if df_run is None:
+            return (no_update,) * 17
+
+        mdscols = result.get("metadata", {}).get("dimensions") or [
+            c for c in df_run.columns if c.startswith("MDS")
+        ]
+        n = len(df_run)
 
         z_default = mdscols[2] if len(mdscols) > 2 else mdscols[0]
         dim_options = [{"value": col, "label": col} for col in mdscols]
         marks = [{"value": max(1, round(n * i / 10)), "label": str(max(1, round(n * i / 10)))}
                  for i in range(11)]
 
-        fig = _make_within_run_figure(mds_df, mdscols[0], mdscols[1], z_default,
-                                      treenum_range=[1, n])
+        fig = _make_within_run_figure(
+            df_run, mdscols[0], mdscols[1], z_default,
+            treenum_range=[1, n],
+            axis_ranges=axis_ranges,
+        )
 
         info = dmc.Group([
-            dmc.Badge(f"File: {result.get('file', '?')}", variant="light", color="blue", size="lg"),
-            dmc.Badge(f"Source: {result.get('source_distmat', '?')}", variant="light", color="teal", size="lg"),
+            dmc.Badge(f"Result: {result.get('metadata', {}).get('filename', '?')}",
+                      variant="light", color="blue", size="lg"),
+            dmc.Badge(f"Run: {selected_run}", variant="light", color="teal", size="lg"),
             dmc.Badge(f"Trees: {n}", variant="light", color="grape", size="lg"),
         ], gap="sm")
 
@@ -445,20 +535,24 @@ def register_within_run_callbacks():
         Input("within-run-export-trees", "n_clicks"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def export_selected_trees(n_clicks, selected_treenums, selected_key, results):
+    def export_selected_trees(n_clicks, selected_treenums, selected_key, selected_run, results):
         if not n_clicks or not selected_treenums:
             return no_update
 
         mds_result = _get_active_result(selected_key, results)
-        if not mds_result:
+        if not mds_result or not selected_run:
             return no_update
 
-        # Map treenums back to tree names
-        mds_df = pd.DataFrame(mds_result["data"])
-        sel_df = mds_df[mds_df["treenum"].isin(selected_treenums)]
+        # treenums are per-run — filter to the selected run before mapping back
+        # to tree names so we don't accidentally pull rows from a different run.
+        df_run, _ = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update
+        sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
         tree_names = sel_df["tree"].tolist()
 
         if not tree_names:
@@ -544,25 +638,29 @@ def register_within_run_callbacks():
         Input("within-run-color-gradient", "checked"),
         Input("within-run-selected-trees-store", "data"),
         State("within-run-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
         State("within-run-dragmode", "value"),
         prevent_initial_call=True,
     )
     def auto_update_plot(dim_x, dim_y, dim_z, treenum_range,
                          show_lines, color_gradient, selected,
-                         selected_key, results, dragmode):
+                         selected_key, selected_run, results, dragmode):
         mds_result = _get_active_result(selected_key, results)
-        if not mds_result or not all([dim_x, dim_y, dim_z]):
+        if not mds_result or not selected_run or not all([dim_x, dim_y, dim_z]):
             return no_update
 
-        df = pd.DataFrame(mds_result["data"])
+        df_run, axis_ranges = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update
         selected_set = set(selected) if selected else None
 
-        return _make_within_run_figure(df, dim_x, dim_y, dim_z, show_lines,
+        return _make_within_run_figure(df_run, dim_x, dim_y, dim_z, show_lines,
                                        selected_treenums=selected_set,
                                        treenum_range=treenum_range,
                                        color_gradient=color_gradient,
-                                       dragmode=dragmode or "zoom")
+                                       dragmode=dragmode or "zoom",
+                                       axis_ranges=axis_ranges)
 
     # Reset Axes button — force zoom reset by changing uirevision
     @callback(
@@ -575,24 +673,29 @@ def register_within_run_callbacks():
         State("within-run-show-lines", "checked"),
         State("within-run-color-gradient", "checked"),
         State("within-run-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-dragmode", "value"),
         prevent_initial_call=True,
     )
     def reset_axes(n_clicks, dim_x, dim_y, dim_z, treenum_range,
-                   show_lines, color_gradient, selected_key, results, selected, dragmode):
+                   show_lines, color_gradient, selected_key, selected_run,
+                   results, selected, dragmode):
         mds_result = _get_active_result(selected_key, results)
-        if not n_clicks or not mds_result or not all([dim_x, dim_y, dim_z]):
+        if not n_clicks or not mds_result or not selected_run or not all([dim_x, dim_y, dim_z]):
             return no_update
 
-        df = pd.DataFrame(mds_result["data"])
+        df_run, axis_ranges = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update
         selected_set = set(selected) if selected else None
 
-        fig = _make_within_run_figure(df, dim_x, dim_y, dim_z,
+        fig = _make_within_run_figure(df_run, dim_x, dim_y, dim_z,
                                       show_lines, selected_treenums=selected_set,
                                       treenum_range=treenum_range,
                                       color_gradient=color_gradient,
-                                      dragmode=dragmode or "zoom")
+                                      dragmode=dragmode or "zoom",
+                                      axis_ranges=axis_ranges)
         fig.update_layout(uirevision=f"reset-{n_clicks}")
         return fig

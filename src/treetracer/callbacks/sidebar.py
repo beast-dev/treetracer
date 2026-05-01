@@ -450,11 +450,9 @@ def register_sidebar_callbacks():
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
-        Output("within-run-mds-results-store", "data", allow_duplicate=True),
         Output("within-run-treenum-range-store", "data", allow_duplicate=True),
         Output("within-run-controls-paper", "style", allow_duplicate=True),
         Output("within-run-info", "children", allow_duplicate=True),
-        Output("compute-wr-mds-output", "children", allow_duplicate=True),
         Output("within-run-graph", "figure", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
@@ -504,12 +502,10 @@ def register_sidebar_callbacks():
                 True,            # compute-rf-trace-button disabled
                 True,            # export-lnl-trace-button disabled
                 True,            # export-rf-trace-button disabled
-                {},              # within-run-mds-results-store (empty dict)
                 None,            # within-run-treenum-range-store
                 {"display": "none"},  # within-run-controls-paper style
                 html.Div(),      # within-run-info
-                html.Div(),      # compute-wr-mds-output
                 {},              # within-run-graph (empty figure)
                 [],              # within-run-selected-trees-store
             )
-        return (no_update,) * 24
+        return (no_update,) * 22

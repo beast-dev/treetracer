@@ -159,16 +159,24 @@ def _add_within_run_panel():
     """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
         dmc.Stack([
-            # Row 1: Result selector + axis selectors + info (boxed)
+            # Row 1: Result + Run selectors + axis selectors + info (boxed)
             dmc.Paper(
                 dmc.Group([
                     dmc.Select(
                         id="within-run-result-select",
-                        placeholder="No results yet",
+                        placeholder="No MDS results yet",
                         data=[],
                         value=None,
                         size="xs",
-                        w=350,
+                        w=300,
+                    ),
+                    dmc.Select(
+                        id="within-run-run-select",
+                        placeholder="Run",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=180,
                     ),
                     dmc.Select(label="X", id="within-run-dim-x",
                                data=[], value=None, size="xs", w=100),
@@ -311,9 +319,9 @@ def add_main_body():
                     ], gutter="lg"),
                     dmc.Space(h=10),
                     html.Div(id="compute-rf-output"),
-                    # Between-run MDS section
+                    # Tree-Space MDS section
                     dmc.Divider(my="lg"),
-                    dmc.Title("Between-run MDS", order=4),
+                    dmc.Title("Tree-Space MDS", order=4),
                     dmc.Grid([
                         # Left: compute controls
                         dmc.GridCol([
@@ -366,69 +374,6 @@ def add_main_body():
                     ], gutter="lg"),
                     dmc.Space(h=10),
                     html.Div(id="compute-mds-output"),
-                    # Within-run MDS section
-                    dmc.Divider(my="lg"),
-                    dmc.Title("Within-run MDS", order=4),
-                    dmc.Grid([
-                        # Left: compute controls
-                        dmc.GridCol([
-                            dmc.Select(
-                                id="wr-mds-distmat-select",
-                                label="RF Matrix",
-                                placeholder="No distance matrix available",
-                                data=[],
-                                value=None,
-                                size="sm",
-                            ),
-                            dmc.Select(
-                                id="wr-mds-run-select",
-                                label="Run",
-                                placeholder="Select a run",
-                                data=[],
-                                value=None,
-                                size="sm",
-                                style={"marginTop": "6px"},
-                            ),
-                            html.Div(id="wr-mds-info", style={"marginTop": "6px"}),
-                            dmc.Space(h=10),
-                            dmc.Button(
-                                "Compute Within-run MDS",
-                                id="compute-wr-mds-button",
-                                variant="filled",
-                                color="violet",
-                                size="sm",
-                                disabled=True,
-                            ),
-                        ], span=6),
-                        # Right: computed within-run MDS results
-                        dmc.GridCol([
-                            dmc.Group([
-                                dmc.Text("Computed Within-run MDS", fw=600, size="sm"),
-                                dmc.Badge("0", id="wr-mds-result-count", variant="light",
-                                          color="gray", size="sm"),
-                            ], gap="xs", mb="xs"),
-                            dmc.Select(
-                                id="wr-mds-result-select",
-                                placeholder="No within-run MDS results yet",
-                                data=[],
-                                value=None,
-                                size="sm",
-                            ),
-                            html.Div(id="wr-mds-result-info", style={"marginTop": "6px"}),
-                            dmc.Space(h=10),
-                            dmc.Button(
-                                "Export Within-run MDS",
-                                id="export-wr-mds-button",
-                                variant="outline",
-                                color="violet",
-                                size="sm",
-                                disabled=True,
-                                leftSection=DashIconify(icon="tabler:download", width=14),
-                            ),
-                        ], span=6),
-                    ], gutter="lg"),
-                    dmc.Space(h=10),
-                    html.Div(id="compute-wr-mds-output"),
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
@@ -513,7 +458,6 @@ def add_navbar():
                     dcc.Store(id="tree-offset-store", storage_type="memory"),
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
-                    dcc.Store(id="within-run-mds-results-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),

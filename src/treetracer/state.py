@@ -150,12 +150,13 @@ def clear_all_distmats():
 # ---------------------------------------------------------------------------
 # Server-side MDS result storage
 # ---------------------------------------------------------------------------
-# MDS results (between-run and within-run) are stored server-side to avoid
-# sending coordinate data through JSON callback responses. Only lightweight
-# metadata (n_trees, groups, dimensions) goes through dcc.Store.
+# Between-run MDS results are stored server-side to avoid sending coordinate
+# data through JSON callback responses. Only lightweight metadata (n_trees,
+# groups, dimensions) goes through dcc.Store. The Within-run Analysis tab
+# now consumes the same store, filtered to one group per view — there is no
+# longer a separate within-run MDS computation.
 
 _mds_results = {}       # key -> {"metadata": {...}, "data": list[dict]}
-_wr_mds_results = {}    # key -> {"file": str, "source_distmat": str, "dimensions": [...], "n_trees": int, "data": list[dict]}
 _MAX_MDS_RESULTS = 50   # evict oldest when exceeded
 
 
@@ -188,33 +189,6 @@ def get_mds_results_index():
     }
 
 
-def store_wr_mds_result(key, result):
-    """Store a within-run MDS result server-side."""
-    if len(_wr_mds_results) >= _MAX_MDS_RESULTS and key not in _wr_mds_results:
-        oldest = next(iter(_wr_mds_results))
-        del _wr_mds_results[oldest]
-    _wr_mds_results[key] = result
-
-
-def get_wr_mds_result(key):
-    """Get a within-run MDS result by key."""
-    return _wr_mds_results.get(key)
-
-
-def get_wr_mds_results_index():
-    """Return lightweight metadata for dcc.Store (no coordinate data)."""
-    return {
-        k: {
-            "file": v.get("file", "?"),
-            "source_distmat": v.get("source_distmat", "?"),
-            "n_trees": v.get("n_trees", 0),
-            "dimensions": v.get("dimensions", []),
-        }
-        for k, v in _wr_mds_results.items()
-    }
-
-
 def clear_all_mds_results():
     """Clear all server-side MDS results."""
     _mds_results.clear()
-    _wr_mds_results.clear()

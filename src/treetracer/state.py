@@ -47,6 +47,21 @@ def get_distmat_path(name):
     return os.path.join(d, name.replace("/", "_") + ".npy")
 
 
+def get_snapshots_path(name):
+    """Return the .npz file path for a matrix's interned-snapshot data.
+
+    The compute_rf worker saves the presence matrix + leaf_names to this
+    parallel path whenever it computes an RF matrix. Convergence
+    diagnostics (Pseudo-ESS, ASDSF, Fréchet) read it via:
+
+        data = np.load(get_snapshots_path(name), allow_pickle=False)
+        presence = data["presence"]          # (n_trees, n_bipartitions) uint8
+        leaf_names = data["leaf_names"]      # alphabetical taxa
+    """
+    d = _ensure_tmpdir()
+    return os.path.join(d, name.replace("/", "_") + "_snapshots.npz")
+
+
 def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
     """Register a matrix that was already saved to disk by a subprocess worker."""
     # Evict oldest if at capacity

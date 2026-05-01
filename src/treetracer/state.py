@@ -82,27 +82,6 @@ def register_distmat(name, names, path, file_breakdown=None, groups_per_file=Non
     }
 
 
-def save_distmat(name, names, matrix, file_breakdown=None):
-    """Save an RF distance matrix as uint16 .npy and register it.
-
-    Args:
-        name: Key for this matrix (e.g. "RF_001").
-        names: List of tree name strings (length n).
-        matrix: n×n distance values (list-of-lists or numpy array).
-        file_breakdown: Optional dict of {filename: n_trees} showing which
-            source files contributed and how many trees each.
-    """
-    d = _ensure_tmpdir()
-    arr = np.array(matrix, dtype=np.uint16)
-    path = os.path.join(d, name.replace("/", "_") + ".npy")
-    np.save(path, arr)
-    _distmat_index[name] = {
-        "names": list(names),
-        "path": path,
-        "file_breakdown": file_breakdown or {},
-    }
-
-
 def load_distmat(name):
     """Load a matrix from disk.
 

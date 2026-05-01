@@ -273,23 +273,14 @@ def add_main_body():
                         dmc.GridCol([
                             html.Div(id="compute-trees-table"),
                             dmc.Space(h=10),
-                            dmc.Group([
-                                dmc.Button(
-                                    "Compute RF Distances",
-                                    id="compute-rf-button",
-                                    variant="filled",
-                                    color="green",
-                                    size="sm",
-                                    disabled=True,
-                                ),
-                                dmc.Button(
-                                    "Load RF Matrix",
-                                    id="load-rf-button",
-                                    variant="outline",
-                                    color="green",
-                                    size="sm",
-                                ),
-                            ], gap="xs"),
+                            dmc.Button(
+                                "Compute RF Distances",
+                                id="compute-rf-button",
+                                variant="filled",
+                                color="green",
+                                size="sm",
+                                disabled=True,
+                            ),
                         ], span=6),
                         # Right column: computed matrices
                         dmc.GridCol([
@@ -337,23 +328,14 @@ def add_main_body():
                             html.Div(id="mds-distmat-info", style={"marginTop": "6px"}),
                             html.Div(id="mds-status-text"),
                             dmc.Space(h=10),
-                            dmc.Group([
-                                dmc.Button(
-                                    "Compute MDS",
-                                    id="compute-mds-button",
-                                    variant="filled",
-                                    color="blue",
-                                    size="sm",
-                                    disabled=True,
-                                ),
-                                dmc.Button(
-                                    "Load MDS",
-                                    id="load-mds-button",
-                                    variant="outline",
-                                    color="green",
-                                    size="sm",
-                                ),
-                            ], gap="xs"),
+                            dmc.Button(
+                                "Compute MDS",
+                                id="compute-mds-button",
+                                variant="filled",
+                                color="blue",
+                                size="sm",
+                                disabled=True,
+                            ),
                         ], span=6),
                         # Right: computed MDS results
                         dmc.GridCol([

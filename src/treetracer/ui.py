@@ -155,6 +155,93 @@ def _add_diagnostics_panel():
     ], style={"padding": "10px"})
 
 
+def _add_treespace_panel():
+    """Build the Between-run Analysis tab panel content."""
+    return html.Div([
+        dmc.Stack([
+            # Row 1: MDS-result selector + dim selectors + info badges
+            dmc.Paper(
+                dmc.Group([
+                    dmc.Select(
+                        label="MDS Result",
+                        id="treespace-result-select",
+                        placeholder="No MDS results yet",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=300,
+                    ),
+                    dmc.Select(label="X", id="dim-x-select",
+                               data=[], value=None, size="xs", w=100),
+                    dmc.Select(label="Y", id="dim-y-select",
+                               data=[], value=None, size="xs", w=100),
+                    dmc.Select(label="Z", id="dim-z-select",
+                               data=[], value=None, size="xs", w=100),
+                    html.Div(id="treespace-info"),
+                ], align="flex-end", gap="md"),
+                withBorder=True, p="xs", radius="sm",
+            ),
+
+            # Row 2: tree-number range slider + show-lines + Plot button
+            # (hidden until a result is selected)
+            dmc.Group([
+                dmc.Stack([
+                    dmc.Text("Tree Number Range:", size="sm", fw=500),
+                    dmc.RangeSlider(
+                        id="treenum-slider",
+                        min=1, max=100, value=[1, 100],
+                        marks=[
+                            {"value": 1, "label": "1"},
+                            {"value": 100, "label": "100"},
+                        ],
+                        step=1,
+                        styles={"label": {"top": "unset", "bottom": "-2rem"}},
+                    ),
+                ], gap="xs", style={"flex": 1}),
+                dmc.Checkbox(
+                    label="Show lines",
+                    id="show-lines-checkbox",
+                    checked=True,
+                ),
+                dmc.Button(
+                    "Plot",
+                    id="plot-button",
+                    variant="filled",
+                    color="blue",
+                    size="md",
+                ),
+            ], align="flex-end", gap="lg",
+                id="treespace-controls-paper",
+                style={"display": "none"}),
+
+            # Plot canvas
+            html.Div(
+                id="plot-container",
+                children=[
+                    html.Div(
+                        "No MDS result selected. Compute an MDS in the Compute tab.",
+                        style={
+                            "text-align": "center",
+                            "color": "#666",
+                            "font-size": "18px",
+                            "padding": "100px",
+                            "height": "calc(100vh - 280px)",
+                            "display": "flex",
+                            "align-items": "center",
+                            "justify-content": "center",
+                        },
+                    ),
+                ],
+                style={
+                    "width": "95%",
+                    "display": "inline-block",
+                    "vertical-align": "top",
+                },
+            ),
+        ]),
+    ])
+
+
 def _add_within_run_panel():
     """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
@@ -163,6 +250,7 @@ def _add_within_run_panel():
             dmc.Paper(
                 dmc.Group([
                     dmc.Select(
+                        label="MDS Result",
                         id="within-run-result-select",
                         placeholder="No MDS results yet",
                         data=[],
@@ -171,6 +259,7 @@ def _add_within_run_panel():
                         w=300,
                     ),
                     dmc.Select(
+                        label="Run",
                         id="within-run-run-select",
                         placeholder="Run",
                         data=[],
@@ -377,7 +466,7 @@ def add_main_body():
                 ], style={"padding": "10px"}),
                 value="compute",
             ),
-            dmc.TabsPanel(html.Div(id="plot-display"), value="treespace"),
+            dmc.TabsPanel(_add_treespace_panel(), value="treespace"),
             dmc.TabsPanel(_add_within_run_panel(), value="within-run"),
             dmc.TabsPanel(_add_diagnostics_panel(), value="diagnostics"),
         ],

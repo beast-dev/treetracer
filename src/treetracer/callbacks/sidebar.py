@@ -436,7 +436,6 @@ def register_sidebar_callbacks():
         Output("distmat-store", "data", allow_duplicate=True),
         Output("plot-config-store", "data", allow_duplicate=True),
         Output("mds-result-store", "data", allow_duplicate=True),
-        Output("plot-display", "children", allow_duplicate=True),
         Output("tree-offset-store", "data", allow_duplicate=True),
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("compute-mds-output", "children", allow_duplicate=True),
@@ -488,7 +487,6 @@ def register_sidebar_callbacks():
                 {},          # distmat-store
                 {},          # plot-config-store
                 {},          # mds-result-store
-                html.Div(),  # plot-display
                 {},          # tree-offset-store
                 html.Div(),  # compute-rf-output
                 html.Div(),  # compute-mds-output
@@ -508,4 +506,4 @@ def register_sidebar_callbacks():
                 {},              # within-run-graph (empty figure)
                 [],              # within-run-selected-trees-store
             )
-        return (no_update,) * 22
+        return (no_update,) * 21

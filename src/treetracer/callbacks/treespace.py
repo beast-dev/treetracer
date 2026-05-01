@@ -5,7 +5,7 @@ import pandas as pd
 
 from ..logger import add_log
 from ..state import get_mds_result
-from ..plot_utils import make_plot_grid, add_trace_multiplot
+from ..plot_utils import make_plot_grid, add_trace_multiplot_interleaved
 
 
 def register_treespace_callbacks():
@@ -182,9 +182,11 @@ def register_treespace_callbacks():
 
         x, y, z = dim_x, dim_y, dim_z
 
-        # Create new plot with filtered data
+        # Create new plot with filtered data. The interleaved variant splits
+        # each group's points into chunks and stacks them by chunk-index so
+        # no single run sits entirely on top of the others in the 2D panels.
         fig = make_plot_grid()
-        add_trace_multiplot(
+        add_trace_multiplot_interleaved(
             fig, filtered_dff, x, y, z, plot_config["groups"], plot_config["color_dict"],
             show_lines=show_lines,
         )

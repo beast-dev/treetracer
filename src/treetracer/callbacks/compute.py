@@ -59,11 +59,29 @@ def register_compute_callbacks():
 
         rows = []
         for filename, summary in stored_summaries.items():
+            burnin = int(summary.get("burnin", 0))
+            total_trees = int(summary.get("total_trees", 0))
+            original_total = int(summary.get("original_total", total_trees + burnin))
+
+            # Burn-in cell: "N (of M)" with "(of M)" rendered in light grey.
+            burnin_cell = dmc.TableTd([
+                str(burnin),
+                " ",
+                html.Span(
+                    f"(of {original_total})",
+                    style={
+                        "color": "var(--mantine-color-gray-6)",
+                        "fontSize": "0.85em",
+                    },
+                ),
+            ])
+
             rows.append(
                 dmc.TableTr([
                     dmc.TableTd(filename),
                     dmc.TableTd(str(summary.get("n_taxa", "—"))),
-                    dmc.TableTd(str(summary.get("total_trees", 0))),
+                    burnin_cell,
+                    dmc.TableTd(str(total_trees)),
                     dmc.TableTd(
                         dmc.Checkbox(
                             id={"type": "compute-tree-checkbox", "index": filename},
@@ -79,6 +97,7 @@ def register_compute_callbacks():
                     dmc.TableTr([
                         dmc.TableTh("File"),
                         dmc.TableTh("Taxa"),
+                        dmc.TableTh("Burn-in"),
                         dmc.TableTh("Trees"),
                         dmc.TableTh("Select"),
                     ])

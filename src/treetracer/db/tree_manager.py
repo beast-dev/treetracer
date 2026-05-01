@@ -256,6 +256,27 @@ class TreeManagerPandas:
     # Downsample
     # ------------------------------------------------------------------
 
+    def apply_burnin(self, file_source: str, n: int):
+        """Drop the first ``n`` trees (by id, i.e. MCMC iteration order) for ``file_source``.
+
+        Repeated calls are cumulative — each call drops the next ``n`` trees
+        from the current head, not from the original file. If ``n`` would
+        leave fewer than 1 tree, the call is a no-op (caller should detect
+        this beforehand and notify the user).
+        """
+        if n <= 0:
+            return
+        self.flush()
+        mask = self._trees['file_source'] == file_source
+        file_df = self._trees[mask].sort_values('id')
+        if n >= len(file_df):
+            return  # would drop everything; caller handles the warning
+        burnin_ids = set(file_df.iloc[:n]['id'])
+        self._trees = (
+            self._trees[~self._trees['id'].isin(burnin_ids)]
+            .reset_index(drop=True)
+        )
+
     def downsample_trees(self, file_source: str, n: int, strategy: str = 'uniform'):
         """Keep only n trees for the given file_source, dropping the rest.
 

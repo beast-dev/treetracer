@@ -2,6 +2,29 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
+def placeholder_fig(text):
+    """Empty figure with centered placeholder text. Used so the between-run
+    Graph component can exist statically (giving selection callbacks a stable
+    target) even before the user has plotted anything."""
+    return {
+        "data": [],
+        "layout": {
+            "xaxis": {"visible": False},
+            "yaxis": {"visible": False},
+            "annotations": [{
+                "text": text,
+                "xref": "paper", "yref": "paper",
+                "x": 0.5, "y": 0.5,
+                "showarrow": False,
+                "font": {"size": 18, "color": "#666"},
+            }],
+            "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+            "plot_bgcolor": "white",
+            "paper_bgcolor": "white",
+        },
+    }
+
+
 # Number of slices each group's points are split into before being added to
 # the 2D panels. With N groups and K chunks, the marker traces are added in
 # chunk-index order — chunk 0 of all groups, then chunk 1 of all groups, etc.
@@ -185,7 +208,10 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         group_data = df[df["group"] == gr]
         color = COLOR_DICT[gr]
         tree_short = group_data["tree"].str.split("/").str[-1].str.strip()
-        customdata = list(zip(group_data["treenum"], tree_short))
+        # customdata carries (treenum, basename, group) so click handlers can
+        # disambiguate points across runs — `treenum` resets per group.
+        customdata = list(zip(group_data["treenum"], tree_short,
+                              [gr] * len(group_data)))
         hover = f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>"
 
         fig.add_trace(
@@ -233,7 +259,8 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
     for _chunk_idx, gr, chunk_df in all_chunks:
         color = COLOR_DICT[gr]
         tree_short = chunk_df["tree"].str.split("/").str[-1].str.strip()
-        customdata = list(zip(chunk_df["treenum"], tree_short))
+        customdata = list(zip(chunk_df["treenum"], tree_short,
+                              [gr] * len(chunk_df)))
         hover = f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>"
         for xcol, ycol, row, col in panels_2d:
             fig.add_trace(
@@ -249,9 +276,53 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
                     showlegend=False,
                     hovertemplate=hover,
                     customdata=customdata,
+                    selected=dict(marker=dict(opacity=0.9)),
+                    unselected=dict(marker=dict(opacity=0.9)),
                 ),
                 row=row, col=col,
             )
+
+    # 4. Trailing selection-overlay traces. Always 4 traces in this exact
+    # order so the selection callback can Patch them by negative offset
+    # (-4, -3, -2, -1) without rebuilding the figure:
+    #   -4 → 3D overlay  (red circle-open markers)
+    #   -3 → 2D x-y overlay  (hollow red outline)
+    #   -2 → 2D x-z overlay
+    #   -1 → 2D y-z overlay
+    fig.add_trace(
+        go.Scatter3d(
+            x=[], y=[], z=[],
+            mode="markers",
+            marker=dict(size=8, color="red", symbol="circle-open"),
+            customdata=[],
+            hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
+            showlegend=False,
+            name="selection",
+        ),
+        row=1, col=1,
+    )
+    for xcol, ycol, row, col in panels_2d:
+        fig.add_trace(
+            go.Scatter(
+                x=[], y=[],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color="rgba(0,0,0,0)",
+                    line=dict(color="red", width=1.5),
+                ),
+                customdata=[],
+                hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
+                showlegend=False,
+                # Pin both states to opacity 1 so Plotly's box-select
+                # selectedpoints stamping doesn't fade overlay circles
+                # outside the latest box (matches within-run pattern).
+                selected=dict(marker=dict(opacity=1)),
+                unselected=dict(marker=dict(opacity=1)),
+                name="selection",
+            ),
+            row=row, col=col,
+        )
 
     fig.update_layout(
         template="simple_white",
@@ -260,6 +331,12 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
             yaxis=dict(title=dict(text=y)),
             zaxis=dict(title=dict(text=z)),
         ),
+        # Sync the 2D panels: panel 2 (xz) shares x with panel 1 (xy);
+        # panel 3 (yz) shares its x with panel 1's y; panel 3's y shares
+        # with panel 2's y. Same logic as within-run's 1×3 layout.
+        xaxis2=dict(matches='x'),
+        xaxis3=dict(matches='y'),
+        yaxis3=dict(matches='y2'),
         legend=dict(
             orientation="h",
             yanchor="top", y=-0.15,
@@ -269,7 +346,7 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
             itemsizing="constant",
         ),
         legend_itemwidth=40,
-        uirevision="constant",
+        uirevision="treespace",
         margin=dict(l=2, r=20, t=25, b=10),
     )
 

@@ -2,6 +2,8 @@ import dash_mantine_components as dmc
 from dash import dcc, html
 from dash_iconify import DashIconify
 
+from .plot_utils import placeholder_fig
+
 # Header
 
 
@@ -214,29 +216,48 @@ def _add_treespace_panel():
                 id="treespace-controls-paper",
                 style={"display": "none"}),
 
-            # Plot canvas
-            html.Div(
-                id="plot-container",
-                children=[
-                    html.Div(
-                        "No MDS result selected. Compute an MDS in the Compute tab.",
-                        style={
-                            "text-align": "center",
-                            "color": "#666",
-                            "font-size": "18px",
-                            "padding": "100px",
-                            "height": "calc(100vh - 280px)",
-                            "display": "flex",
-                            "align-items": "center",
-                            "justify-content": "center",
-                        },
-                    ),
-                ],
-                style={
-                    "width": "95%",
-                    "display": "inline-block",
-                    "vertical-align": "top",
-                },
+            # Row 3: selection controls — dragmode, clear, reset zoom, exports
+            # (hidden until a result is selected)
+            dmc.Group([
+                dmc.SegmentedControl(
+                    id="treespace-dragmode",
+                    data=[
+                        {"value": "zoom", "label": "Zoom"},
+                        {"value": "select", "label": "Box"},
+                        {"value": "lasso", "label": "Lasso"},
+                    ],
+                    value="zoom",
+                    size="xs",
+                ),
+                dmc.Button("Clear Selected", id="treespace-clear-selection",
+                           variant="outline", color="gray", size="xs"),
+                dmc.Button("Reset Zoom", id="treespace-reset-button",
+                           variant="outline", color="gray", size="xs"),
+                dmc.Button("Export .trees", id="treespace-export-trees",
+                           variant="filled", color="green", size="xs",
+                           disabled=True,
+                           leftSection=DashIconify(icon="tabler:download", width=14)),
+                dmc.Button("Export PDF", id="treespace-export-pdf",
+                           variant="light", size="xs"),
+                html.Div(id="treespace-selection-info"),
+            ], align="center", gap="sm", wrap="nowrap",
+                id="treespace-selection-controls",
+                style={"display": "none"}),
+
+            dcc.Store(id="treespace-selected-trees-store",
+                      storage_type="memory"),
+
+            # Plot canvas — statically defined so the selection callbacks can
+            # always target it. Starts empty with a centered placeholder
+            # message; configure_for_selected_result and the Plot button
+            # handler drive the figure content from there.
+            dcc.Graph(
+                id="graph",
+                figure=placeholder_fig(
+                    "No MDS result selected. Compute an MDS in the Compute tab."
+                ),
+                style={"height": "calc(100vh - 280px)"},
+                config={"doubleClick": False},
             ),
         ]),
     ])

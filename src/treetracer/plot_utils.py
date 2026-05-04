@@ -326,7 +326,7 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         )
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         scene=dict(
             xaxis=dict(title=dict(text=x)),
             yaxis=dict(title=dict(text=y)),

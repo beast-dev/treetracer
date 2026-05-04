@@ -570,6 +570,20 @@ def register_within_run_callbacks():
         fig.update_layout(dragmode=dragmode)
         return fig
 
+    # ------ theme toggle → patch layout.template (preserves zoom) ------
+    @callback(
+        Output("within-run-graph", "figure", allow_duplicate=True),
+        Input("plotly-template-store", "data"),
+        State("within-run-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def update_plot_theme(_, current_fig):
+        if not current_fig:
+            return no_update
+        patch = Patch()
+        patch["layout"]["template"] = get_template()
+        return patch
+
     # ------ selection-info badge ------
     @callback(
         Output("within-run-selection-info", "children"),

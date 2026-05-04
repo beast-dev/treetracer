@@ -243,7 +243,7 @@ def _add_treespace_panel():
                            variant="filled", color="green", size="xs",
                            disabled=True,
                            leftSection=DashIconify(icon="tabler:download", width=14)),
-                dmc.Button("Export MCC", id="treespace-export-mcc",
+                dmc.Button("View MCC", id="treespace-view-mcc",
                            variant="filled", color="violet", size="xs",
                            disabled=True,
                            leftSection=DashIconify(icon="tabler:tree", width=14)),
@@ -255,6 +255,9 @@ def _add_treespace_panel():
 
             dcc.Store(id="treespace-selected-trees-store",
                       storage_type="memory"),
+            # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
+            # populated by the View-MCC handler with {"uuid", "name"}.
+            dcc.Store(id="treespace-view-mcc-store", storage_type="memory"),
 
             # Plot canvas — statically defined so the selection callbacks can
             # always target it. Starts empty with a centered placeholder
@@ -375,7 +378,7 @@ def _add_within_run_panel():
                            variant="filled", color="green", size="xs",
                            disabled=True,
                            leftSection=DashIconify(icon="tabler:download", width=14)),
-                dmc.Button("Export MCC", id="within-run-export-mcc",
+                dmc.Button("View MCC", id="within-run-view-mcc",
                            variant="filled", color="violet", size="xs",
                            disabled=True,
                            leftSection=DashIconify(icon="tabler:tree", width=14)),
@@ -387,6 +390,9 @@ def _add_within_run_panel():
 
             # Hidden stores
             dcc.Store(id="within-run-selected-trees-store", storage_type="memory"),
+            # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
+            # populated by the View-MCC handler with {"uuid", "name"}.
+            dcc.Store(id="within-run-view-mcc-store", storage_type="memory"),
             dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
 
             # Graph — starts with the same placeholder message as between-run

@@ -186,3 +186,40 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
                                    format(log_clade_cred, ".4f"))
 
     return mcc_row, line, set()
+
+
+def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
+    """Compute the MCC tree from *matched_rows* and assemble the full NEXUS
+    bytes ready to write to disk or hand to a peartree window.
+
+    The NEXUS layout matches what the original ``Export MCC`` callback
+    used to write directly:
+
+        <canonical source's preamble — #NEXUS, taxa block, begin trees;,
+         Translate { … };>
+        <mcc_line, with original tree name + lnCladeCred annotation>
+        End;
+
+    Returns ``(nexus_bytes, mcc_tree_name, missing_taxa)``:
+        * ``nexus_bytes`` — bytes of the assembled NEXUS file. ``None``
+          when ``missing_taxa`` is non-empty.
+        * ``mcc_tree_name`` — the original DB ``name`` of the chosen
+          MCC tree (e.g. ``"run1/STATE_5000"``). ``None`` when
+          ``missing_taxa`` is non-empty.
+        * ``missing_taxa`` — set of taxa missing from the canonical
+          translate (caller surfaces this as an export error).
+    """
+    mcc_row, mcc_line, missing_taxa = compute_mcc_for_selection(
+        matched_rows, db_manager, source_distmat,
+    )
+    if missing_taxa:
+        return None, None, missing_taxa
+
+    canonical_source = matched_rows["file_source"].iloc[0]
+    canonical_preamble = (
+        db_manager._source_preambles.get(canonical_source)
+        or b"#NEXUS\n\nbegin trees;\n"
+    )
+    body = mcc_line if mcc_line.endswith("\n") else mcc_line + "\n"
+    nexus_bytes = canonical_preamble + body.encode("utf-8") + b"End;\n"
+    return nexus_bytes, mcc_row["name"], set()

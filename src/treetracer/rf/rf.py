@@ -82,7 +82,7 @@ def rf_distance_with_snapshots_from_newick_iter(
     if map_indices is None:
         map_indices = [0] * len(names)
     names_out, rf_bytes, leaf_names, n_bipartitions, presence_bytes = (
-        rapidtrees.pairwise_rf_with_snapshots_interned_from_newick_iter(
+        rapidtrees.pairwise_rf_with_snapshots_from_newick_iter(
             names, newick_iter, translate_maps, map_indices, rooted=rooted,
         )
     )

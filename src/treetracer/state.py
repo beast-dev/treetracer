@@ -130,6 +130,16 @@ def get_distmat_file_path(name):
     return _distmat_index[name]["path"]
 
 
+def get_distmat_names(name):
+    """Return the row/column tree-name ordering of a stored matrix.
+
+    The same ordering is used by the snapshot file at
+    ``get_snapshots_path(name)``, so callers can map a tree name to its
+    row index in the presence matrix.
+    """
+    return _distmat_index[name]["names"]
+
+
 def get_distmat_groups_per_file(name):
     """Return the groups_per_file mapping for a stored matrix."""
     return _distmat_index.get(name, {}).get("groups_per_file", {})

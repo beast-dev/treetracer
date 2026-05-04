@@ -193,6 +193,7 @@ def register_treespace_callbacks():
         Output("plot-button", "children", allow_duplicate=True),
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("treespace-export-trees", "disabled", allow_duplicate=True),
+        Output("treespace-export-mcc", "disabled", allow_duplicate=True),
         Output("treespace-selection-info", "children", allow_duplicate=True),
         Input("treespace-result-select", "value"),
         State("mds-result-store", "data"),
@@ -210,6 +211,7 @@ def register_treespace_callbacks():
             placeholder_fig("No MDS result selected. Compute an MDS in the Compute tab."),
             "Plot",
             [],
+            True,
             True,
             html.Div(),
         )
@@ -264,6 +266,7 @@ def register_treespace_callbacks():
             placeholder_fig("Click 'Plot' to visualize data"),
             "Plot",
             [],
+            True,
             True,
             html.Div(),
         )
@@ -419,18 +422,20 @@ def register_treespace_callbacks():
         patch["layout"]["dragmode"] = dragmode
         return patch
 
-    # ------ selection-info badge + Export-trees button enable ------
+    # ------ selection-info badge + Export-trees / Export-MCC enable ------
     @callback(
         Output("treespace-selection-info", "children"),
         Output("treespace-export-trees", "disabled"),
+        Output("treespace-export-mcc", "disabled"),
         Input("treespace-selected-trees-store", "data"),
     )
     def update_selection_info(selected):
         if not selected:
-            return html.Div(), True
+            return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
                       color="red", variant="light", size="lg"),
+            False,
             False,
         )
 
@@ -651,6 +656,117 @@ def register_treespace_callbacks():
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show",
                                 autoClose=4000, id=notif_id())
+
+    # ------ export MCC tree from selected trees ------
+    # Same selection-filter plumbing as ``export_selected_trees``, but we
+    # ask the shared ``mcc.compute_mcc_for_selection`` to pick a single
+    # winning tree from the snapshot presence matrix. Output is one NEXUS
+    # file with the canonical preamble + the MCC tree line renamed to
+    # ``MCC``.
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("treespace-export-mcc", "n_clicks"),
+        State("treespace-selected-trees-store", "data"),
+        State("plot-config-store", "data"),
+        State("treespace-result-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_mcc_tree(n_clicks, selected_pairs, plot_config,
+                        selected_key, results):
+        from ..logger import notif_id
+        from ..db.tree_service import get_tree_service
+        from ._helpers import _save_file_dialog
+        from ..mcc import compute_mcc_for_selection
+        if not n_clicks or not selected_pairs or not plot_config:
+            return no_update
+
+        results = results or {}
+        if not selected_key or selected_key not in results:
+            return dmc.Notification(
+                title="MCC Error",
+                message="No MDS result is currently selected.",
+                color="red", action="show", autoClose=5000, id=notif_id())
+        source_distmat = (results[selected_key] or {}).get("source_distmat")
+        if not source_distmat:
+            return dmc.Notification(
+                title="MCC Error",
+                message="No RF/snapshot data is associated with this MDS result.",
+                color="red", action="show", autoClose=5000, id=notif_id())
+
+        combined_df = pd.DataFrame(plot_config["combined_data"])
+        selected_set = {(g, int(t)) for g, t in selected_pairs}
+        keys = list(zip(combined_df["group"], combined_df["treenum"].astype(int)))
+        mask = pd.Series([k in selected_set for k in keys], index=combined_df.index)
+        sel_df = combined_df[mask]
+        tree_names = sel_df["tree"].tolist()
+        if not tree_names:
+            return dmc.Notification(title="MCC Error",
+                                    message="No matching trees found.",
+                                    color="red", action="show",
+                                    autoClose=4000, id=notif_id())
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.flush()
+        all_trees = tree_service.db_manager._trees
+        matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
+        if len(matched) == 0:
+            return dmc.Notification(
+                title="MCC Error",
+                message="Selected trees not found in database. They may have been cleared.",
+                color="red", action="show", autoClose=4000, id=notif_id())
+
+        try:
+            mcc_row, mcc_line, missing_taxa = compute_mcc_for_selection(
+                matched, tree_service.db_manager, source_distmat,
+            )
+        except Exception as e:
+            return dmc.Notification(title="MCC Error", message=str(e),
+                                    color="red", action="show",
+                                    autoClose=6000, id=notif_id())
+
+        if missing_taxa:
+            sample = ", ".join(sorted(missing_taxa)[:5])
+            more = "…" if len(missing_taxa) > 5 else ""
+            canonical_source = matched["file_source"].iloc[0]
+            return dmc.Notification(
+                title="MCC Error",
+                message=(
+                    f"Cannot align translate tables: taxa [{sample}{more}] "
+                    f"are present in some selected runs but not in "
+                    f"{canonical_source}'s Translate block."
+                ),
+                color="red", action="show", autoClose=8000, id=notif_id())
+
+        path = _save_file_dialog(default_filename=f"mcc_{len(matched)}_trees.tree")
+        if not path:
+            return no_update
+
+        canonical_source = matched["file_source"].iloc[0]
+        canonical_preamble = tree_service.db_manager._source_preambles.get(canonical_source)
+        # The MCC line keeps its original ``tree NAME = …;`` — we don't
+        # rename it to "MCC" so the user can tell which tree won. Internal
+        # nodes already carry ``[&posterior=…]`` from compute_mcc_for_selection.
+        try:
+            with open(path, "wb") as out:
+                if canonical_preamble:
+                    out.write(canonical_preamble)
+                else:
+                    out.write(b"#NEXUS\n\nbegin trees;\n")
+                out.write(mcc_line.encode("utf-8"))
+                if not mcc_line.endswith("\n"):
+                    out.write(b"\n")
+                out.write(b"End;\n")
+        except Exception as e:
+            return dmc.Notification(title="MCC Error", message=str(e),
+                                    color="red", action="show",
+                                    autoClose=6000, id=notif_id())
+
+        add_log(f"Exported MCC tree '{mcc_row['name']}' (from {len(matched)} selected) to {path}")
+        return dmc.Notification(
+            title="MCC Tree Exported",
+            message=f"MCC tree is '{mcc_row['name']}' (from {len(matched)} selected trees) — saved to {path}",
+            color="green", action="show", autoClose=6000, id=notif_id())
 
     # ------ export PDF ------
     @callback(

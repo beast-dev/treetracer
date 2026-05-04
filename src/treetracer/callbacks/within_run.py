@@ -572,14 +572,16 @@ def register_within_run_callbacks():
     @callback(
         Output("within-run-selection-info", "children"),
         Output("within-run-export-trees", "disabled"),
+        Output("within-run-export-mcc", "disabled"),
         Input("within-run-selected-trees-store", "data"),
     )
     def update_selection_info(selected):
         if not selected:
-            return html.Div(), True
+            return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
                       color="red", variant="light", size="lg"),
+            False,
             False,
         )
 
@@ -647,6 +649,108 @@ def register_within_run_callbacks():
         return dmc.Notification(title="Trees Exported",
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show", autoClose=4000, id=notif_id())
+
+    # ------ export MCC tree ------
+    # Same selection plumbing as export_selected_trees, but instead of
+    # writing every selected tree we hand the matched DataFrame to
+    # ``mcc.compute_mcc_for_selection`` (which uses the on-disk presence
+    # snapshot) and write only the winning tree under the canonical
+    # preamble, renamed to ``MCC``.
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("within-run-export-mcc", "n_clicks"),
+        State("within-run-selected-trees-store", "data"),
+        State("within-run-result-select", "value"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_mcc_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
+        from ..logger import add_log, notif_id
+        if not n_clicks or not selected_treenums:
+            return no_update
+        mds_result = _get_active_result(selected_key, results)
+        if not mds_result or not selected_run:
+            return no_update
+
+        source_distmat = (mds_result.get("metadata") or {}).get("source_distmat")
+        if not source_distmat:
+            return dmc.Notification(
+                title="MCC Error",
+                message="No RF/snapshot data is associated with this MDS result.",
+                color="red", action="show", autoClose=5000, id=notif_id())
+
+        df_run, _ = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update
+        sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
+        tree_names = sel_df["tree"].tolist()
+        if not tree_names:
+            return dmc.Notification(title="MCC Error", message="No matching trees found.",
+                                    color="red", action="show", autoClose=4000, id=notif_id())
+
+        from ..db.tree_service import get_tree_service
+        from ._helpers import _save_file_dialog
+        from ..mcc import compute_mcc_for_selection
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.flush()
+        all_trees = tree_service.db_manager._trees
+        matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
+        if len(matched) == 0:
+            return dmc.Notification(
+                title="MCC Error",
+                message="Selected trees not found in database. They may have been cleared.",
+                color="red", action="show", autoClose=4000, id=notif_id())
+
+        try:
+            mcc_row, mcc_line, missing_taxa = compute_mcc_for_selection(
+                matched, tree_service.db_manager, source_distmat,
+            )
+        except Exception as e:
+            return dmc.Notification(title="MCC Error", message=str(e),
+                                    color="red", action="show", autoClose=6000, id=notif_id())
+
+        if missing_taxa:
+            sample = ", ".join(sorted(missing_taxa)[:5])
+            more = "…" if len(missing_taxa) > 5 else ""
+            return dmc.Notification(
+                title="MCC Error",
+                message=(
+                    f"Cannot align translate tables: taxa [{sample}{more}] "
+                    "are present in some selected runs but not in the "
+                    "canonical Translate block."
+                ),
+                color="red", action="show", autoClose=8000, id=notif_id())
+
+        path = _save_file_dialog(default_filename=f"mcc_{len(matched)}_trees.tree")
+        if not path:
+            return no_update
+
+        canonical_source = matched["file_source"].iloc[0]
+        canonical_preamble = tree_service.db_manager._source_preambles.get(canonical_source)
+        # The MCC line keeps its original ``tree NAME = …;`` — we don't
+        # rename it to "MCC" so the user can tell which tree won. Internal
+        # nodes already carry ``[&posterior=…]`` from compute_mcc_for_selection.
+        try:
+            with open(path, "wb") as out:
+                if canonical_preamble:
+                    out.write(canonical_preamble)
+                else:
+                    out.write(b"#NEXUS\n\nbegin trees;\n")
+                out.write(mcc_line.encode("utf-8"))
+                if not mcc_line.endswith("\n"):
+                    out.write(b"\n")
+                out.write(b"End;\n")
+        except Exception as e:
+            return dmc.Notification(title="MCC Error", message=str(e),
+                                    color="red", action="show", autoClose=6000, id=notif_id())
+
+        add_log(f"Exported MCC tree '{mcc_row['name']}' (from {len(matched)} selected) to {path}")
+        return dmc.Notification(
+            title="MCC Tree Exported",
+            message=f"MCC tree is '{mcc_row['name']}' (from {len(matched)} selected trees) — saved to {path}",
+            color="green", action="show", autoClose=6000, id=notif_id())
 
     # ------ export PDF ------
     @callback(

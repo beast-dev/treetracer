@@ -11,6 +11,7 @@ from ..state import get_mds_result
 from ..theme import get_template
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
+    retheme_figure,
 )
 
 
@@ -423,7 +424,7 @@ def register_treespace_callbacks():
         patch["layout"]["dragmode"] = dragmode
         return patch
 
-    # ------ theme toggle → patch layout.template (preserves zoom) ------
+    # ------ theme toggle → rebuild figure with active template ------
     @callback(
         Output("graph", "figure", allow_duplicate=True),
         Input("plotly-template-store", "data"),
@@ -433,9 +434,7 @@ def register_treespace_callbacks():
     def update_plot_theme(_, current_fig):
         if not current_fig:
             return no_update
-        patch = Patch()
-        patch["layout"]["template"] = get_template()
-        return patch
+        return retheme_figure(current_fig, skip_invalid=True)
 
     # ------ selection-info badge + Export-trees / Export-MCC enable ------
     @callback(

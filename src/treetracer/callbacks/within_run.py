@@ -29,6 +29,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 
 from ..theme import get_template
+from ..plot_utils import retheme_figure
 
 
 TREETRACER_BLUE = "#228be6"
@@ -570,7 +571,7 @@ def register_within_run_callbacks():
         fig.update_layout(dragmode=dragmode)
         return fig
 
-    # ------ theme toggle → patch layout.template (preserves zoom) ------
+    # ------ theme toggle → rebuild figure with active template ------
     @callback(
         Output("within-run-graph", "figure", allow_duplicate=True),
         Input("plotly-template-store", "data"),
@@ -580,9 +581,7 @@ def register_within_run_callbacks():
     def update_plot_theme(_, current_fig):
         if not current_fig:
             return no_update
-        patch = Patch()
-        patch["layout"]["template"] = get_template()
-        return patch
+        return retheme_figure(current_fig)
 
     # ------ selection-info badge ------
     @callback(

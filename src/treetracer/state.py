@@ -7,6 +7,7 @@ Only lightweight metadata (tree names) goes through dcc.Store / JSON.
 
 import atexit
 import os
+import secrets
 import shutil
 import tempfile
 
@@ -130,6 +131,16 @@ def get_distmat_file_path(name):
     return _distmat_index[name]["path"]
 
 
+def get_distmat_names(name):
+    """Return the row/column tree-name ordering of a stored matrix.
+
+    The same ordering is used by the snapshot file at
+    ``get_snapshots_path(name)``, so callers can map a tree name to its
+    row index in the presence matrix.
+    """
+    return _distmat_index[name]["names"]
+
+
 def get_distmat_groups_per_file(name):
     """Return the groups_per_file mapping for a stored matrix."""
     return _distmat_index.get(name, {}).get("groups_per_file", {})
@@ -192,3 +203,43 @@ def get_mds_results_index():
 def clear_all_mds_results():
     """Clear all server-side MDS results."""
     _mds_results.clear()
+
+
+# ---------------------------------------------------------------------------
+# In-memory MCC tree cache
+# ---------------------------------------------------------------------------
+# When the user clicks "View MCC" we compute the MCC NEXUS bytes once on the
+# server side and stash them under a random URL-safe token, then open
+# /peartree/<token> in a new browser window. The peartree page then fetches
+# /peartree/<token>/tree.nex back from this cache. Cache lives in memory
+# only — a server restart drops it.
+
+_mcc_cache = {}             # uuid_str -> bytes (NEXUS)
+_MAX_MCC_TREES = 50         # evict oldest when exceeded
+
+
+def cache_mcc_tree(nexus_bytes):
+    """Stash NEXUS bytes for a freshly-computed MCC tree and return a
+    URL-safe handle. Oldest cached tree is evicted when the cache fills."""
+    global _mcc_cache
+    if len(_mcc_cache) >= _MAX_MCC_TREES:
+        oldest = next(iter(_mcc_cache))
+        del _mcc_cache[oldest]
+    uid = secrets.token_urlsafe(8)
+    _mcc_cache[uid] = nexus_bytes
+    return uid
+
+
+def get_cached_mcc_tree(uid):
+    """Return cached NEXUS bytes for *uid*, or None if absent / evicted."""
+    return _mcc_cache.get(uid)
+
+
+def has_cached_mcc_tree(uid):
+    return uid in _mcc_cache
+
+
+def clear_all_mcc_trees():
+    """Drop every cached MCC tree. Called from the sidebar's Clear-data
+    handler so the cache doesn't outlive the data it summarises."""
+    _mcc_cache.clear()

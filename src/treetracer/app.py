@@ -2,6 +2,7 @@ import dash_mantine_components as dmc
 from dash import Dash
 from .ui import add_header, add_navbar, add_main_body, add_footer
 from .callbacks import register_callbacks
+from . import peartree_view
 import sys
 import logging
 import threading
@@ -9,7 +10,15 @@ import threading
 
 def create_dash_app():
     app = Dash(
-        __name__, external_stylesheets=dmc.styles.ALL, suppress_callback_exceptions=True
+        __name__,
+        external_stylesheets=dmc.styles.ALL,
+        suppress_callback_exceptions=True,
+        # peartree.bundle.min.js lives in assets/ so Dash auto-serves it
+        # at /assets/peartree.bundle.min.js, but we don't want it injected
+        # into the main page's <head> — it's only needed inside the
+        # /peartree/<uid> windows opened by "View MCC". This regex stops
+        # the auto-injection while leaving the file accessible.
+        assets_ignore=r"peartree\.bundle\.min\.js",
     )
 
     layout = dmc.AppShell(
@@ -50,6 +59,7 @@ def main():
     try:
         app = create_dash_app()
         register_callbacks(app)
+        peartree_view.register_routes(app.server)
 
         if browser_mode:
             import webbrowser
@@ -95,8 +105,19 @@ def main():
             def _on_closed():
                 _kill_process_tree()
 
-            window = webview.create_window("TreeTracer", "http://127.0.0.1:8050/",
-                                           width=1600, height=900)
+            # Expose the peartree JS API on this window so the View-MCC
+            # clientside callback can spawn sibling pywebview windows via
+            # ``window.pywebview.api.open_peartree(uid, name)`` instead of
+            # bouncing out to the system browser.
+            window = webview.create_window(
+                "TreeTracer", "http://127.0.0.1:8050/",
+                width=1600, height=900,
+                js_api=peartree_view.peartree_api,
+            )
+            # The api needs a handle on this window so it can re-focus
+            # it when a peartree sibling window closes (Cocoa otherwise
+            # leaves the app with no key window).
+            peartree_view.peartree_api.set_main_window(window)
             window.events.closed += _on_closed
             webview.start()
 

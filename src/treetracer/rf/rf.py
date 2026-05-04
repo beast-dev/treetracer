@@ -50,3 +50,45 @@ def rf_distance_from_newick_iter(
     return names_out, matrix
 
 
+def rf_distance_with_snapshots_from_newick_iter(
+    names: List[str],
+    newick_iter,
+    translate_maps: List[Dict[str, str]],
+    map_indices: List[int] | None = None,
+    rooted: bool = False,
+) -> Tuple[List[str], np.ndarray, np.ndarray, List[str], int]:
+    """Compute pairwise RF distances *and* the per-tree split presence matrix.
+
+    Calls rapidtrees' interned-snapshot pyfunction, which builds an
+    InternedSnapshots representation under the hood: every distinct
+    bipartition is assigned a u32 ID and the RF inner loop runs on integers
+    instead of multi-word bitset memcmps. At 1000+ taxa the speedup over the
+    legacy bitset path is roughly 5–10× because the working set fits in L1
+    and there are no pointer-chased heap reads in the merge.
+
+    The presence matrix is returned as a byproduct: shape (n_trees, n_bip),
+    uint8 with ``presence[i, j] == 1`` iff tree ``i`` contains bipartition
+    ``j``. Bipartition columns are in ascending Bitset order so the same
+    tree set always produces the same matrix. Downstream convergence
+    diagnostics (Pseudo-ESS, Fréchet correlation ESS, ASDSF) consume this
+    matrix directly without re-parsing the original .trees files.
+
+    Returns:
+        (names, rf_matrix, presence, leaf_names, n_bipartitions) where
+        rf_matrix is uint32 (n_trees × n_trees), presence is uint8
+        (n_trees × n_bipartitions), leaf_names is the alphabetically-sorted
+        taxon list (length matches the bit width inside each bipartition).
+    """
+    if map_indices is None:
+        map_indices = [0] * len(names)
+    names_out, rf_bytes, leaf_names, n_bipartitions, presence_bytes = (
+        rapidtrees.pairwise_rf_with_snapshots_from_newick_iter(
+            names, newick_iter, translate_maps, map_indices, rooted=rooted,
+        )
+    )
+    n = len(names_out)
+    rf_matrix = np.frombuffer(rf_bytes, dtype=np.uint32).reshape(n, n).copy()
+    presence = np.frombuffer(presence_bytes, dtype=np.uint8).reshape(n, n_bipartitions).copy()
+    return names_out, rf_matrix, presence, list(leaf_names), int(n_bipartitions)
+
+

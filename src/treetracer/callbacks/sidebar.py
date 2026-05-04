@@ -5,6 +5,7 @@ import os
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import clear_all_distmats, clear_all_mds_results
+from ..plot_utils import placeholder_fig
 from ._helpers import _open_file_dialog
 
 
@@ -76,10 +77,12 @@ def register_sidebar_callbacks():
 
                 stored_summaries[filename] = {
                     "total_trees": summary["total_trees"],
+                    "original_total": summary["total_trees"],  # preserved across burn-in / downsample
                     "n_taxa": len(new_translate) if new_translate else 0,
                     "groups": summary["groups"],
                     "trees_per_group": summary["trees_per_group"],
                     "path": file_path,
+                    "burnin": 0,
                 }
                 loaded_count += 1
                 add_log(f"Loaded {filename}: {result['trees_loaded']} trees")
@@ -150,11 +153,33 @@ def register_sidebar_callbacks():
                 for g, count in trees_per_group.items()
             ]
 
+            burnin_total = summary.get("burnin", 0)
             panel_content = dmc.Stack([
                 dmc.Text(f"Taxa: {n_taxa}", size="xs"),
+                dmc.Text(f"Burn-in dropped so far: {burnin_total}", size="xs", c="dimmed"),
                 dmc.Text("Groups:", size="xs", fw=500),
                 *group_lines,
                 dmc.Divider(my="xs"),
+                # Burn-in row — applied first; drops the first N trees by MCMC order.
+                dmc.Group([
+                    dmc.NumberInput(
+                        id={"type": "burnin-input", "index": filename},
+                        value=0,
+                        min=0,
+                        step=1,
+                        size="xs",
+                        style={"width": "80px"},
+                        placeholder="Burn-in",
+                    ),
+                    dmc.Button(
+                        "Apply Burn-in",
+                        id={"type": "burnin-btn", "index": filename},
+                        variant="filled",
+                        color="grape",
+                        size="compact-xs",
+                    ),
+                ], gap="xs"),
+                # Downsample row — operates on whatever's left after burn-in.
                 dmc.Group([
                     dmc.NumberInput(
                         id={"type": "downsample-input", "index": filename},
@@ -163,6 +188,7 @@ def register_sidebar_callbacks():
                         step=1,
                         size="xs",
                         style={"width": "80px"},
+                        placeholder="Downsample",
                     ),
                     dmc.Button(
                         "Downsample",
@@ -272,6 +298,83 @@ def register_sidebar_callbacks():
         )
         return stored_summaries, no_update, notification
 
+    # Callback to apply burn-in to a file (drops the first N trees by MCMC order)
+    @callback(
+        Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input({"type": "burnin-btn", "index": ALL}, "n_clicks"),
+        State({"type": "burnin-input", "index": ALL}, "value"),
+        State("tree-offset-store", "data"),
+        prevent_initial_call=True,
+    )
+    def apply_burnin(n_clicks_list, n_value_list, stored_summaries):
+        if not any(n_clicks_list):
+            return no_update, no_update, no_update
+
+        triggered_id = ctx.triggered_id
+        if not triggered_id:
+            return no_update, no_update, no_update
+
+        filename = triggered_id["index"]
+
+        n_value = None
+        for i, inp in enumerate(ctx.inputs_list[0]):
+            if inp["id"]["index"] == filename:
+                n_value = n_value_list[i]
+                break
+
+        if not n_value or int(n_value) <= 0:
+            return no_update, no_update, no_update
+
+        n = int(n_value)
+        stored_summaries = stored_summaries or {}
+        current_total = stored_summaries.get(filename, {}).get("total_trees", 0)
+        if n >= current_total:
+            msg = (
+                f"Burn-in of {n} would drop all {current_total} remaining trees "
+                f"in {filename}. Skipped."
+            )
+            add_log(msg, "WARNING")
+            notification = dmc.Notification(
+                title="Burn-in Skipped",
+                message=msg,
+                color="yellow",
+                action="show",
+                autoClose=4000,
+                id=notif_id(),
+            )
+            return no_update, no_update, notification
+
+        add_log(f"Applying burn-in of {n} to {filename}...")
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.apply_burnin(filename, n)
+
+        summary = tree_service.compute_file_summary(filename)
+        if filename in stored_summaries:
+            prev_burnin = stored_summaries[filename].get("burnin", 0)
+            stored_summaries[filename].update(summary)
+            stored_summaries[filename]["burnin"] = prev_burnin + n
+
+        add_log(
+            f"Burn-in applied: {filename} now has {summary['total_trees']} trees "
+            f"(cumulative burn-in: {stored_summaries[filename]['burnin']})"
+        )
+        notification = dmc.Notification(
+            title="Burn-in Applied",
+            message=(
+                f"Dropped {n} trees from {filename}; "
+                f"{summary['total_trees']} remaining "
+                f"(cumulative burn-in: {stored_summaries[filename]['burnin']})."
+            ),
+            color="grape",
+            action="show",
+            autoClose=4000,
+            id=notif_id(),
+        )
+        return stored_summaries, no_update, notification
+
     # Callback to reset trees to original file contents
     @callback(
         Output("tree-offset-store", "data", allow_duplicate=True),
@@ -310,9 +413,12 @@ def register_sidebar_callbacks():
             add_log(f"Reset failed for {filename}: {result.get('error')}", "ERROR")
             return no_update, no_update, no_update
 
-        # Recompute summary
+        # Recompute summary; reset clears any accumulated burn-in and
+        # re-baselines original_total to the freshly-reloaded count.
         summary = tree_service.compute_file_summary(filename)
         stored_summaries[filename].update(summary)
+        stored_summaries[filename]["burnin"] = 0
+        stored_summaries[filename]["original_total"] = summary["total_trees"]
 
         add_log(f"Reset {filename}: reloaded {summary['total_trees']} trees from disk")
         notification = dmc.Notification(
@@ -331,7 +437,6 @@ def register_sidebar_callbacks():
         Output("distmat-store", "data", allow_duplicate=True),
         Output("plot-config-store", "data", allow_duplicate=True),
         Output("mds-result-store", "data", allow_duplicate=True),
-        Output("plot-display", "children", allow_duplicate=True),
         Output("tree-offset-store", "data", allow_duplicate=True),
         Output("compute-rf-output", "children", allow_duplicate=True),
         Output("compute-mds-output", "children", allow_duplicate=True),
@@ -345,11 +450,9 @@ def register_sidebar_callbacks():
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
-        Output("within-run-mds-results-store", "data", allow_duplicate=True),
         Output("within-run-treenum-range-store", "data", allow_duplicate=True),
         Output("within-run-controls-paper", "style", allow_duplicate=True),
         Output("within-run-info", "children", allow_duplicate=True),
-        Output("compute-wr-mds-output", "children", allow_duplicate=True),
         Output("within-run-graph", "figure", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
@@ -385,7 +488,6 @@ def register_sidebar_callbacks():
                 {},          # distmat-store
                 {},          # plot-config-store
                 {},          # mds-result-store
-                html.Div(),  # plot-display
                 {},          # tree-offset-store
                 html.Div(),  # compute-rf-output
                 html.Div(),  # compute-mds-output
@@ -399,12 +501,12 @@ def register_sidebar_callbacks():
                 True,            # compute-rf-trace-button disabled
                 True,            # export-lnl-trace-button disabled
                 True,            # export-rf-trace-button disabled
-                {},              # within-run-mds-results-store (empty dict)
                 None,            # within-run-treenum-range-store
                 {"display": "none"},  # within-run-controls-paper style
                 html.Div(),      # within-run-info
-                html.Div(),      # compute-wr-mds-output
-                {},              # within-run-graph (empty figure)
+                placeholder_fig(  # within-run-graph: same empty-state as between-run
+                    "No MDS result selected. Compute an MDS in the Compute tab."
+                ),
                 [],              # within-run-selected-trees-store
             )
-        return (no_update,) * 24
+        return (no_update,) * 21

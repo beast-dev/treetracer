@@ -163,58 +163,61 @@ class TreeManagerPandas:
             })
         return trees
 
+    def _apply_filters(self, df: pd.DataFrame,
+                       filters: Optional[Dict[str, Any]]) -> pd.DataFrame:
+        """Apply file_source(s) and group_name filters."""
+        if not filters:
+            return df
+        if 'file_sources' in filters:
+            df = df[df['file_source'].isin(filters['file_sources'])]
+        elif 'file_source' in filters:
+            df = df[df['file_source'] == filters['file_source']]
+        if 'group_name' in filters:
+            df = df[df['group_name'] == filters['group_name']]
+        return df
+
+    def get_trees(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Return all trees matching ``filters`` in id (MCMC iteration) order."""
+        self.flush()
+        df = self._apply_filters(self._trees, filters)
+        if len(df) == 0:
+            return []
+        return self._resolve_newick(df.sort_values('id'))
+
     def get_trees_sample(self,
                         filters: Optional[Dict[str, Any]] = None,
                         limit: int = 500,
-                        strategy: str = 'random') -> List[Dict[str, Any]]:
+                        strategy: str = 'uniform') -> List[Dict[str, Any]]:
         """Sample trees. Returns dicts with 'newick' key (read from file).
 
         Strategies:
+            uniform    - evenly spaced by insertion order (default)
             random     - uniform random sample
-            uniform    - evenly spaced by insertion order
             stratified - proportional per group_name
+
+        All strategies return trees sorted by id (= MCMC iteration order
+        within each file), so downstream consumers can rely on chronological
+        ordering for trace plots and trajectory lines.
         """
         self.flush()
-
-        df = self._trees
-
-        # Apply filters
-        if filters:
-            if 'file_sources' in filters:
-                df = df[df['file_source'].isin(filters['file_sources'])]
-            elif 'file_source' in filters:
-                df = df[df['file_source'] == filters['file_source']]
-            if 'group_name' in filters:
-                df = df[df['group_name'] == filters['group_name']]
-
+        df = self._apply_filters(self._trees, filters)
         if len(df) == 0:
             return []
 
+        n = min(limit, len(df))
         if strategy == 'random':
-            n = min(limit, len(df))
             sampled = df.sample(n=n)
-
-        elif strategy == 'uniform':
-            if len(df) <= limit:
-                sampled = df
-            else:
-                step = max(1, len(df) // limit)
-                sampled = df.iloc[::step].head(limit)
-
         elif strategy == 'stratified':
-            groups = df['group_name'].unique()
             total = len(df)
-            parts = []
-            for g in groups:
-                g_df = df[df['group_name'] == g]
-                n_g = max(1, int(len(g_df) / total * limit))
-                n_g = min(n_g, len(g_df))
-                parts.append(g_df.sample(n=n_g))
-            sampled = pd.concat(parts)
-        else:
-            sampled = df.head(limit)
+            sampled = pd.concat([
+                g.sample(n=min(max(1, int(len(g) / total * limit)), len(g)))
+                for _, g in df.groupby('group_name', observed=True)
+            ])
+        else:  # 'uniform' (default)
+            step = max(1, len(df) // limit)
+            sampled = df.iloc[::step].head(limit)
 
-        return self._resolve_newick(sampled)
+        return self._resolve_newick(sampled.sort_values('id'))
 
     # ------------------------------------------------------------------
     # Statistics
@@ -253,15 +256,51 @@ class TreeManagerPandas:
     # Downsample
     # ------------------------------------------------------------------
 
-    def downsample_trees(self, file_source: str, n: int):
-        """Randomly keep only n trees for the given file_source, dropping the rest."""
+    def apply_burnin(self, file_source: str, n: int):
+        """Drop the first ``n`` trees (by id, i.e. MCMC iteration order) for ``file_source``.
+
+        Repeated calls are cumulative — each call drops the next ``n`` trees
+        from the current head, not from the original file. If ``n`` would
+        leave fewer than 1 tree, the call is a no-op (caller should detect
+        this beforehand and notify the user).
+        """
+        if n <= 0:
+            return
         self.flush()
         mask = self._trees['file_source'] == file_source
-        file_df = self._trees[mask]
+        file_df = self._trees[mask].sort_values('id')
+        if n >= len(file_df):
+            return  # would drop everything; caller handles the warning
+        burnin_ids = set(file_df.iloc[:n]['id'])
+        self._trees = (
+            self._trees[~self._trees['id'].isin(burnin_ids)]
+            .reset_index(drop=True)
+        )
+
+    def downsample_trees(self, file_source: str, n: int, strategy: str = 'uniform'):
+        """Keep only n trees for the given file_source, dropping the rest.
+
+        Strategies:
+            uniform - every k-th tree (k = total // n), preserves chain coverage
+            random  - random subset
+        """
+        self.flush()
+        mask = self._trees['file_source'] == file_source
+        file_df = self._trees[mask].sort_values('id')
         if len(file_df) <= n:
             return  # nothing to do
-        keep = file_df.sample(n=n)
-        self._trees = pd.concat([self._trees[~mask], keep], ignore_index=True)
+
+        if strategy == 'random':
+            keep = file_df.sample(n=n)
+        else:  # 'uniform' (default)
+            step = max(1, len(file_df) // n)
+            keep = file_df.iloc[::step].head(n)
+
+        self._trees = (
+            pd.concat([self._trees[~mask], keep], ignore_index=True)
+            .sort_values('id')
+            .reset_index(drop=True)
+        )
 
     # ------------------------------------------------------------------
     # Clear / cleanup

@@ -47,6 +47,21 @@ def get_distmat_path(name):
     return os.path.join(d, name.replace("/", "_") + ".npy")
 
 
+def get_snapshots_path(name):
+    """Return the .npz file path for a matrix's interned-snapshot data.
+
+    The compute_rf worker saves the presence matrix + leaf_names to this
+    parallel path whenever it computes an RF matrix. Convergence
+    diagnostics (Pseudo-ESS, ASDSF, Fréchet) read it via:
+
+        data = np.load(get_snapshots_path(name), allow_pickle=False)
+        presence = data["presence"]          # (n_trees, n_bipartitions) uint8
+        leaf_names = data["leaf_names"]      # alphabetical taxa
+    """
+    d = _ensure_tmpdir()
+    return os.path.join(d, name.replace("/", "_") + "_snapshots.npz")
+
+
 def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
     """Register a matrix that was already saved to disk by a subprocess worker."""
     # Evict oldest if at capacity
@@ -64,27 +79,6 @@ def register_distmat(name, names, path, file_breakdown=None, groups_per_file=Non
         "path": path,
         "file_breakdown": file_breakdown or {},
         "groups_per_file": groups_per_file or {},
-    }
-
-
-def save_distmat(name, names, matrix, file_breakdown=None):
-    """Save an RF distance matrix as uint16 .npy and register it.
-
-    Args:
-        name: Key for this matrix (e.g. "RF_001").
-        names: List of tree name strings (length n).
-        matrix: n×n distance values (list-of-lists or numpy array).
-        file_breakdown: Optional dict of {filename: n_trees} showing which
-            source files contributed and how many trees each.
-    """
-    d = _ensure_tmpdir()
-    arr = np.array(matrix, dtype=np.uint16)
-    path = os.path.join(d, name.replace("/", "_") + ".npy")
-    np.save(path, arr)
-    _distmat_index[name] = {
-        "names": list(names),
-        "path": path,
-        "file_breakdown": file_breakdown or {},
     }
 
 
@@ -156,12 +150,13 @@ def clear_all_distmats():
 # ---------------------------------------------------------------------------
 # Server-side MDS result storage
 # ---------------------------------------------------------------------------
-# MDS results (between-run and within-run) are stored server-side to avoid
-# sending coordinate data through JSON callback responses. Only lightweight
-# metadata (n_trees, groups, dimensions) goes through dcc.Store.
+# Between-run MDS results are stored server-side to avoid sending coordinate
+# data through JSON callback responses. Only lightweight metadata (n_trees,
+# groups, dimensions) goes through dcc.Store. The Within-run Analysis tab
+# now consumes the same store, filtered to one group per view — there is no
+# longer a separate within-run MDS computation.
 
 _mds_results = {}       # key -> {"metadata": {...}, "data": list[dict]}
-_wr_mds_results = {}    # key -> {"file": str, "source_distmat": str, "dimensions": [...], "n_trees": int, "data": list[dict]}
 _MAX_MDS_RESULTS = 50   # evict oldest when exceeded
 
 
@@ -194,33 +189,6 @@ def get_mds_results_index():
     }
 
 
-def store_wr_mds_result(key, result):
-    """Store a within-run MDS result server-side."""
-    if len(_wr_mds_results) >= _MAX_MDS_RESULTS and key not in _wr_mds_results:
-        oldest = next(iter(_wr_mds_results))
-        del _wr_mds_results[oldest]
-    _wr_mds_results[key] = result
-
-
-def get_wr_mds_result(key):
-    """Get a within-run MDS result by key."""
-    return _wr_mds_results.get(key)
-
-
-def get_wr_mds_results_index():
-    """Return lightweight metadata for dcc.Store (no coordinate data)."""
-    return {
-        k: {
-            "file": v.get("file", "?"),
-            "source_distmat": v.get("source_distmat", "?"),
-            "n_trees": v.get("n_trees", 0),
-            "dimensions": v.get("dimensions", []),
-        }
-        for k, v in _wr_mds_results.items()
-    }
-
-
 def clear_all_mds_results():
     """Clear all server-side MDS results."""
     _mds_results.clear()
-    _wr_mds_results.clear()

@@ -7,13 +7,12 @@ import pandas as pd
 
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
-from ..state import (save_distmat, load_distmat, get_distmat_index, next_distmat_name,
+from ..state import (load_distmat, get_distmat_index, next_distmat_name,
                       get_distmat_path, register_distmat, get_distmat_file_path,
                       get_distmat_groups_per_file,
                       store_mds_result, get_mds_results_index,
-                      store_wr_mds_result, get_wr_mds_results_index,
                       clear_all_mds_results)
-from ._helpers import _save_file_dialog, _open_tsv_dialog, _validate_group_names, extract_group
+from ._helpers import _save_file_dialog, extract_group
 
 
 # Separate-process computation — has its own GIL, so the main process stays responsive.
@@ -23,8 +22,6 @@ _rf_future = None      # concurrent.futures.Future for RF job
 _rf_meta = {}          # metadata needed by poll_completion to save RF result
 _mds_future = None     # concurrent.futures.Future for between-run MDS job
 _mds_meta = {}         # metadata needed by poll_completion to build MDS result
-_wr_mds_future = None  # concurrent.futures.Future for within-run MDS job
-_wr_mds_meta = {}      # metadata needed by poll_completion to build within-run MDS result
 
 
 def _get_executor():
@@ -59,11 +56,29 @@ def register_compute_callbacks():
 
         rows = []
         for filename, summary in stored_summaries.items():
+            burnin = int(summary.get("burnin", 0))
+            total_trees = int(summary.get("total_trees", 0))
+            original_total = int(summary.get("original_total", total_trees + burnin))
+
+            # Burn-in cell: "N (of M)" with "(of M)" rendered in light grey.
+            burnin_cell = dmc.TableTd([
+                str(burnin),
+                " ",
+                html.Span(
+                    f"(of {original_total})",
+                    style={
+                        "color": "var(--mantine-color-gray-6)",
+                        "fontSize": "0.85em",
+                    },
+                ),
+            ])
+
             rows.append(
                 dmc.TableTr([
                     dmc.TableTd(filename),
                     dmc.TableTd(str(summary.get("n_taxa", "—"))),
-                    dmc.TableTd(str(summary.get("total_trees", 0))),
+                    burnin_cell,
+                    dmc.TableTd(str(total_trees)),
                     dmc.TableTd(
                         dmc.Checkbox(
                             id={"type": "compute-tree-checkbox", "index": filename},
@@ -79,6 +94,7 @@ def register_compute_callbacks():
                     dmc.TableTr([
                         dmc.TableTh("File"),
                         dmc.TableTh("Taxa"),
+                        dmc.TableTh("Burn-in"),
                         dmc.TableTh("Trees"),
                         dmc.TableTh("Select"),
                     ])
@@ -166,11 +182,7 @@ def register_compute_callbacks():
         )
         add_log(f"Fetching all {total_trees} trees from {len(selected_files)} files...")
 
-        sample = tree_service.get_sample_for_analysis(
-            file_sources=selected_files,
-            sample_size=total_trees,
-            strategy="random",
-        )
+        sample = tree_service.get_trees_for_analysis(file_sources=selected_files)
         sampled_trees = sample["trees"]
         add_log(f"Retrieved {len(sampled_trees)} trees for RF computation")
 
@@ -369,125 +381,6 @@ def register_compute_callbacks():
         )
         return computing_indicator, False, True
 
-    # ------ WITHIN-RUN MDS SECTION ------
-
-    # Populate within-run RF matrix selector when distmat-store changes
-    @callback(
-        Output("wr-mds-distmat-select", "data"),
-        Output("wr-mds-distmat-select", "value"),
-        Input("distmat-store", "data"),
-    )
-    def populate_wr_distmat_select(distmat_data):
-        if not distmat_data:
-            return [], None
-        options = [
-            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
-            for k, v in distmat_data.items()
-        ]
-        return options, list(distmat_data.keys())[-1]
-
-    # Populate run selector when an RF matrix is chosen
-    @callback(
-        Output("wr-mds-run-select", "data"),
-        Output("wr-mds-run-select", "value"),
-        Output("wr-mds-info", "children"),
-        Input("wr-mds-distmat-select", "value"),
-        State("distmat-store", "data"),
-        prevent_initial_call=True,
-    )
-    def populate_wr_run_select(selected_distmat, distmat_data):
-        if not selected_distmat or not distmat_data or selected_distmat not in distmat_data:
-            return [], None, html.Div()
-        breakdown = distmat_data[selected_distmat].get("file_breakdown", {})
-        if not breakdown:
-            return [], None, dmc.Text("No file breakdown available for this matrix.", c="dimmed", size="sm")
-        options = [
-            {"value": run, "label": f"{run}: {count} trees"}
-            for run, count in breakdown.items()
-        ]
-        badges = [
-            dmc.Badge(f"{run}: {count} trees", variant="light", color="blue", size="lg")
-            for run, count in breakdown.items()
-        ]
-        return options, None, dmc.Group(badges, gap="xs", mt="xs")
-
-    # Enable compute button when both RF matrix and run are selected
-    @callback(
-        Output("compute-wr-mds-button", "disabled"),
-        Input("wr-mds-distmat-select", "value"),
-        Input("wr-mds-run-select", "value"),
-    )
-    def toggle_wr_mds_button(distmat, run):
-        return not (distmat and run)
-
-    # Start within-run MDS: extract submatrix and submit PCoA
-    @callback(
-        Output("compute-wr-mds-output", "children"),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Output("compute-wr-mds-button", "disabled", allow_duplicate=True),
-        Input("compute-wr-mds-button", "n_clicks"),
-        State("wr-mds-distmat-select", "value"),
-        State("wr-mds-run-select", "value"),
-        prevent_initial_call=True,
-    )
-    def handle_compute_wr_mds(n_clicks, selected_distmat, selected_run):
-        if not n_clicks or not selected_distmat or not selected_run:
-            return no_update, no_update, no_update
-
-        try:
-            names, matrix = load_distmat(selected_distmat)
-        except KeyError:
-            return dmc.Text("Matrix not found on disk.", c="red"), no_update, no_update
-
-        # Find indices for trees belonging to the selected file
-        groups_per_file = get_distmat_groups_per_file(selected_distmat)
-        run_groups = set(groups_per_file.get(selected_run, []))
-        if not run_groups:
-            # Fallback: try matching tree name prefix directly
-            run_groups = {selected_run}
-        indices = [i for i, name in enumerate(names)
-                   if extract_group(name) in run_groups]
-
-        if len(indices) < 2:
-            msg = f"Only {len(indices)} tree(s) found for '{selected_run}'. Need at least 2."
-            add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update
-
-        # Extract submatrix (numpy fancy indexing — instant)
-        sub_names = [names[i] for i in indices]
-        sub_matrix = matrix[np.ix_(indices, indices)]
-
-        n = len(sub_names)
-        n_components = min(6, n - 1)
-        result_key = f"{selected_distmat}/{selected_run}"
-        add_log(f"Within-run MDS: extracting {n}x{n} submatrix from {selected_distmat} for {selected_run}")
-
-        # Save submatrix to a temp file and pass path to worker
-        import tempfile
-        fd, sub_path = tempfile.mkstemp(suffix=".npy", prefix="treetracer_wr_")
-        os.close(fd)  # Close the fd; np.save will open by path
-        np.save(sub_path, sub_matrix)
-
-        _wr_mds_meta["tree_names"] = sub_names
-        _wr_mds_meta["selected_distmat"] = selected_distmat
-        _wr_mds_meta["selected_run"] = selected_run
-        _wr_mds_meta["n_components"] = n_components
-        _wr_mds_meta["result_key"] = result_key
-        _wr_mds_meta["sub_path"] = sub_path
-
-        from ..rf._worker import compute_mds_worker
-        global _wr_mds_future
-        _wr_mds_future = _get_executor().submit(
-            compute_mds_worker, sub_path, n_components,
-        )
-
-        indicator = dmc.Alert(
-            title=f"Computing Within-run MDS ({result_key})...",
-            children=dmc.Text(f"PCoA for {n} trees, {n_components} components", size="sm"),
-            color="violet", variant="light",
-        )
-        return indicator, False, True
-
     # ------ POLL + PROCESS: checks futures, processes results in one round trip ------
     # Processing is fast (<20ms) since workers save to disk — no large pickle transfer.
 
@@ -504,10 +397,6 @@ def register_compute_callbacks():
         Output("export-mds-button", "disabled"),
         Output("plot-config-store", "data", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
-        # Within-run MDS outputs (3)
-        Output("within-run-mds-results-store", "data"),
-        Output("compute-wr-mds-output", "children", allow_duplicate=True),
-        Output("compute-wr-mds-button", "disabled", allow_duplicate=True),
         # Shared outputs (2)
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
@@ -515,18 +404,16 @@ def register_compute_callbacks():
         prevent_initial_call=True,
     )
     def poll_completion(n_intervals):
-        global _rf_future, _mds_future, _wr_mds_future
+        global _rf_future, _mds_future
 
         rf_done = _rf_future is not None and _rf_future.done()
         mds_done = _mds_future is not None and _mds_future.done()
-        wr_done = _wr_mds_future is not None and _wr_mds_future.done()
 
-        if not rf_done and not mds_done and not wr_done:
-            return (no_update,) * 15
+        if not rf_done and not mds_done:
+            return (no_update,) * 12
 
         rf_out = [no_update] * 5
         mds_out = [no_update] * 5
-        wr_mds_out = [no_update] * 3
         notif = no_update
 
         # --- Process RF ---
@@ -622,71 +509,12 @@ def register_compute_callbacks():
                         message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
                         color="green", action="show", autoClose=3000, id=notif_id())
 
-        # --- Process Within-run MDS ---
-        if wr_done:
-            sub_path = _wr_mds_meta.get("sub_path")
-            try:
-                embedding_list, elapsed = _wr_mds_future.result()
-            except Exception as e:
-                msg = f"Within-run MDS failed: {e}"
-                add_log(msg, "ERROR")
-                _wr_mds_future = None
-                wr_mds_out = [no_update, dmc.Text(msg, c="red"), False]
-                if notif is no_update:
-                    notif = dmc.Notification(title="Within-run MDS Error", message=msg, color="red",
-                                             action="show", autoClose=6000, id=notif_id())
-            else:
-                _wr_mds_future = None
-                tree_names = _wr_mds_meta["tree_names"]
-                n_components = _wr_mds_meta["n_components"]
-                result_key = _wr_mds_meta["result_key"]
-                selected_run = _wr_mds_meta["selected_run"]
-                selected_distmat = _wr_mds_meta["selected_distmat"]
-
-                mdscols = [f"MDS{i+1}" for i in range(n_components)]
-                mds_df = pd.DataFrame(embedding_list, columns=mdscols)
-                mds_df["tree"] = tree_names
-                mds_df["treenum"] = range(1, len(tree_names) + 1)
-
-                result_entry = {
-                    "file": selected_run,
-                    "source_distmat": selected_distmat,
-                    "dimensions": mdscols,
-                    "n_trees": len(tree_names),
-                    "data": mds_df.to_dict("records"),
-                }
-
-                # Store full result server-side, send only metadata through dcc.Store
-                store_wr_mds_result(result_key, result_entry)
-
-                add_log(f"Within-run MDS complete: {result_key}, {len(tree_names)} trees in {elapsed:.2f}s")
-
-                wr_mds_out = [
-                    get_wr_mds_results_index(),  # lightweight metadata only
-                    dmc.Alert(title=f"Within-run MDS: {result_key}",
-                              children=dmc.Text(f"{len(tree_names)} trees, {n_components} components in {elapsed:.2f}s", size="sm"),
-                              color="green", variant="light"),
-                    False,
-                ]
-                if notif is no_update:
-                    notif = dmc.Notification(
-                        title=f"Within-run MDS Complete",
-                        message=f"{result_key}: {len(tree_names)} trees in {elapsed:.2f}s",
-                        color="green", action="show", autoClose=3000, id=notif_id())
-            # Always clean up temp submatrix file
-            if sub_path:
-                try:
-                    os.remove(sub_path)
-                except OSError:
-                    pass
-
         # Re-enable interval if any jobs are still running
         any_running = ((_rf_future is not None and not _rf_future.done()) or
-                       (_mds_future is not None and not _mds_future.done()) or
-                       (_wr_mds_future is not None and not _wr_mds_future.done()))
+                       (_mds_future is not None and not _mds_future.done()))
         poll_disabled = not any_running
 
-        return (*rf_out, *mds_out, *wr_mds_out, notif, poll_disabled)
+        return (*rf_out, *mds_out, notif, poll_disabled)
 
     # ------ EXPORT CALLBACKS ------
 
@@ -791,247 +619,3 @@ def register_compute_callbacks():
         badges.append(dmc.Badge(f"{meta.get('rows', '?')} trees", variant="light", color="grape", size="sm"))
         return dmc.Group(badges, gap=4)
 
-    # ------ WITHIN-RUN MDS RESULT LIST (right column) ------
-
-    @callback(
-        Output("wr-mds-result-select", "data"),
-        Output("wr-mds-result-select", "value"),
-        Output("wr-mds-result-count", "children"),
-        Output("wr-mds-result-count", "color"),
-        Output("export-wr-mds-button", "disabled"),
-        Input("within-run-mds-results-store", "data"),
-    )
-    def update_wr_mds_result_list(wr_results):
-        if not wr_results:
-            return [], None, "0", "gray", True
-        options = [
-            {"value": k, "label": f"{v.get('file', k)} ({v['n_trees']} trees) [{v.get('source_distmat', '?')}]"}
-            for k, v in wr_results.items()
-        ]
-        last_key = list(wr_results.keys())[-1]
-        count = str(len(wr_results))
-        return options, last_key, count, "violet", False
-
-    @callback(
-        Output("wr-mds-result-info", "children"),
-        Input("wr-mds-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
-        prevent_initial_call=True,
-    )
-    def show_wr_mds_result_info(selected, wr_results):
-        if not selected or not wr_results or selected not in wr_results:
-            return html.Div()
-        result = wr_results[selected]
-        badges = [
-            dmc.Badge(f"File: {result.get('file', '?')}", variant="light", color="blue", size="sm"),
-            dmc.Badge(f"Source: {result.get('source_distmat', '?')}", variant="light", color="teal", size="sm"),
-            dmc.Badge(f"{result.get('n_trees', '?')} trees", variant="light", color="grape", size="sm"),
-        ]
-        return dmc.Group(badges, gap=4)
-
-    @callback(
-        Output("notifications-container", "children", allow_duplicate=True),
-        Input("export-wr-mds-button", "n_clicks"),
-        State("wr-mds-result-select", "value"),
-        State("within-run-mds-results-store", "data"),
-        prevent_initial_call=True,
-    )
-    def export_wr_mds(n_clicks, selected, wr_index):
-        if not n_clicks or not selected or not wr_index or selected not in wr_index:
-            return no_update
-        from ..state import get_wr_mds_result
-        result = get_wr_mds_result(selected)
-        if not result:
-            return no_update
-        default_name = f"within_run_{result.get('file', 'mds')}.tsv".replace("/", "_")
-        path = _save_file_dialog(default_filename=default_name)
-        if not path:
-            return no_update
-        mds_df = pd.DataFrame(result["data"])
-        dims = result.get("dimensions", [])
-        cols = dims + ["tree", "treenum"]
-        export_df = mds_df[[c for c in cols if c in mds_df.columns]]
-        export_df.to_csv(path, sep="\t", index=False)
-        add_log(f"Exported within-run MDS to {path}")
-        return dmc.Notification(
-            title="Within-run MDS Exported",
-            message=f"Saved to {path}",
-            color="green", action="show", autoClose=3000,
-            id=notif_id(),
-        )
-
-    # ------ LOAD RF / MDS FROM FILE ------
-
-    @callback(
-        Output("distmat-store", "data", allow_duplicate=True),
-        Output("compute-rf-output", "children", allow_duplicate=True),
-        Output("export-rf-button", "disabled", allow_duplicate=True),
-        Output("notifications-container", "children", allow_duplicate=True),
-        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
-        Input("load-rf-button", "n_clicks"),
-        State("distmat-store", "data"),
-        prevent_initial_call=True,
-    )
-    def load_rf_matrix(n_clicks, stored_distmats):
-        if not n_clicks:
-            return no_update, no_update, no_update, no_update, no_update
-
-        file_path = _open_tsv_dialog()
-        if not file_path:
-            return no_update, no_update, no_update, no_update, no_update
-
-        try:
-            df = pd.read_csv(file_path, sep="\t", index_col=0)
-        except Exception as e:
-            msg = f"Failed to read file: {e}"
-            add_log(msg, "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Load Error", message=msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            ), no_update
-
-        # Validate tree names have group prefix
-        all_names = list(df.index.astype(str)) + list(df.columns.astype(str))
-        valid, err_msg = _validate_group_names(all_names)
-        if not valid:
-            add_log(f"RF load validation failed: {err_msg}", "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Invalid Tree Names", message=err_msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            ), no_update
-
-        filename = os.path.basename(file_path)
-        names = list(df.index.astype(str))
-        # Build file breakdown from group prefixes in tree names
-        file_breakdown = {}
-        for n in names:
-            group = extract_group(n) if "/" in n else "(ungrouped)"
-            file_breakdown[group] = file_breakdown.get(group, 0) + 1
-        save_distmat(filename, names, df.values.tolist(), file_breakdown=file_breakdown)
-        stored_distmats = get_distmat_index()
-        add_log(f"Loaded RF distance matrix from {filename}: {df.shape[0]}x{df.shape[1]}")
-
-        output_indicator = dmc.Alert(
-            title="RF Distance Matrix",
-            children=dmc.Text(
-                f"{filename}: {df.shape[0]} x {df.shape[1]} trees",
-                size="sm",
-            ),
-            color="green",
-            variant="light",
-        )
-
-        notification = dmc.Notification(
-            title="RF Matrix Loaded",
-            message=f"Loaded {df.shape[0]}x{df.shape[1]} distance matrix from {filename}.",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id=notif_id(),
-        )
-
-        return stored_distmats, output_indicator, False, notification, False
-
-    @callback(
-        Output("mds-result-store", "data", allow_duplicate=True),
-        Output("compute-mds-output", "children", allow_duplicate=True),
-        Output("export-mds-button", "disabled", allow_duplicate=True),
-        Output("notifications-container", "children", allow_duplicate=True),
-        Input("load-mds-button", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def load_mds(n_clicks):
-        if not n_clicks:
-            return no_update, no_update, no_update, no_update
-
-        file_path = _open_tsv_dialog()
-        if not file_path:
-            return no_update, no_update, no_update, no_update
-
-        try:
-            mds_df = pd.read_csv(file_path, sep="\t")
-        except Exception as e:
-            msg = f"Failed to read file: {e}"
-            add_log(msg, "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Load Error", message=msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            )
-
-        if "group" not in mds_df.columns:
-            msg = "MDS file must contain a 'group' column."
-            add_log(msg, "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            )
-
-        if mds_df["group"].isna().any() or (mds_df["group"].astype(str).str.strip() == "").any():
-            msg = "The 'group' column must not contain empty values."
-            add_log(msg, "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            )
-
-        mds_df["group"] = mds_df["group"].astype(str)
-
-        group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
-        mds_df["group_col"] = mds_df["group"].map(group_mapping)
-
-        if "treenum" not in mds_df.columns:
-            mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
-        mds_df["size"] = 6
-
-        mds_filename = os.path.basename(file_path)
-        mds_df["file"] = mds_filename
-
-        # Detect MDS dimension columns
-        mdscols = [c for c in mds_df.columns if c.startswith("MDS")]
-        if not mdscols:
-            msg = "No MDS dimension columns found (expected columns starting with 'MDS')."
-            add_log(msg, "ERROR")
-            return no_update, no_update, no_update, dmc.Notification(
-                title="Invalid MDS File", message=msg, color="red",
-                action="show", autoClose=8000, id=notif_id(),
-            )
-
-        metadata = {
-            "filename": mds_filename,
-            "source_distmat": "loaded_from_file",
-            "rows": len(mds_df),
-            "dimensions": mdscols,
-            "groups": mds_df["group"].unique().tolist(),
-            "MIN_TREENUM": int(mds_df["treenum"].min()),
-            "MAX_TREENUM": int(mds_df["treenum"].max()),
-        }
-
-        mds_result = {
-            "metadata": metadata,
-            "data": mds_df.to_dict("records"),
-        }
-
-        n_groups = len(mds_df["group"].unique())
-        add_log(f"Loaded MDS from {mds_filename}: {len(mds_df)} points, {len(mdscols)}D, {n_groups} groups")
-
-        output_indicator = dmc.Alert(
-            title="MDS Embedding",
-            children=dmc.Text(
-                f"{mds_filename}: {len(mds_df)} points, {len(mdscols)}D, {n_groups} groups",
-                size="sm",
-            ),
-            color="blue",
-            variant="light",
-        )
-
-        notification = dmc.Notification(
-            title="MDS Loaded",
-            message=f"Loaded MDS from {mds_filename}: {len(mds_df)} points, {len(mdscols)} dimensions, {n_groups} groups.",
-            color="green",
-            action="show",
-            autoClose=6000,
-            id=notif_id(),
-        )
-
-        store_mds_result(mds_filename, mds_result)
-        return get_mds_results_index(), output_indicator, False, notification

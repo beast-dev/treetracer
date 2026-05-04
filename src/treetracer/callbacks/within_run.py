@@ -21,7 +21,7 @@ color-gradient toggle) read the user's current zoom out of
 ``uirevision`` alone has proven unreliable across full figure replacements.
 """
 
-from dash import callback, Input, Output, Patch, State, no_update, ctx, html
+from dash import callback, clientside_callback, Input, Output, Patch, State, no_update, ctx, html
 import dash_mantine_components as dmc
 from dash_iconify import DashIconify
 import plotly.graph_objects as go
@@ -574,14 +574,16 @@ def register_within_run_callbacks():
     @callback(
         Output("within-run-selection-info", "children"),
         Output("within-run-export-trees", "disabled"),
+        Output("within-run-view-mcc", "disabled"),
         Input("within-run-selected-trees-store", "data"),
     )
     def update_selection_info(selected):
         if not selected:
-            return html.Div(), True
+            return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
                       color="red", variant="light", size="lg"),
+            False,
             False,
         )
 
@@ -649,6 +651,118 @@ def register_within_run_callbacks():
         return dmc.Notification(title="Trees Exported",
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show", autoClose=4000, id=notif_id())
+
+    # ------ View MCC tree in a peartree window ------
+    # Same selection plumbing as export_selected_trees, but instead of
+    # writing a NEXUS file we hand the matched DataFrame to
+    # ``mcc.assemble_mcc_nexus`` and stash the bytes in the in-memory
+    # MCC cache. The view-mcc store gets {"uuid", "name"}, which a
+    # clientside callback below picks up to open /peartree/<uuid> in a
+    # new browser window.
+    @callback(
+        Output("within-run-view-mcc-store", "data"),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input("within-run-view-mcc", "n_clicks"),
+        State("within-run-selected-trees-store", "data"),
+        State("within-run-result-select", "value"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def view_mcc_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
+        from ..logger import add_log, notif_id
+        from .. import state as _state
+        if not n_clicks or not selected_treenums:
+            return no_update, no_update
+        mds_result = _get_active_result(selected_key, results)
+        if not mds_result or not selected_run:
+            return no_update, no_update
+
+        source_distmat = (mds_result.get("metadata") or {}).get("source_distmat")
+        if not source_distmat:
+            return no_update, dmc.Notification(
+                title="MCC Error",
+                message="No RF/snapshot data is associated with this MDS result.",
+                color="red", action="show", autoClose=5000, id=notif_id())
+
+        df_run, _ = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update, no_update
+        sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
+        tree_names = sel_df["tree"].tolist()
+        if not tree_names:
+            return no_update, dmc.Notification(
+                title="MCC Error", message="No matching trees found.",
+                color="red", action="show", autoClose=4000, id=notif_id())
+
+        from ..db.tree_service import get_tree_service
+        from ..mcc import assemble_mcc_nexus
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.flush()
+        all_trees = tree_service.db_manager._trees
+        matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
+        if len(matched) == 0:
+            return no_update, dmc.Notification(
+                title="MCC Error",
+                message="Selected trees not found in database. They may have been cleared.",
+                color="red", action="show", autoClose=4000, id=notif_id())
+
+        try:
+            nexus_bytes, mcc_name, missing_taxa = assemble_mcc_nexus(
+                matched, tree_service.db_manager, source_distmat,
+            )
+        except Exception as e:
+            return no_update, dmc.Notification(
+                title="MCC Error", message=str(e),
+                color="red", action="show", autoClose=6000, id=notif_id())
+
+        if missing_taxa:
+            sample = ", ".join(sorted(missing_taxa)[:5])
+            more = "…" if len(missing_taxa) > 5 else ""
+            return no_update, dmc.Notification(
+                title="MCC Error",
+                message=(
+                    f"Cannot align translate tables: taxa [{sample}{more}] "
+                    "are present in some selected runs but not in the "
+                    "canonical Translate block."
+                ),
+                color="red", action="show", autoClose=8000, id=notif_id())
+
+        uid = _state.cache_mcc_tree(nexus_bytes)
+        add_log(f"Cached MCC tree '{mcc_name}' (from {len(matched)} selected) as {uid}")
+        notification = dmc.Notification(
+            title="MCC Tree Ready",
+            message=f"MCC tree is '{mcc_name}' (from {len(matched)} selected) — opening in PearTree…",
+            color="green", action="show", autoClose=4000, id=notif_id())
+        return {"uuid": uid, "name": mcc_name}, notification
+
+    # Clientside: in pywebview desktop mode call the Python-side JS API
+    # to spawn a sibling native window; in ``--browser`` mode fall back
+    # to a regular ``window.open`` that opens a new browser tab. Same
+    # behaviour as the between-run tab.
+    clientside_callback(
+        """
+        function(payload) {
+            if (payload && payload.uuid) {
+                const name = payload.name || '';
+                if (window.pywebview && window.pywebview.api
+                    && window.pywebview.api.open_peartree) {
+                    window.pywebview.api.open_peartree(payload.uuid, name);
+                } else {
+                    const url = '/peartree/' + payload.uuid
+                              + '?name=' + encodeURIComponent(name);
+                    const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
+                    window.open(url, 'peartree-' + payload.uuid, features);
+                }
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("within-run-view-mcc-store", "data", allow_duplicate=True),
+        Input("within-run-view-mcc-store", "data"),
+        prevent_initial_call=True,
+    )
 
     # ------ export PDF ------
     @callback(

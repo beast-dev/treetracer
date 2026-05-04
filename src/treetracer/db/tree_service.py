@@ -233,7 +233,11 @@ class TreeService:
             'ready_for_analysis': True
         }
     
-    def get_metadata_traces(self, file_sources: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+    def get_metadata_traces(
+        self,
+        file_sources: Optional[List[str]] = None,
+        tree_names: Optional[List[str]] = None,
+    ) -> Dict[str, pd.DataFrame]:
         """Extract numeric time-series fields from tree metadata.
 
         Scans tree metadata for known log-likelihood / posterior fields and
@@ -241,6 +245,10 @@ class TreeService:
 
         Args:
             file_sources: Restrict to these files (None = all loaded files).
+            tree_names: Restrict to trees with these exact names — useful
+                for matching an RF matrix's tree set (which may be a
+                subsample of each file). Names are stored as
+                ``"<group>/<orig>"`` (see ``insert_trees_batch_raw``).
 
         Returns:
             Dict mapping field name to DataFrame with columns:
@@ -251,6 +259,9 @@ class TreeService:
 
         if file_sources:
             df = df[df['file_source'].isin(file_sources)]
+
+        if tree_names:
+            df = df[df['name'].isin(tree_names)]
 
         if len(df) == 0:
             return {}

@@ -146,6 +146,25 @@ def get_distmat_groups_per_file(name):
     return _distmat_index.get(name, {}).get("groups_per_file", {})
 
 
+def get_distmat_groups_with_counts(name):
+    """Per-group tree counts for a stored matrix.
+
+    Tree names in the matrix are stored as ``"<group>/<orig>"`` (see
+    ``TreeManagerPandas.insert_trees_batch_raw``). We split on ``/`` to
+    derive the group. Returns a list of ``(group_name, count)`` tuples
+    in a stable order (by first appearance in the matrix's row order,
+    which matches how trees were inserted into the chain).
+    """
+    entry = _distmat_index.get(name)
+    if not entry:
+        return []
+    counts = {}
+    for tree_name in entry["names"]:
+        group = str(tree_name).split("/", 1)[0]
+        counts[group] = counts.get(group, 0) + 1
+    return list(counts.items())
+
+
 def clear_all_distmats():
     """Remove all .npy files from disk and reset the index."""
     global _distmat_counter

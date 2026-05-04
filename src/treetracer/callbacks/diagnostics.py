@@ -1,4 +1,4 @@
-from dash import dcc, callback, Input, Output, State, no_update, ctx
+from dash import dcc, html, callback, Input, Output, State, no_update, ctx, ALL
 import dash_mantine_components as dmc
 import plotly.express as px
 import plotly.graph_objects as go
@@ -10,6 +10,8 @@ import pandas as pd
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..ess.rf_trace import compute_rf_trace_data
+from ..ess import compute_pseudo_ess
+from .. import state
 from ._helpers import _save_file_dialog
 
 
@@ -87,15 +89,37 @@ def register_diagnostics_callbacks():
         Output("rf-burnin-input", "value"),
         Input("tree-offset-store", "data"),
         Input("lnl-burnin-input", "value"),
+        Input("diagnostics-distmat-select", "value"),
+        State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def update_lnl_trace(stored_summaries, burnin):
-        """Render log-likelihood trace plot when trees are loaded/changed."""
+    def update_lnl_trace(stored_summaries, burnin, selected_matrix, distmat_data):
+        """Render log-likelihood trace plot for the SELECTED RF matrix.
+
+        The Diagnostics tab is unified around the header RF-matrix
+        selector — every section, including this one, conditions on
+        that pick. With no matrix selected the plot shows a hint and
+        nothing else; once a matrix is chosen, traces are restricted
+        to the *exact* set of trees that went into it (by tree-name
+        match against the matrix's stored ``names`` list — see
+        ``state.get_distmat_names``). This keeps the LnL plot in lock-
+        step with the matrix's downsample.
+        """
         if not stored_summaries:
             return dmc.Text(
                 "No trees loaded yet.",
                 c="dimmed", size="sm", style={"padding": "20px"},
             ), True, 0, 0
+
+        if not selected_matrix or not distmat_data or selected_matrix not in distmat_data:
+            return (
+                dmc.Text(
+                    "Pick an RF matrix above to see the log-likelihood "
+                    "trace for the trees that went into it.",
+                    c="dimmed", size="sm", style={"padding": "20px"},
+                ),
+                True, no_update, no_update,
+            )
 
         # When trees are loaded/changed, set burnin to 10% of max per-group tree count
         triggered = ctx.triggered_id
@@ -110,8 +134,21 @@ def register_diagnostics_callbacks():
             burnin_out = (no_update, no_update)
 
         tree_service = get_tree_service()
-        file_sources = list(stored_summaries.keys())
-        traces = tree_service.get_metadata_traces(file_sources)
+        all_file_sources = list(stored_summaries.keys())
+        try:
+            tree_names = list(state.get_distmat_names(selected_matrix))
+        except KeyError:
+            return (
+                dmc.Text(
+                    f"Matrix {selected_matrix!r} is no longer available.",
+                    c="red", size="sm", style={"padding": "20px"},
+                ),
+                True, no_update, no_update,
+            )
+        traces = tree_service.get_metadata_traces(
+            file_sources=all_file_sources,
+            tree_names=tree_names,
+        )
 
         if not traces:
             return (dmc.Text(
@@ -245,16 +282,21 @@ def register_diagnostics_callbacks():
     @callback(
         Output("rf-reference-group-select", "data", allow_duplicate=True),
         Output("rf-reference-group-select", "value", allow_duplicate=True),
-        Input("distmat-store", "data"),
+        Input("diagnostics-distmat-select", "value"),
+        State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def populate_groups_from_distmat(stored_distmats):
-        """Populate group dropdown from distance matrix tree names when no tree files loaded."""
-        if not stored_distmats:
+    def populate_groups_from_distmat(selected_matrix, stored_distmats):
+        """Populate the reference-group dropdown from the SELECTED RF matrix.
+
+        Driven by the shared header selector so the RF-trace section
+        only offers groups that actually live in the matrix the user is
+        currently inspecting.
+        """
+        if not stored_distmats or not selected_matrix:
             return no_update, no_update
 
-        # Extract group names from groups_per_file (actual tree name prefixes)
-        compact = next(iter(stored_distmats.values()), None)
+        compact = stored_distmats.get(selected_matrix)
         if not compact:
             return no_update, no_update
 
@@ -280,10 +322,12 @@ def register_diagnostics_callbacks():
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
         State("distmat-store", "data"),
+        State("diagnostics-distmat-select", "value"),
         State("rf-burnin-input", "value"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position, stored_distmats, burnin):
+    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position,
+                         stored_distmats, selected_matrix, burnin):
         """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
         if not n_clicks:
             return no_update, no_update, no_update, no_update
@@ -302,8 +346,13 @@ def register_diagnostics_callbacks():
                 no_update, no_update, no_update,
             )
 
-        distmat_key = next(iter(stored_distmats))
-        result, ref_name = compute_rf_trace_data(distmat_key, ref_group, ref_position)
+        if not selected_matrix or selected_matrix not in stored_distmats:
+            return (
+                dmc.Text("Please pick an RF matrix at the top of the page.", c="red"),
+                no_update, no_update, no_update,
+            )
+
+        result, ref_name = compute_rf_trace_data(selected_matrix, ref_group, ref_position)
 
         # If result is a string, it's an error message
         if isinstance(result, str):
@@ -406,4 +455,226 @@ def register_diagnostics_callbacks():
             action="show",
             autoClose=3000,
             id=notif_id(),
+        )
+
+    # ─── Shared Diagnostics RF Matrix selector ─────────────────────────
+    # One dropdown at the top of the tab feeds every section below.
+    # `update_lnl_trace`, the RF-trace callbacks, and the Pseudo-ESS
+    # callbacks all read this id.
+    @callback(
+        Output("diagnostics-distmat-select", "data"),
+        Output("diagnostics-distmat-select", "value"),
+        Output("diagnostics-distmat-info", "children"),
+        Input("distmat-store", "data"),
+        State("diagnostics-distmat-select", "value"),
+    )
+    def populate_diagnostics_distmat_select(distmat_data, current_value):
+        if not distmat_data:
+            return [], None, ""
+        options = [
+            {"value": k,
+             "label": f"{k} ({v.get('n_trees', '?')} trees)"}
+            for k, v in distmat_data.items()
+        ]
+        # Keep the user's pick if it's still around; otherwise default to
+        # the most recently registered matrix.
+        new_value = (
+            current_value
+            if current_value and current_value in distmat_data
+            else list(distmat_data.keys())[-1]
+        )
+        meta = distmat_data.get(new_value, {})
+        groups_per_file = meta.get("groups_per_file", {})
+        n_runs = len({g for groups in groups_per_file.values() for g in groups})
+        info = dmc.Group([
+            dmc.Badge(f"{meta.get('n_trees', '?')} trees",
+                      variant="light", color="grape", size="sm"),
+            dmc.Badge(f"{n_runs} runs",
+                      variant="light", color="teal", size="sm"),
+        ], gap="xs")
+        return options, new_value, info
+
+    # ─── Pseudo-ESS section ────────────────────────────────────────────
+    # Two callbacks own the per-run table + Compute button. Both react
+    # to ``diagnostics-distmat-select`` (the shared header dropdown).
+
+    @callback(
+        Output("ess-runs-table", "children"),
+        Input("diagnostics-distmat-select", "value"),
+    )
+    def render_ess_runs_table(selected_matrix):
+        if not selected_matrix:
+            return html.Div(
+                dmc.Text(
+                    "Pick an RF matrix above to list its runs.",
+                    c="dimmed", size="sm",
+                ),
+                style={"padding": "10px"},
+            )
+
+        # Server-side helper walks the matrix's tree-name list and
+        # buckets by group prefix. Returns [(group, count), ...].
+        groups = state.get_distmat_groups_with_counts(selected_matrix)
+        if not groups:
+            return dmc.Text(
+                f"Matrix {selected_matrix!r} has no recognisable runs.",
+                c="dimmed", size="sm",
+            )
+
+        rows = []
+        for group, count in groups:
+            rows.append(
+                dmc.TableTr([
+                    dmc.TableTd(group),
+                    dmc.TableTd(str(count)),
+                    dmc.TableTd(
+                        dmc.Checkbox(
+                            id={"type": "ess-run-checkbox", "index": group},
+                            checked=True,
+                        )
+                    ),
+                ])
+            )
+
+        return dmc.Table(
+            [
+                dmc.TableThead(
+                    dmc.TableTr([
+                        dmc.TableTh("Run"),
+                        dmc.TableTh("Trees"),
+                        dmc.TableTh("Select"),
+                    ])
+                ),
+                dmc.TableTbody(rows),
+            ],
+            striped=True,
+            highlightOnHover=True,
+            withTableBorder=True,
+            withColumnBorders=True,
+        )
+
+    @callback(
+        Output("compute-pseudo-ess-button", "disabled"),
+        Input("diagnostics-distmat-select", "value"),
+        Input({"type": "ess-run-checkbox", "index": ALL}, "checked"),
+    )
+    def toggle_compute_pseudo_ess_button(selected_matrix, checks):
+        # Disabled until a matrix is selected AND at least one run is checked.
+        if not selected_matrix:
+            return True
+        if not checks or not any(checks):
+            return True
+        return False
+
+    @callback(
+        Output("pseudo-ess-output", "children"),
+        Input("compute-pseudo-ess-button", "n_clicks"),
+        State("diagnostics-distmat-select", "value"),
+        State("ess-n-refs-input", "value"),
+        State("ess-burnin-input", "value"),
+        State({"type": "ess-run-checkbox", "index": ALL}, "checked"),
+        State({"type": "ess-run-checkbox", "index": ALL}, "id"),
+        prevent_initial_call=True,
+    )
+    def compute_pseudo_ess_for_runs(n_clicks, selected_matrix, n_refs, burnin, checks, ids):
+        """Compute Pseudo-ESS per ticked run + an optional Combined row.
+
+        For each ticked run we slice the cached RF distance matrix to the
+        rows/cols of trees whose name has the ``"<run>/"`` prefix
+        (dropping the first ``burnin`` of those rows), then feed that
+        submatrix to :func:`treetracer.ess.compute_pseudo_ess`. Burn-in
+        is applied *per run* so chains of different lengths don't get
+        clipped against a global tree-index threshold. If more than one
+        run is ticked we also compute the same diagnostic on the union
+        of their (post-burn-in) tree indices — the "Combined" row.
+        """
+        if not n_clicks or not selected_matrix:
+            return no_update
+
+        ticked = [i["index"] for i, c in zip(ids, checks) if c]
+        if not ticked:
+            return dmc.Text(
+                "No runs selected.", c="dimmed", size="sm",
+            )
+
+        try:
+            names, distmat = state.load_distmat(selected_matrix)
+        except KeyError:
+            return dmc.Text(
+                f"Matrix {selected_matrix!r} is no longer available.",
+                c="red", size="sm",
+            )
+
+        # Bucket row indices by group prefix once (matrix-row order
+        # matches MCMC iteration order within each chain).
+        group_to_indices = {}
+        for i, tree_name in enumerate(names):
+            grp = str(tree_name).split("/", 1)[0]
+            group_to_indices.setdefault(grp, []).append(i)
+
+        try:
+            n_refs_int = int(n_refs) if n_refs else 100
+        except (ValueError, TypeError):
+            n_refs_int = 100
+
+        try:
+            burnin_int = max(0, int(burnin)) if burnin else 0
+        except (ValueError, TypeError):
+            burnin_int = 0
+
+        def _row_for(label, indices):
+            sub = distmat[np.ix_(indices, indices)]
+            res = compute_pseudo_ess(sub, n_refs=n_refs_int, seed=0)
+            def _fmt(v):
+                return f"{v:.1f}" if not np.isnan(v) else "—"
+            return dmc.TableTr([
+                dmc.TableTd(label),
+                dmc.TableTd(str(len(indices))),
+                dmc.TableTd(_fmt(res["min"])),
+                dmc.TableTd(_fmt(res["median"])),
+                dmc.TableTd(_fmt(res["max"])),
+                dmc.TableTd(str(res["n_refs_used"])),
+            ])
+
+        rows = []
+        all_indices = []
+        skipped = []
+        for grp in ticked:
+            idx = group_to_indices.get(grp, [])
+            # Burn-in is per chain — first ``burnin_int`` trees of THIS run.
+            idx = idx[burnin_int:]
+            if len(idx) < 4:
+                skipped.append(grp)
+                continue
+            rows.append(_row_for(grp, idx))
+            all_indices.extend(idx)
+
+        if len(ticked) - len(skipped) > 1 and all_indices:
+            # Sort to preserve MCMC order across the union — important so
+            # the autocorrelation in each reference's RF trace is meaningful.
+            combined_idx = sorted(set(all_indices))
+            rows.append(_row_for("Combined", combined_idx))
+
+        if not rows:
+            msg = "Burn-in leaves fewer than 4 trees per run; nothing to compute."
+            return dmc.Text(msg, c="dimmed", size="sm")
+
+        return dmc.Table(
+            [
+                dmc.TableThead(
+                    dmc.TableTr([
+                        dmc.TableTh("Run"),
+                        dmc.TableTh("Trees"),
+                        dmc.TableTh("Min ESS"),
+                        dmc.TableTh("Median ESS"),
+                        dmc.TableTh("Max ESS"),
+                        dmc.TableTh("# refs"),
+                    ])
+                ),
+                dmc.TableTbody(rows),
+            ],
+            striped=True,
+            highlightOnHover=True,
+            withTableBorder=True,
+            withColumnBorders=True,
         )

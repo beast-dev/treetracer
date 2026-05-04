@@ -80,6 +80,24 @@ def _add_diagnostics_panel():
     """Build the Diagnostics tab panel content."""
     return html.Div([
         dmc.Stack([
+            # Header: shared RF Matrix selector that conditions every
+            # downstream section (LnL trace, RF-to-reference, Pseudo-ESS).
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("Diagnostics", order=4),
+                    dmc.Select(
+                        id="diagnostics-distmat-select",
+                        label="RF Matrix",
+                        placeholder="No distance matrix available",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=300,
+                    ),
+                    html.Div(id="diagnostics-distmat-info"),
+                ], align="flex-end", gap="md"),
+            ], p="md", withBorder=True, radius="sm"),
+
             # Section 1: Log-Likelihood Trace
             dmc.Paper([
                 dmc.Group([
@@ -152,6 +170,50 @@ def _add_diagnostics_panel():
                     type="circle",
                     parent_style={"minHeight": "200px"},
                 ),
+            ], p="md", withBorder=True, radius="sm"),
+
+            # Section 3: Pseudo-ESS — picks the runs within the RF
+            # matrix selected at the top of the tab and (eventually)
+            # computes Lanfear-style pseudo-ESS for each.
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("Pseudo-ESS", order=5),
+                    dmc.NumberInput(
+                        id="ess-burnin-input",
+                        label="Burn-in (trees)",
+                        value=0,
+                        min=0,
+                        step=100,
+                        size="xs",
+                        w=140,
+                    ),
+                    dmc.NumberInput(
+                        id="ess-n-refs-input",
+                        label="# Reference trees",
+                        value=100,
+                        min=10,
+                        step=10,
+                        size="xs",
+                        w=140,
+                    ),
+                    dmc.Button(
+                        "Compute Pseudo-ESS",
+                        id="compute-pseudo-ess-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                    ),
+                ], align="flex-end", gap="md"),
+                dmc.Space(h=10),
+                # Per-run table: one row per group inside the selected
+                # matrix, each row checkable. Populated by the
+                # ``render_ess_runs_table`` callback.
+                html.Div(id="ess-runs-table"),
+                dmc.Space(h=10),
+                # Result area — filled in by the compute callback once
+                # we wire the math up. Empty for now.
+                html.Div(id="pseudo-ess-output"),
             ], p="md", withBorder=True, radius="sm"),
         ], gap="md"),
     ], style={"padding": "10px"})

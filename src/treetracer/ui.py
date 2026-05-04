@@ -114,7 +114,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm", align="center"),
+                ], gap="sm", align="flex-end"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -163,7 +163,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], align="center", gap="md"),
+                ], align="flex-end", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),

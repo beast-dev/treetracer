@@ -622,17 +622,40 @@ def register_diagnostics_callbacks():
         except (ValueError, TypeError):
             burnin_int = 0
 
-        def _row_for(label, indices):
+        def _row_for(label, indices, burnin_label):
             sub = distmat[np.ix_(indices, indices)]
             res = compute_pseudo_ess(sub, n_refs=n_refs_int, seed=0)
-            def _fmt(v):
-                return f"{v:.1f}" if not np.isnan(v) else "—"
+            valid = res["ess_values"][~np.isnan(res["ess_values"])]
+            if valid.size:
+                q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
+                mx = float(valid.max())
+            else:
+                q1 = q2 = q3 = mx = float("nan")
+
+            def _ess_cell(v):
+                # Stoplight thresholds match the Lanfear paper's rough
+                # rule of thumb: <100 is unreliable, <200 is borderline,
+                # >=200 is the "you can trust this" zone.
+                if np.isnan(v):
+                    return dmc.TableTd("—")
+                if v < 100:
+                    color = "red"
+                elif v < 200:
+                    color = "orange"
+                else:
+                    color = "green"
+                return dmc.TableTd(
+                    dmc.Text(f"{v:.1f}", c=color, fw=600, span=True)
+                )
+
             return dmc.TableTr([
                 dmc.TableTd(label),
                 dmc.TableTd(str(len(indices))),
-                dmc.TableTd(_fmt(res["min"])),
-                dmc.TableTd(_fmt(res["median"])),
-                dmc.TableTd(_fmt(res["max"])),
+                dmc.TableTd(burnin_label),
+                _ess_cell(q1),
+                _ess_cell(q2),
+                _ess_cell(q3),
+                _ess_cell(mx),
                 dmc.TableTd(str(res["n_refs_used"])),
             ])
 
@@ -646,14 +669,20 @@ def register_diagnostics_callbacks():
             if len(idx) < 4:
                 skipped.append(grp)
                 continue
-            rows.append(_row_for(grp, idx))
+            rows.append(_row_for(grp, idx, str(burnin_int)))
             all_indices.extend(idx)
 
         if len(ticked) - len(skipped) > 1 and all_indices:
             # Sort to preserve MCMC order across the union — important so
             # the autocorrelation in each reference's RF trace is meaningful.
             combined_idx = sorted(set(all_indices))
-            rows.append(_row_for("Combined", combined_idx))
+            # Per-run burn-in was already applied before union, so the
+            # Combined label reads "Nx<burnin>" to make clear it isn't a
+            # single global cut.
+            rows.append(_row_for(
+                "Combined", combined_idx,
+                f"{len(ticked) - len(skipped)}×{burnin_int}",
+            ))
 
         if not rows:
             msg = "Burn-in leaves fewer than 4 trees per run; nothing to compute."
@@ -665,9 +694,11 @@ def register_diagnostics_callbacks():
                     dmc.TableTr([
                         dmc.TableTh("Run"),
                         dmc.TableTh("Trees"),
-                        dmc.TableTh("Min ESS"),
-                        dmc.TableTh("Median ESS"),
-                        dmc.TableTh("Max ESS"),
+                        dmc.TableTh("Burn-in"),
+                        dmc.TableTh("Q1"),
+                        dmc.TableTh("Q2 (median)"),
+                        dmc.TableTh("Q3"),
+                        dmc.TableTh("Max"),
                         dmc.TableTh("# refs"),
                     ])
                 ),

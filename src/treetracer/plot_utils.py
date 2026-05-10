@@ -1,5 +1,19 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from .theme import get_template
+
+
+def retheme_figure(fig_dict, *, skip_invalid=False):
+    """Rebuild a figure dict with the active Plotly template.
+
+    Updating ``layout.template`` in-place via a Dash Patch doesn't reliably
+    cause Plotly to recompute template-derived defaults for an already-
+    rendered figure. Reconstructing the figure and then applying the current
+    template does.
+    """
+    fig = go.Figure(fig_dict, skip_invalid=skip_invalid)
+    fig.update_layout(template=get_template())
+    return fig
 
 
 def placeholder_fig(text):
@@ -135,7 +149,7 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
             )
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         scene=dict(
             xaxis=dict(title=dict(text=x)),
             yaxis=dict(title=dict(text=y)),
@@ -325,7 +339,7 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         )
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         scene=dict(
             xaxis=dict(title=dict(text=x)),
             yaxis=dict(title=dict(text=y)),

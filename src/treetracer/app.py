@@ -19,6 +19,15 @@ def create_dash_app():
         # /peartree/<uid> windows opened by "View MCC". This regex stops
         # the auto-injection while leaving the file accessible.
         assets_ignore=r"peartree\.bundle\.min\.js",
+        title="TreeTracer",
+    )
+
+    # Use the SVG logo as the browser tab favicon (PNG fallback for older browsers).
+    # Dash's default {%favicon%} looks for assets/favicon.ico; we override it here.
+    app.index_string = app.index_string.replace(
+        "{%favicon%}",
+        '<link rel="icon" type="image/svg+xml" href="/assets/treetracer-icon.svg">'
+        '<link rel="alternate icon" type="image/png" href="/assets/treetracer-icon.png">',
     )
 
     layout = dmc.AppShell(
@@ -43,6 +52,8 @@ def create_dash_app():
             dmc.NotificationProvider(position="top-right"),
             layout,
         ],
+        id="mantine-provider",
+        forceColorScheme="light",
     )
     return app
 

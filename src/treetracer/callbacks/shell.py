@@ -2,9 +2,31 @@ from dash import html, callback, Input, Output, State, no_update
 import dash_mantine_components as dmc
 
 from ..logger import get_logs, clear_logs
+from ..theme import LIGHT_TEMPLATE, DARK_TEMPLATE, set_template
+
+_TEMPLATES = {"light": LIGHT_TEMPLATE, "dark": DARK_TEMPLATE}
 
 
 def register_shell_callbacks():
+
+    # ------ DARK MODE TOGGLE ------
+    # Flip color scheme, swap icon, update Plotly template store.
+    # To change the dark/light chart theme, edit LIGHT_TEMPLATE / DARK_TEMPLATE in theme.py.
+
+    @callback(
+        Output("mantine-provider", "forceColorScheme"),
+        Output("dark-mode-icon", "icon"),
+        Output("plotly-template-store", "data"),
+        Input("dark-mode-toggle", "n_clicks"),
+        State("mantine-provider", "forceColorScheme"),
+        prevent_initial_call=True,
+    )
+    def toggle_dark_mode(n_clicks, current_scheme):
+        new_scheme = "light" if current_scheme == "dark" else "dark"
+        icon = "tabler:sun" if new_scheme == "dark" else "tabler:moon"
+        template = _TEMPLATES[new_scheme]
+        set_template(template)
+        return new_scheme, icon, template
 
     # ------ SIDEBAR TOGGLE ------
 

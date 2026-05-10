@@ -8,8 +8,10 @@ import pandas as pd
 
 from ..logger import add_log
 from ..state import get_mds_result
+from ..theme import get_template
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
+    retheme_figure,
 )
 
 
@@ -422,6 +424,18 @@ def register_treespace_callbacks():
         patch["layout"]["dragmode"] = dragmode
         return patch
 
+    # ------ theme toggle → rebuild figure with active template ------
+    @callback(
+        Output("graph", "figure", allow_duplicate=True),
+        Input("plotly-template-store", "data"),
+        State("graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def update_plot_theme(_, current_fig):
+        if not current_fig:
+            return no_update
+        return retheme_figure(current_fig, skip_invalid=True)
+
     # ------ selection-info badge + Export-trees / Export-MCC enable ------
     @callback(
         Output("treespace-selection-info", "children"),
@@ -797,7 +811,7 @@ def register_treespace_callbacks():
         # Python validator rejects (e.g. selectedpoints accidentally left on
         # a 3D trace by an old Patch).
         fig = go.Figure(fig_dict, skip_invalid=True)
-        fig.update_layout(template="simple_white")
+        fig.update_layout(template=get_template())
         fig.write_image(path, width=1800, height=1200, scale=2)
         add_log(f"Exported between-run plot to {path}")
         return dmc.Notification(title="PDF Exported",

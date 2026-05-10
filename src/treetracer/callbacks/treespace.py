@@ -718,7 +718,7 @@ def register_treespace_callbacks():
                 color="red", action="show", autoClose=4000, id=notif_id())
 
         try:
-            nexus_bytes, mcc_name, missing_taxa = assemble_mcc_nexus(
+            nexus_bytes, mcc_row, log_clade_cred, missing_taxa = assemble_mcc_nexus(
                 matched, tree_service.db_manager, source_distmat,
             )
         except Exception as e:
@@ -739,13 +739,14 @@ def register_treespace_callbacks():
                 ),
                 color="red", action="show", autoClose=8000, id=notif_id())
 
+        mcc_tree_name = mcc_row["name"]
         uid = _state.cache_mcc_tree(nexus_bytes)
-        add_log(f"Cached MCC tree '{mcc_name}' (from {len(matched)} selected) as {uid}")
+        add_log(f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) as {uid}")
         notification = dmc.Notification(
             title="MCC Tree Ready",
-            message=f"MCC tree is '{mcc_name}' (from {len(matched)} selected) — opening in PearTree…",
+            message=f"MCC tree is '{mcc_tree_name}' (from {len(matched)} selected) — opening in PearTree…",
             color="green", action="show", autoClose=4000, id=notif_id())
-        return {"uuid": uid, "name": mcc_name}, notification
+        return {"uuid": uid, "name": mcc_tree_name}, notification
 
     # Clientside: when the view-mcc store changes, open the peartree
     # viewer. In desktop pywebview mode we call the Python-side JS API

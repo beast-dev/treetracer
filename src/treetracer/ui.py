@@ -94,6 +94,19 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=300,
                     ),
+                    # MCC trees registered for the selected RF matrix.
+                    # Hidden when no MCCs have been computed for it yet.
+                    # Driven by ``populate_diagnostics_mcc_select`` in
+                    # callbacks/diagnostics.py.
+                    dmc.Select(
+                        id="diagnostics-mcc-select",
+                        label="MCC trees",
+                        placeholder="No MCC trees yet",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=320,
+                    ),
                     html.Div(id="diagnostics-distmat-info"),
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
@@ -320,6 +333,16 @@ def _add_treespace_panel():
             # populated by the View-MCC handler with {"uuid", "name"}.
             dcc.Store(id="treespace-view-mcc-store", storage_type="memory"),
 
+            # Per-tab MCC registry list. Hidden when no MCCs match the
+            # currently-selected MDS result. Rendered by
+            # ``render_mcc_list`` in callbacks/treespace.py.
+            dmc.Paper(
+                html.Div(id="treespace-mcc-list"),
+                withBorder=True, p="xs", radius="sm",
+                id="treespace-mcc-list-paper",
+                style={"display": "none"},
+            ),
+
             # Plot canvas — statically defined so the selection callbacks can
             # always target it. Starts empty with a centered placeholder
             # message; configure_for_selected_result and the Plot button
@@ -454,6 +477,15 @@ def _add_within_run_panel():
             # populated by the View-MCC handler with {"uuid", "name"}.
             dcc.Store(id="within-run-view-mcc-store", storage_type="memory"),
             dcc.Interval(id="within-run-anim-interval", interval=300, disabled=True),
+
+            # Per-tab MCC registry list (hidden when nothing to show).
+            # Rendered by ``render_mcc_list`` in callbacks/within_run.py.
+            dmc.Paper(
+                html.Div(id="within-run-mcc-list"),
+                withBorder=True, p="xs", radius="sm",
+                id="within-run-mcc-list-paper",
+                style={"display": "none"},
+            ),
 
             # Graph — starts with the same placeholder message as between-run
             # so the empty state is consistent across the two tabs.
@@ -669,6 +701,12 @@ def add_navbar():
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
+                    # Persistent registry of computed MCC trees
+                    # (RF_001_Between_MCC_1 etc.) and a one-shot action
+                    # signal driven by the per-row View / Delete buttons
+                    # in the MCC list panels.
+                    dcc.Store(id="mcc-registry-store", storage_type="memory", data=[]),
+                    dcc.Store(id="mcc-registry-action-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
                     # Log panel state

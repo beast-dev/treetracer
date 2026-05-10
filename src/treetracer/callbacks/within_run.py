@@ -31,11 +31,14 @@ import pandas as pd
 
 TREETRACER_BLUE = "#228be6"
 
-# Fixed 9-trace shape: 3 panels × {out-of-range, in-range} + 3 selection
-# overlays (always last). update_selection_overlay's Patch addresses the
-# overlays by these negative offsets.
-N_TRACES = 9
-SELECTION_OVERLAY_OFFSETS = (-3, -2, -1)
+# Fixed 12-trace shape: 3 panels × {out-of-range, in-range} + 3 selection
+# overlays (red) + 3 MCC overlays (neon green). The patching callbacks
+# address each bundle by its fixed negative offsets so a selection
+# change or MCC-registry change never rebuilds the figure.
+N_TRACES = 12
+SELECTION_OVERLAY_OFFSETS = (-6, -5, -4)
+MCC_OVERLAY_OFFSETS = (-3, -2, -1)
+MCC_OVERLAY_COLOR = "#39ff14"
 
 
 def _get_active_result(selected_key, results_index):
@@ -87,6 +90,26 @@ def _filter_to_run(mds_result, selected_run):
 
 def _empty_panel():
     return {"x": [], "y": [], "customdata": []}
+
+
+def _filter_mccs_for_within(registry, results, selected_key, selected_run):
+    """Subset of the MCC registry that should ring-overlay in this run.
+
+    Filters by ``source_distmat`` (taken from the active MDS result),
+    ``mode == 'Within'``, and ``run == selected_run``. Returns an empty
+    list when any required input is missing.
+    """
+    if not registry or not selected_key or not selected_run:
+        return []
+    if not results or selected_key not in results:
+        return []
+    source_distmat = (results[selected_key] or {}).get("source_distmat")
+    if not source_distmat:
+        return []
+    return [e for e in registry
+            if e.get("source_distmat") == source_distmat
+            and e.get("mode") == "Within"
+            and e.get("run") == selected_run]
 
 
 def _selection_panels_data(df, selected_treenums, x, y, z):
@@ -162,11 +185,68 @@ def _selection_overlay_trace(xs, ys, customdata):
     )
 
 
+def _mcc_overlay_trace(xs, ys, customdata):
+    """Neon-green hollow ring used as the registered-MCC overlay. Same
+    shape as the selection overlay so the patch callbacks address it the
+    same way; just different colour, line width, and hovertemplate."""
+    return go.Scatter(
+        x=xs, y=ys,
+        mode="markers",
+        marker=dict(
+            size=14,
+            color="rgba(0,0,0,0)",
+            line=dict(color=MCC_OVERLAY_COLOR, width=3.0),
+        ),
+        customdata=customdata,
+        hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>MCC</extra>",
+        showlegend=False,
+        selected=dict(marker=dict(opacity=1)),
+        unselected=dict(marker=dict(opacity=1)),
+    )
+
+
+def _mcc_panels_data(df, mcc_entries, x, y, z):
+    """Per-panel x / y / customdata for the 3 MCC-overlay traces.
+
+    *mcc_entries* is a pre-filtered list of registry entries (already
+    matching this run + matrix). For each entry we look up the
+    ``(treenum)`` of its MCC tree in *df* and emit one point per panel.
+    customdata[1] holds the registered MCC name so hover reads
+    "Tree #N: <RF_001_Within_runA_MCC_2>".
+    """
+    if not mcc_entries:
+        return [_empty_panel(), _empty_panel(), _empty_panel()]
+
+    treenum_to_name = {}
+    for e in mcc_entries:
+        mt = e.get("mcc_tree") or {}
+        t = mt.get("treenum")
+        if t is None:
+            continue
+        treenum_to_name[int(t)] = e.get("name", "")
+
+    if not treenum_to_name:
+        return [_empty_panel(), _empty_panel(), _empty_panel()]
+
+    sel = df[df["treenum"].astype(int).isin(treenum_to_name)]
+    if len(sel) == 0:
+        return [_empty_panel(), _empty_panel(), _empty_panel()]
+
+    treenums = sel["treenum"].astype(int).tolist()
+    names = [treenum_to_name.get(t, "") for t in treenums]
+    cd = list(zip(treenums, names))
+    return [
+        {"x": sel[x].tolist(), "y": sel[y].tolist(), "customdata": cd},
+        {"x": sel[x].tolist(), "y": sel[z].tolist(), "customdata": cd},
+        {"x": sel[y].tolist(), "y": sel[z].tolist(), "customdata": cd},
+    ]
+
+
 def _make_within_run_figure(df, x, y, z, show_lines=True,
                             selected_treenums=None, treenum_range=None,
                             color_gradient=True, dragmode="zoom",
-                            axis_ranges=None):
-    """Build the 3-panel within-run figure with a fixed 9-trace shape::
+                            axis_ranges=None, mcc_entries=None):
+    """Build the 3-panel within-run figure with a fixed 12-trace shape::
 
         0  panel (x,y)  out-of-range  (lightgrey, hover-disabled)
         1  panel (x,y)  in-range      (gradient or flat)
@@ -174,13 +254,16 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
         3  panel (x,z)  in-range
         4  panel (y,z)  out-of-range
         5  panel (y,z)  in-range
-        6  panel (x,y)  selection overlay  (red outline)
+        6  panel (x,y)  selection overlay   (red outline)
         7  panel (x,z)  selection overlay
         8  panel (y,z)  selection overlay
+        9  panel (x,y)  MCC overlay         (neon-green outline)
+        10 panel (x,z)  MCC overlay
+        11 panel (y,z)  MCC overlay
 
     Empty data is emitted as ``[]`` rather than dropping the trace so the
-    count stays constant — that's what lets ``update_selection_overlay``
-    Patch the last 3 traces by index.
+    count stays constant — that's what lets the patch callbacks rewrite
+    the trailing overlay bundles by index.
     """
     range_str = f" (trees {treenum_range[0]}–{treenum_range[1]})" if treenum_range else ""
     fig = make_subplots(
@@ -248,6 +331,11 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     sel_data = _selection_panels_data(df, selected_treenums, x, y, z)
     for (_, _, row, col, _), d in zip(panels, sel_data):
         fig.add_trace(_selection_overlay_trace(d["x"], d["y"], d["customdata"]),
+                      row=row, col=col)
+
+    mcc_data = _mcc_panels_data(df, mcc_entries or [], x, y, z)
+    for (_, _, row, col, _), d in zip(panels, mcc_data):
+        fig.add_trace(_mcc_overlay_trace(d["x"], d["y"], d["customdata"]),
                       row=row, col=col)
 
     fig.update_layout(
@@ -343,9 +431,11 @@ def register_within_run_callbacks():
         Input("within-run-result-select", "value"),
         Input("within-run-run-select", "value"),
         State("mds-result-store", "data"),
+        State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )
-    def load_result_for_visualization(selected_key, selected_run, results):
+    def load_result_for_visualization(selected_key, selected_run, results,
+                                      mcc_registry):
         result = _get_active_result(selected_key, results)
         if result is None or not selected_run:
             return (no_update,) * 17
@@ -364,10 +454,13 @@ def register_within_run_callbacks():
                   "label": str(max(1, round(n * i / 10)))}
                  for i in range(11)]
 
+        mcc_entries = _filter_mccs_for_within(
+            mcc_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, mdscols[0], mdscols[1], z_default,
             treenum_range=[1, n],
             axis_ranges=axis_ranges,
+            mcc_entries=mcc_entries,
         )
 
         info = dmc.Group([
@@ -659,6 +752,8 @@ def register_within_run_callbacks():
     # new browser window.
     @callback(
         Output("within-run-view-mcc-store", "data"),
+        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("within-run-view-mcc", "n_clicks"),
         State("within-run-selected-trees-store", "data"),
@@ -671,25 +766,25 @@ def register_within_run_callbacks():
         from ..logger import add_log, notif_id
         from .. import state as _state
         if not n_clicks or not selected_treenums:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not selected_run:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         source_distmat = (mds_result.get("metadata") or {}).get("source_distmat")
         if not source_distmat:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="No RF/snapshot data is associated with this MDS result.",
                 color="red", action="show", autoClose=5000, id=notif_id())
 
         df_run, _ = _filter_to_run(mds_result, selected_run)
         if df_run is None:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
         sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error", message="No matching trees found.",
                 color="red", action="show", autoClose=4000, id=notif_id())
 
@@ -701,7 +796,7 @@ def register_within_run_callbacks():
         all_trees = tree_service.db_manager._trees
         matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
         if len(matched) == 0:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="Selected trees not found in database. They may have been cleared.",
                 color="red", action="show", autoClose=4000, id=notif_id())
@@ -711,14 +806,14 @@ def register_within_run_callbacks():
                 matched, tree_service.db_manager, source_distmat,
             )
         except Exception as e:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error", message=str(e),
                 color="red", action="show", autoClose=6000, id=notif_id())
 
         if missing_taxa:
             sample = ", ".join(sorted(missing_taxa)[:5])
             more = "…" if len(missing_taxa) > 5 else ""
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message=(
                     f"Cannot align translate tables: taxa [{sample}{more}] "
@@ -729,12 +824,45 @@ def register_within_run_callbacks():
 
         mcc_tree_name = mcc_row["name"]
         uid = _state.cache_mcc_tree(nexus_bytes)
-        add_log(f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) as {uid}")
+
+        # Look up the MCC's treenum in this run's dataframe so the green
+        # ring lands on the right point.
+        mcc_in_df = df_run[df_run["tree"] == mcc_tree_name]
+        mcc_treenum = (int(mcc_in_df.iloc[0]["treenum"])
+                       if not mcc_in_df.empty else None)
+
+        entry = _state.register_mcc(
+            source_distmat=source_distmat,
+            mode="Within",
+            run=selected_run,
+            uuid=uid,
+            mcc_tree={
+                "group": selected_run,
+                "treenum": mcc_treenum,
+                "tree_name": mcc_tree_name,
+            },
+            selection=[[selected_run, int(t)] for t in selected_treenums],
+            log_clade_credibility=(None if log_clade_cred is None
+                                   else float(log_clade_cred)),
+        )
+        registered_name = entry["name"]
+        add_log(
+            f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) "
+            f"as {uid}; registered as {registered_name}"
+        )
         notification = dmc.Notification(
             title="MCC Tree Ready",
-            message=f"MCC tree is '{mcc_tree_name}' (from {len(matched)} selected) — opening in PearTree…",
+            message=(
+                f"MCC tree {registered_name} (from {len(matched)} selected) "
+                "— opening in PearTree…"
+            ),
             color="green", action="show", autoClose=4000, id=notif_id())
-        return {"uuid": uid, "name": mcc_tree_name}, notification
+        # Clear the red selection ring once the MCC is registered — same
+        # rationale as the Between-runs tab.
+        return ({"uuid": uid, "name": registered_name},
+                _state.get_mcc_registry(),
+                [],
+                notification)
 
     # Clientside: in pywebview desktop mode call the Python-side JS API
     # to spawn a sibling native window; in ``--browser`` mode fall back
@@ -801,11 +929,12 @@ def register_within_run_callbacks():
         State("within-run-run-select", "value"),
         State("mds-result-store", "data"),
         State("within-run-dragmode", "value"),
+        State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )
     def auto_update_plot(dim_x, dim_y, dim_z, treenum_range,
                          color_gradient, show_lines, selected, selected_key,
-                         selected_run, results, dragmode):
+                         selected_run, results, dragmode, mcc_registry):
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not selected_run or not all([dim_x, dim_y, dim_z]):
             return no_update
@@ -824,6 +953,8 @@ def register_within_run_callbacks():
         )
         fig_axis_ranges = axis_ranges if dim_triggered else None
 
+        mcc_entries = _filter_mccs_for_within(
+            mcc_registry, results, selected_key, selected_run)
         return _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -831,6 +962,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=fig_axis_ranges,
+            mcc_entries=mcc_entries,
         )
 
     # ------ selection store change → patch only the last 3 traces ------
@@ -885,6 +1017,46 @@ def register_within_run_callbacks():
             patch["data"][idx]["customdata"] = d["customdata"]
         return patch
 
+    # ------ MCC registry change → patch only the green overlays ------
+    @callback(
+        Output("within-run-graph", "figure", allow_duplicate=True),
+        Input("mcc-registry-store", "data"),
+        State("within-run-graph", "figure"),
+        State("within-run-dim-x", "value"),
+        State("within-run-dim-y", "value"),
+        State("within-run-dim-z", "value"),
+        State("within-run-result-select", "value"),
+        State("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_mcc_overlay(mcc_registry, current_fig, dim_x, dim_y, dim_z,
+                           selected_key, selected_run, results):
+        if not current_fig:
+            return no_update
+        n_traces = len(current_fig.get("data", []))
+        if n_traces != N_TRACES:
+            return no_update
+        if not all([dim_x, dim_y, dim_z]) or not selected_run:
+            return no_update
+        mds_result = _get_active_result(selected_key, results)
+        if not mds_result:
+            return no_update
+        df_run, _ = _filter_to_run(mds_result, selected_run)
+        if df_run is None:
+            return no_update
+
+        mcc_entries = _filter_mccs_for_within(
+            mcc_registry, results, selected_key, selected_run)
+        mcc_data = _mcc_panels_data(df_run, mcc_entries, dim_x, dim_y, dim_z)
+        patch = Patch()
+        for offset, d in zip(MCC_OVERLAY_OFFSETS, mcc_data):
+            idx = n_traces + offset
+            patch["data"][idx]["x"] = d["x"]
+            patch["data"][idx]["y"] = d["y"]
+            patch["data"][idx]["customdata"] = d["customdata"]
+        return patch
+
     # ------ color_gradient toggle → full rebuild, zoom pinned from layout ------
     # Patching the marker (whole-dict or per-property) ran into Plotly
     # react/merge edge cases: stale colorscale/cmin/cmax leaked across a
@@ -906,12 +1078,13 @@ def register_within_run_callbacks():
         State("within-run-run-select", "value"),
         State("mds-result-store", "data"),
         State("within-run-dragmode", "value"),
+        State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )
     def update_color_gradient(color_gradient, current_fig,
                               dim_x, dim_y, dim_z, treenum_range, show_lines,
                               selected, selected_key, selected_run,
-                              results, dragmode):
+                              results, dragmode, mcc_registry):
         if (not current_fig or not all([dim_x, dim_y, dim_z])
                 or not selected_run):
             return no_update
@@ -934,6 +1107,8 @@ def register_within_run_callbacks():
             if rng is not None:
                 user_ranges[axis_key] = rng
 
+        mcc_entries = _filter_mccs_for_within(
+            mcc_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -941,6 +1116,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=axis_ranges,  # global extent — user_ranges may override
+            mcc_entries=mcc_entries,
         )
         for axis_key, rng in user_ranges.items():
             getattr(fig.layout, axis_key).range = rng
@@ -987,11 +1163,12 @@ def register_within_run_callbacks():
         State("mds-result-store", "data"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-dragmode", "value"),
+        State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )
     def reset_axes(n_clicks, dim_x, dim_y, dim_z, treenum_range,
                    show_lines, color_gradient, selected_key, selected_run,
-                   results, selected, dragmode):
+                   results, selected, dragmode, mcc_registry):
         mds_result = _get_active_result(selected_key, results)
         if (not n_clicks or not mds_result or not selected_run
                 or not all([dim_x, dim_y, dim_z])):
@@ -1001,6 +1178,8 @@ def register_within_run_callbacks():
             return no_update
         selected_set = set(selected) if selected else None
 
+        mcc_entries = _filter_mccs_for_within(
+            mcc_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -1008,6 +1187,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=axis_ranges,
+            mcc_entries=mcc_entries,
         )
         # Force a fresh uirevision so reset *does* throw away the user's zoom.
         fig.update_layout(uirevision=f"reset-{n_clicks}")

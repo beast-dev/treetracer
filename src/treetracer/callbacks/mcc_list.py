@@ -1,0 +1,249 @@
+"""Per-tab MCC list rendering plus the shared View / Delete actions.
+
+The Between-runs and Within-run tabs each show a small ``dmc.Table`` of
+the MCC trees registered for the currently-visible MDS view. The rows
+have View and Delete buttons; both feed into a single
+``mcc-registry-action-store`` so the downstream behaviour
+(open peartree, drop the entry) lives in one place per action — not
+duplicated across tabs.
+"""
+
+from __future__ import annotations
+
+from dash import (
+    ALL,
+    Input,
+    Output,
+    State,
+    callback,
+    callback_context,
+    clientside_callback,
+    html,
+    no_update,
+)
+import dash_mantine_components as dmc
+from dash_iconify import DashIconify
+
+from .. import state
+
+
+_VIEW_BTN = {"type": "mcc-row-view"}
+_DELETE_BTN = {"type": "mcc-row-delete"}
+
+
+def _row_action_button(*, kind, name, color, icon, disabled=False, title=""):
+    btn = dmc.ActionIcon(
+        DashIconify(icon=icon, width=14),
+        id={"type": kind, "name": name},
+        color=color,
+        variant="subtle",
+        size="sm",
+        disabled=disabled,
+    )
+    if not title:
+        return btn
+    return dmc.Tooltip(btn, label=title, withArrow=True, position="top")
+
+
+def _entry_summary_row(entry):
+    """Render one registry entry as a ``dmc.TableTr`` row.
+
+    Mode is intentionally not shown — the active tab already tells the
+    user whether they're looking at Between or Within MCCs. The
+    log-clade-credibility is also dropped: it's not comparable across
+    rows because each MCC is computed against a different denominator
+    (the size of the user's selection).
+    """
+    name = entry.get("name", "")
+    n_sel = len(entry.get("selection") or [])
+    mt = entry.get("mcc_tree") or {}
+    mcc_run = mt.get("group") or "—"
+    treenum = mt.get("treenum")
+    treenum_text = "—" if treenum is None else str(int(treenum))
+    cached = state.has_cached_mcc_tree(entry.get("uuid", ""))
+    return dmc.TableTr([
+        dmc.TableTd(name, style={"fontFamily": "monospace"}),
+        dmc.TableTd(mcc_run),
+        dmc.TableTd(treenum_text),
+        dmc.TableTd(f"{n_sel}"),
+        dmc.TableTd(
+            dmc.Group([
+                _row_action_button(
+                    kind="mcc-row-view",
+                    name=name,
+                    color="violet",
+                    icon="tabler:tree",
+                    disabled=not cached,
+                    title=("View in PearTree" if cached
+                           else "MCC was evicted; recompute to view"),
+                ),
+                _row_action_button(
+                    kind="mcc-row-delete",
+                    name=name,
+                    color="red",
+                    icon="tabler:trash",
+                    title="Remove from registry",
+                ),
+            ], gap=4),
+        ),
+    ])
+
+
+def _table_for(entries):
+    if not entries:
+        return None
+    rows = [_entry_summary_row(e) for e in entries]
+    return dmc.Table(
+        [
+            dmc.TableThead(
+                dmc.TableTr([
+                    dmc.TableTh("Name"),
+                    dmc.TableTh("Run"),
+                    dmc.TableTh("Tree #"),
+                    dmc.TableTh("Selected"),
+                    dmc.TableTh(""),
+                ])
+            ),
+            dmc.TableTbody(rows),
+        ],
+        striped=True, highlightOnHover=True, withTableBorder=False,
+        verticalSpacing=2, horizontalSpacing=8,
+    )
+
+
+def _filter_for_treespace(registry, selected_key, results):
+    """Between tab list: MCCs matching the active MDS result's
+    ``source_distmat`` AND ``mode == 'Between'``."""
+    if not registry or not selected_key or not results or selected_key not in results:
+        return []
+    source_distmat = (results[selected_key] or {}).get("source_distmat")
+    if not source_distmat:
+        return []
+    return [e for e in registry
+            if e.get("source_distmat") == source_distmat
+            and e.get("mode") == "Between"]
+
+
+def _filter_for_within(registry, selected_key, selected_run, results):
+    """Within tab list: matches active matrix + the currently-selected
+    run."""
+    if (not registry or not selected_key or not selected_run
+            or not results or selected_key not in results):
+        return []
+    source_distmat = (results[selected_key] or {}).get("source_distmat")
+    if not source_distmat:
+        return []
+    return [e for e in registry
+            if e.get("source_distmat") == source_distmat
+            and e.get("mode") == "Within"
+            and e.get("run") == selected_run]
+
+
+def register_mcc_list_callbacks():
+    # Between-runs tab list
+    @callback(
+        Output("treespace-mcc-list", "children"),
+        Output("treespace-mcc-list-paper", "style"),
+        Input("mcc-registry-store", "data"),
+        Input("treespace-result-select", "value"),
+        State("mds-result-store", "data"),
+    )
+    def render_treespace_mcc_list(registry, selected_key, results):
+        entries = _filter_for_treespace(registry, selected_key, results)
+        if not entries:
+            return html.Div(), {"display": "none"}
+        return _table_for(entries), {}
+
+    # Within-run tab list
+    @callback(
+        Output("within-run-mcc-list", "children"),
+        Output("within-run-mcc-list-paper", "style"),
+        Input("mcc-registry-store", "data"),
+        Input("within-run-result-select", "value"),
+        Input("within-run-run-select", "value"),
+        State("mds-result-store", "data"),
+    )
+    def render_within_run_mcc_list(registry, selected_key, selected_run,
+                                   results):
+        entries = _filter_for_within(registry, selected_key, selected_run,
+                                     results)
+        if not entries:
+            return html.Div(), {"display": "none"}
+        return _table_for(entries), {}
+
+    # Pattern-matching: any row View / Delete click → action store
+    @callback(
+        Output("mcc-registry-action-store", "data", allow_duplicate=True),
+        Input({"type": "mcc-row-view", "name": ALL}, "n_clicks"),
+        Input({"type": "mcc-row-delete", "name": ALL}, "n_clicks"),
+        State("mcc-registry-store", "data"),
+        prevent_initial_call=True,
+    )
+    def emit_row_action(view_clicks, delete_clicks, registry):
+        triggered = callback_context.triggered_id
+        if not triggered or not isinstance(triggered, dict):
+            return no_update
+        # The pattern-matching component is restamped on every render,
+        # so n_clicks comes back as None for fresh buttons. Bail in
+        # that case to avoid acting on the initial render.
+        triggered_prop = (callback_context.triggered or [{}])[0].get("value")
+        if not triggered_prop:
+            return no_update
+        action = "view" if triggered.get("type") == "mcc-row-view" else "delete"
+        name = triggered.get("name")
+        uuid = ""
+        for e in registry or []:
+            if e.get("name") == name:
+                uuid = e.get("uuid", "")
+                break
+        if not name:
+            return no_update
+        # Bump nonce so identical click sequences still re-trigger.
+        return {
+            "action": action,
+            "name": name,
+            "uuid": uuid,
+            "n": (callback_context.triggered or [{}])[0].get("value"),
+        }
+
+    # Server-side delete handler — runs whenever the action store says
+    # so. View actions are handled clientside (next callback below).
+    @callback(
+        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Input("mcc-registry-action-store", "data"),
+        prevent_initial_call=True,
+    )
+    def handle_delete_action(payload):
+        if not payload or payload.get("action") != "delete":
+            return no_update
+        name = payload.get("name")
+        if not name:
+            return no_update
+        state.delete_mcc(name)
+        return state.get_mcc_registry()
+
+    # Clientside View action: open /peartree/<uuid> via the same
+    # pywebview / window.open dance the Between-run "View MCC" button
+    # already uses.
+    clientside_callback(
+        """
+        function(payload) {
+            if (payload && payload.action === 'view' && payload.uuid) {
+                const name = payload.name || '';
+                if (window.pywebview && window.pywebview.api
+                    && window.pywebview.api.open_peartree) {
+                    window.pywebview.api.open_peartree(payload.uuid, name);
+                } else {
+                    const url = '/peartree/' + payload.uuid
+                              + '?name=' + encodeURIComponent(name);
+                    const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
+                    window.open(url, 'peartree-' + payload.uuid, features);
+                }
+            }
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output("mcc-registry-action-store", "data", allow_duplicate=True),
+        Input("mcc-registry-action-store", "data"),
+        prevent_initial_call=True,
+    )

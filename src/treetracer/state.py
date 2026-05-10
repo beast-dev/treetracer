@@ -10,6 +10,7 @@ import os
 import secrets
 import shutil
 import tempfile
+import time
 
 import numpy as np
 
@@ -262,3 +263,98 @@ def clear_all_mcc_trees():
     """Drop every cached MCC tree. Called from the sidebar's Clear-data
     handler so the cache doesn't outlive the data it summarises."""
     _mcc_cache.clear()
+    clear_all_mcc_registry()
+
+
+# ---------------------------------------------------------------------------
+# MCC tree registry
+# ---------------------------------------------------------------------------
+# A persistent (within-session) record of every MCC computed in the
+# Between-runs and Within-run MDS tabs. Each entry pairs a cached MCC's
+# uuid with metadata about the source distmat / mode / run / selection,
+# so the UI can list, re-open, and overlay them on the MDS plots.
+
+_mcc_registry: list = []                # list of registry entry dicts
+_mcc_registry_counters: dict = {}       # (distmat, mode, run|None) -> int
+_MAX_MCC_REGISTRY = _MAX_MCC_TREES      # mirror cache cap
+
+
+def _next_mcc_name(source_distmat, mode, run):
+    """Allocate the next sequential MCC name for *(distmat, mode, run)*.
+
+    Run is included in the key (and the resulting name) only for Within
+    so that MCCs computed for different runs of the same matrix don't
+    collide.
+    """
+    key = (source_distmat, mode, run)
+    n = _mcc_registry_counters.get(key, 0) + 1
+    _mcc_registry_counters[key] = n
+    if mode == "Within" and run:
+        return f"{source_distmat}_Within_{run}_MCC_{n}"
+    return f"{source_distmat}_{mode}_MCC_{n}"
+
+
+def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
+                 selection, log_clade_credibility):
+    """Append a new MCC registry entry and return it.
+
+    Evicts the oldest entry (and its uuid from the cache) if the
+    registry is at cap, keeping list and cache strictly synchronised.
+    """
+    global _mcc_registry
+    if len(_mcc_registry) >= _MAX_MCC_REGISTRY:
+        oldest = _mcc_registry.pop(0)
+        _mcc_cache.pop(oldest.get("uuid"), None)
+    name = _next_mcc_name(source_distmat, mode, run)
+    entry = {
+        "name": name,
+        "uuid": uuid,
+        "source_distmat": source_distmat,
+        "mode": mode,
+        "run": run,
+        "mcc_tree": mcc_tree,
+        "selection": selection,
+        "log_clade_credibility": log_clade_credibility,
+        "created_at": time.time(),
+    }
+    _mcc_registry.append(entry)
+    return entry
+
+
+def get_mcc_registry():
+    """Snapshot the registry for a dcc.Store payload."""
+    return list(_mcc_registry)
+
+
+def get_mcc_registry_filtered(*, source_distmat=None, mode=None, run=None):
+    """Return registry entries matching the given filters."""
+    out = []
+    for e in _mcc_registry:
+        if source_distmat is not None and e["source_distmat"] != source_distmat:
+            continue
+        if mode is not None and e["mode"] != mode:
+            continue
+        if run is not None and e["run"] != run:
+            continue
+        out.append(e)
+    return out
+
+
+def delete_mcc(name):
+    """Remove the entry with *name* and its cached NEXUS bytes.
+
+    Returns True if an entry was removed, False otherwise.
+    """
+    global _mcc_registry
+    for i, e in enumerate(_mcc_registry):
+        if e["name"] == name:
+            _mcc_registry.pop(i)
+            _mcc_cache.pop(e.get("uuid"), None)
+            return True
+    return False
+
+
+def clear_all_mcc_registry():
+    """Drop the registry list and reset all naming counters."""
+    _mcc_registry.clear()
+    _mcc_registry_counters.clear()

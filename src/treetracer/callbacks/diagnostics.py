@@ -622,36 +622,38 @@ def register_diagnostics_callbacks():
         except (ValueError, TypeError):
             burnin_int = 0
 
+        # Stoplight thresholds match the Lanfear paper's rough rule of
+        # thumb: <100 is unreliable, <200 is borderline, ≥200 is the
+        # "you can trust this" zone.
+        def _ess_cell(v):
+            if np.isnan(v):
+                return dmc.TableTd("—")
+            if v < 100:
+                color = "red"
+            elif v < 200:
+                color = "orange"
+            else:
+                color = "green"
+            return dmc.TableTd(
+                dmc.Text(f"{v:.1f}", c=color, fw=600, span=True)
+            )
+
         def _row_for(label, indices, burnin_label):
             sub = distmat[np.ix_(indices, indices)]
             res = compute_pseudo_ess(sub, n_refs=n_refs_int, seed=0)
             valid = res["ess_values"][~np.isnan(res["ess_values"])]
             if valid.size:
+                mn = float(valid.min())
                 q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
                 mx = float(valid.max())
             else:
-                q1 = q2 = q3 = mx = float("nan")
-
-            def _ess_cell(v):
-                # Stoplight thresholds match the Lanfear paper's rough
-                # rule of thumb: <100 is unreliable, <200 is borderline,
-                # >=200 is the "you can trust this" zone.
-                if np.isnan(v):
-                    return dmc.TableTd("—")
-                if v < 100:
-                    color = "red"
-                elif v < 200:
-                    color = "orange"
-                else:
-                    color = "green"
-                return dmc.TableTd(
-                    dmc.Text(f"{v:.1f}", c=color, fw=600, span=True)
-                )
+                mn = q1 = q2 = q3 = mx = float("nan")
 
             return dmc.TableTr([
                 dmc.TableTd(label),
                 dmc.TableTd(str(len(indices))),
                 dmc.TableTd(burnin_label),
+                _ess_cell(mn),
                 _ess_cell(q1),
                 _ess_cell(q2),
                 _ess_cell(q3),
@@ -695,6 +697,7 @@ def register_diagnostics_callbacks():
                         dmc.TableTh("Run"),
                         dmc.TableTh("Trees"),
                         dmc.TableTh("Burn-in"),
+                        dmc.TableTh("Min"),
                         dmc.TableTh("Q1"),
                         dmc.TableTh("Q2 (median)"),
                         dmc.TableTh("Q3"),

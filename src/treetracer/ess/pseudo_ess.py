@@ -17,7 +17,6 @@ recomputation, no newick parsing.
 from __future__ import annotations
 
 import numpy as np
-from scipy.stats import norm, rankdata
 
 from .ess import effective_sample_size, _rank_normalize
 

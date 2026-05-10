@@ -23,6 +23,7 @@ Reference implementation that this is modelled on:
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import norm, rankdata
 
 
 def _split_chain_variance(chains: np.ndarray) -> float:

@@ -453,7 +453,7 @@ def _add_within_run_panel():
             # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
             # populated by the View-MCC handler with {"uuid", "name"}.
             dcc.Store(id="within-run-view-mcc-store", storage_type="memory"),
-            dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
+            dcc.Interval(id="within-run-anim-interval", interval=300, disabled=True),
 
             # Graph — starts with the same placeholder message as between-run
             # so the empty state is consistent across the two tabs.

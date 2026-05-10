@@ -17,8 +17,9 @@ recomputation, no newick parsing.
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import norm, rankdata
 
-from .ess import effective_sample_size
+from .ess import effective_sample_size, _rank_normalize
 
 
 def compute_pseudo_ess(
@@ -81,7 +82,7 @@ def compute_pseudo_ess(
     ess_values = np.empty(k, dtype=np.float64)
     for i, ref in enumerate(ref_indices):
         trace = distmat[:, ref].astype(np.float64, copy=False)
-        ess_values[i] = effective_sample_size(trace)
+        ess_values[i] = effective_sample_size(_rank_normalize(trace))
 
     valid = ess_values[~np.isnan(ess_values)]
     return {

@@ -92,3 +92,13 @@ def effective_sample_size(x: np.ndarray) -> float:
     if tau <= 0.0:
         return float(m * n)
     return float(m * n) / tau
+
+def _rank_normalize(x: np.ndarray) -> np.ndarray:
+    """rank normalize parameter values before ESS computation like Stan.
+    
+    https://mc-stan.org/docs/reference-manual/analysis.html#effective-sample-size.section
+    """
+    r = rankdata(x, method="average")
+    n = r.size
+    return norm.ppf((r - 3.0 / 8.0) / (n + 1.0 / 4.0))
+

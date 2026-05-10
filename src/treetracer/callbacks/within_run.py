@@ -789,7 +789,7 @@ def register_within_run_callbacks():
                 color="red", action="show", autoClose=4000, id=notif_id())
 
         from ..db.tree_service import get_tree_service
-        from ..mcc import assemble_mcc_nexus
+        from ..mcc import assemble_mcc_nexus, extract_log_posterior
 
         tree_service = get_tree_service()
         tree_service.db_manager.flush()
@@ -844,6 +844,7 @@ def register_within_run_callbacks():
             selection=[[selected_run, int(t)] for t in selected_treenums],
             log_clade_credibility=(None if log_clade_cred is None
                                    else float(log_clade_cred)),
+            mcc_log_posterior=extract_log_posterior(mcc_row),
         )
         registered_name = entry["name"]
         add_log(

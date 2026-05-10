@@ -114,7 +114,7 @@ def register_diagnostics_callbacks():
         if not selected_matrix or not distmat_data or selected_matrix not in distmat_data:
             return (
                 dmc.Text(
-                    "Pick an RF matrix above to see the log-likelihood "
+                    "Pick an RF matrix above to see the log-posterior "
                     "trace for the trees that went into it.",
                     c="dimmed", size="sm", style={"padding": "20px"},
                 ),
@@ -152,7 +152,7 @@ def register_diagnostics_callbacks():
 
         if not traces:
             return (dmc.Text(
-                "No log-likelihood data found in tree annotations.",
+                "No log-posterior data found in tree annotations.",
                 c="dimmed", size="sm", style={"padding": "20px"},
             ), True, *burnin_out)
 
@@ -416,15 +416,15 @@ def register_diagnostics_callbacks():
     def export_lnl_trace_pdf(n_clicks, fig_dict):
         if not n_clicks or not fig_dict:
             return no_update
-        path = _save_file_dialog(default_filename="lnl_trace.pdf")
+        path = _save_file_dialog(default_filename="lnP_trace.pdf")
         if not path:
             return no_update
         fig = go.Figure(fig_dict)
         fig.update_layout(template="simple_white")
         fig.write_image(path, width=1200, height=400, scale=2)
-        add_log(f"Exported LnL trace plot to {path}")
+        add_log(f"Exported lnP trace plot to {path}")
         return dmc.Notification(
-            title="LnL Trace Exported",
+            title="lnP Trace Exported",
             message=f"Saved to {path}",
             color="green",
             action="show",
@@ -493,6 +493,33 @@ def register_diagnostics_callbacks():
                       variant="light", color="teal", size="sm"),
         ], gap="xs")
         return options, new_value, info
+
+    # ─── MCC trees registered for the selected matrix ──────────────────
+    # Renders a panel at the bottom of the Diagnostics tab listing the
+    # MCC trees registered against the currently-selected RF matrix,
+    # split into "Between-runs" and "Within-run" sub-tables. Hidden
+    # when no MCCs match the active matrix. The Tab itself decides
+    # which subset is interesting; here we surface both since the user
+    # is viewing the matrix as a whole. Follow-up PRs can wire
+    # post-processing actions onto a clicked row.
+    @callback(
+        Output("diagnostics-mcc-list", "children"),
+        Output("diagnostics-mcc-paper", "style"),
+        Input("mcc-registry-store", "data"),
+        Input("diagnostics-distmat-select", "value"),
+    )
+    def render_diagnostics_mcc_panel(registry, selected_matrix):
+        from .mcc_list import _table_for
+        if not registry or not selected_matrix:
+            return html.Div(), {"display": "none"}
+        matched = [e for e in registry
+                   if e.get("source_distmat") == selected_matrix]
+        if not matched:
+            return html.Div(), {"display": "none"}
+        return dmc.Stack([
+            dmc.Title(f"MCC trees for {selected_matrix}", order=5),
+            _table_for(matched, show_mode=True),
+        ], gap="sm"), {}
 
     # ─── Pseudo-ESS section ────────────────────────────────────────────
     # Two callbacks own the per-run table + Compute button. Both react

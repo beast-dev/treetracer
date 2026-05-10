@@ -823,7 +823,7 @@ def register_treespace_callbacks():
                       selected_key, results):
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
-        from ..mcc import assemble_mcc_nexus
+        from ..mcc import assemble_mcc_nexus, extract_log_posterior
         from .. import state as _state
         if not n_clicks or not selected_pairs or not plot_config:
             return no_update, no_update, no_update, no_update
@@ -912,6 +912,7 @@ def register_treespace_callbacks():
             selection=[[g, int(t)] for g, t in selected_pairs],
             log_clade_credibility=(None if log_clade_cred is None
                                    else float(log_clade_cred)),
+            mcc_log_posterior=extract_log_posterior(mcc_row),
         )
         registered_name = entry["name"]
         add_log(

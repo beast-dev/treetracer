@@ -191,6 +191,36 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
     return mcc_row, line, log_clade_cred, set()
 
 
+def extract_log_posterior(mcc_row) -> float | None:
+    """Pull a log-posterior scalar for an MCC row, or ``None``.
+
+    BEAST commonly writes ``lnP`` (log of joint up to the prior) on
+    every tree; MrBayes writes ``posterior`` / ``joint``. This helper
+    looks for any of those (priority ``lnP > posterior > joint``) and
+    returns the first that parses to a float. Pure log-likelihood
+    fields (``lnL`` / ``loglikelihood``) are not consulted — they're
+    a different quantity.
+    """
+    if mcc_row is None:
+        return None
+    meta = mcc_row.get("metadata") if hasattr(mcc_row, "get") else None
+    if isinstance(meta, str):
+        import json
+        try:
+            meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(meta, dict):
+        return None
+    for key in ("lnP", "posterior", "joint"):
+        if key in meta:
+            try:
+                return float(meta[key])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
     """Compute the MCC tree from *matched_rows* and assemble the full NEXUS
     bytes ready to write to disk or hand to a peartree window.

@@ -295,7 +295,8 @@ def _next_mcc_name(source_distmat, mode, run):
 
 
 def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
-                 selection, log_clade_credibility):
+                 selection, log_clade_credibility,
+                 mcc_log_posterior=None):
     """Append a new MCC registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
@@ -315,6 +316,7 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
         "mcc_tree": mcc_tree,
         "selection": selection,
         "log_clade_credibility": log_clade_credibility,
+        "mcc_log_posterior": mcc_log_posterior,
         "created_at": time.time(),
     }
     _mcc_registry.append(entry)

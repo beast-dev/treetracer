@@ -45,14 +45,17 @@ def _row_action_button(*, kind, name, color, icon, disabled=False, title=""):
     return dmc.Tooltip(btn, label=title, withArrow=True, position="top")
 
 
-def _entry_summary_row(entry):
+def _entry_summary_row(entry, *, show_mode=False):
     """Render one registry entry as a ``dmc.TableTr`` row.
 
-    Mode is intentionally not shown — the active tab already tells the
-    user whether they're looking at Between or Within MCCs. The
-    log-clade-credibility is also dropped: it's not comparable across
-    rows because each MCC is computed against a different denominator
-    (the size of the user's selection).
+    By default the mode column is suppressed because the Between /
+    Within tab the user is on already disambiguates. Pass
+    ``show_mode=True`` for contexts (like the Diagnostics tab) where
+    both kinds share one table.
+
+    The log-clade-credibility is intentionally dropped: it's not
+    comparable across rows because each MCC is computed against a
+    different denominator (the size of the user's selection).
     """
     name = entry.get("name", "")
     n_sel = len(entry.get("selection") or [])
@@ -60,11 +63,21 @@ def _entry_summary_row(entry):
     mcc_run = mt.get("group") or "—"
     treenum = mt.get("treenum")
     treenum_text = "—" if treenum is None else str(int(treenum))
+    lnp = entry.get("mcc_log_posterior")
+    try:
+        lnp_text = "—" if lnp is None else f"{float(lnp):.3f}"
+    except (TypeError, ValueError):
+        lnp_text = "—"
     cached = state.has_cached_mcc_tree(entry.get("uuid", ""))
-    return dmc.TableTr([
+    cells = [
         dmc.TableTd(name, style={"fontFamily": "monospace"}),
+    ]
+    if show_mode:
+        cells.append(dmc.TableTd(entry.get("mode") or "—"))
+    cells.extend([
         dmc.TableTd(mcc_run),
         dmc.TableTd(treenum_text),
+        dmc.TableTd(lnp_text),
         dmc.TableTd(f"{n_sel}"),
         dmc.TableTd(
             dmc.Group([
@@ -87,23 +100,26 @@ def _entry_summary_row(entry):
             ], gap=4),
         ),
     ])
+    return dmc.TableTr(cells)
 
 
-def _table_for(entries):
+def _table_for(entries, *, show_mode=False):
     if not entries:
         return None
-    rows = [_entry_summary_row(e) for e in entries]
+    rows = [_entry_summary_row(e, show_mode=show_mode) for e in entries]
+    headers = [dmc.TableTh("Name")]
+    if show_mode:
+        headers.append(dmc.TableTh("Mode"))
+    headers.extend([
+        dmc.TableTh("Run"),
+        dmc.TableTh("Tree #"),
+        dmc.TableTh("lnP"),
+        dmc.TableTh("Selected"),
+        dmc.TableTh(""),
+    ])
     return dmc.Table(
         [
-            dmc.TableThead(
-                dmc.TableTr([
-                    dmc.TableTh("Name"),
-                    dmc.TableTh("Run"),
-                    dmc.TableTh("Tree #"),
-                    dmc.TableTh("Selected"),
-                    dmc.TableTh(""),
-                ])
-            ),
+            dmc.TableThead(dmc.TableTr(headers)),
             dmc.TableTbody(rows),
         ],
         striped=True, highlightOnHover=True, withTableBorder=False,

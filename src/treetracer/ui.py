@@ -94,27 +94,14 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=300,
                     ),
-                    # MCC trees registered for the selected RF matrix.
-                    # Hidden when no MCCs have been computed for it yet.
-                    # Driven by ``populate_diagnostics_mcc_select`` in
-                    # callbacks/diagnostics.py.
-                    dmc.Select(
-                        id="diagnostics-mcc-select",
-                        label="MCC trees",
-                        placeholder="No MCC trees yet",
-                        data=[],
-                        value=None,
-                        size="xs",
-                        w=320,
-                    ),
                     html.Div(id="diagnostics-distmat-info"),
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Section 1: Log-Likelihood Trace
+            # Section 1: Log-Posterior Trace
             dmc.Paper([
                 dmc.Group([
-                    dmc.Title("Log-Likelihood Trace", order=5),
+                    dmc.Title("Log-Posterior Trace", order=5),
                     dmc.Badge("from tree metadata", variant="light", size="sm"),
                     dmc.NumberInput(
                         id="lnl-burnin-input",
@@ -228,6 +215,17 @@ def _add_diagnostics_panel():
                 # we wire the math up. Empty for now.
                 html.Div(id="pseudo-ess-output"),
             ], p="md", withBorder=True, radius="sm"),
+
+            # Per-matrix MCC registry summary. Hidden when no MCCs have
+            # been computed for the currently-selected matrix; otherwise
+            # split into Between-runs and Within-run tables. Driven by
+            # ``render_diagnostics_mcc_panel`` in callbacks/diagnostics.py.
+            dmc.Paper(
+                html.Div(id="diagnostics-mcc-list"),
+                p="md", withBorder=True, radius="sm",
+                id="diagnostics-mcc-paper",
+                style={"display": "none"},
+            ),
         ], gap="md"),
     ], style={"padding": "10px"})
 

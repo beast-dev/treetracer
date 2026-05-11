@@ -11,6 +11,7 @@ from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..ess.rf_trace import compute_rf_trace_data
 from ..ess import compute_pseudo_ess
+from ..theme import get_template
 from .. import state
 from ._helpers import _save_file_dialog
 
@@ -70,7 +71,7 @@ def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
 
     ref_label = f"{ref_position} tree of {ref_group}"
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         xaxis_title="Tree number",
         yaxis_title=f"RF distance to {ref_label}",
         xaxis2_title="Density",
@@ -90,11 +91,13 @@ def register_diagnostics_callbacks():
         Input("tree-offset-store", "data"),
         Input("lnl-burnin-input", "value"),
         Input("diagnostics-distmat-select", "value"),
+        Input("plotly-template-store", "data"),
         State("distmat-store", "data"),
         prevent_initial_call=True,
     )
-    def update_lnl_trace(stored_summaries, burnin, selected_matrix, distmat_data):
-        """Render log-likelihood trace plot for the SELECTED RF matrix.
+    def update_lnl_trace(stored_summaries, burnin, selected_matrix,
+                         _template, distmat_data):
+        """Render log-posterior trace plot for the SELECTED RF matrix.
 
         The Diagnostics tab is unified around the header RF-matrix
         selector — every section, including this one, conditions on
@@ -102,8 +105,13 @@ def register_diagnostics_callbacks():
         nothing else; once a matrix is chosen, traces are restricted
         to the *exact* set of trees that went into it (by tree-name
         match against the matrix's stored ``names`` list — see
-        ``state.get_distmat_names``). This keeps the LnL plot in lock-
+        ``state.get_distmat_names``). This keeps the lnP plot in lock-
         step with the matrix's downsample.
+
+        The ``plotly-template-store`` Input is unused inside the
+        function body — it's only there so dark-mode toggles trigger a
+        re-render, which then re-reads ``get_template()`` at figure
+        build time.
         """
         if not stored_summaries:
             return dmc.Text(
@@ -245,7 +253,7 @@ def register_diagnostics_callbacks():
                 fig.update_yaxes(range=[ymin - ypad, ymax + ypad], row=1, col=1)
 
         fig.update_layout(
-            template="simple_white",
+            template=get_template(),
             xaxis_title="Tree number",
             yaxis_title=field_name,
             xaxis2_title="Density",
@@ -388,12 +396,13 @@ def register_diagnostics_callbacks():
     @callback(
         Output("rf-trace-plot", "children", allow_duplicate=True),
         Input("rf-burnin-input", "value"),
+        Input("plotly-template-store", "data"),
         State("rf-trace-store", "data"),
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
         prevent_initial_call=True,
     )
-    def update_rf_trace_burnin(burnin, store_data, ref_group, ref_position):
+    def update_rf_trace_burnin(burnin, _, store_data, ref_group, ref_position):
         if not store_data:
             return no_update
         try:
@@ -420,7 +429,7 @@ def register_diagnostics_callbacks():
         if not path:
             return no_update
         fig = go.Figure(fig_dict)
-        fig.update_layout(template="simple_white")
+        fig.update_layout(template=get_template())
         fig.write_image(path, width=1200, height=400, scale=2)
         add_log(f"Exported lnP trace plot to {path}")
         return dmc.Notification(
@@ -445,7 +454,7 @@ def register_diagnostics_callbacks():
         if not path:
             return no_update
         fig = go.Figure(fig_dict)
-        fig.update_layout(template="simple_white")
+        fig.update_layout(template=get_template())
         fig.write_image(path, width=1200, height=400, scale=2)
         add_log(f"Exported RF trace plot to {path}")
         return dmc.Notification(

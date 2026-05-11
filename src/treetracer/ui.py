@@ -1,12 +1,11 @@
 import dash_mantine_components as dmc
 from dash import dcc, html
 from dash_iconify import DashIconify
+from .theme import get_template
 
 from .plot_utils import placeholder_fig
 
 # Header
-
-
 def add_header():
     logo_path = "assets/treetracer-icon.png"
     return dmc.AppShellHeader(
@@ -42,10 +41,20 @@ def add_header():
                     ),
                     label="Toggle Log",
                 ),
+                dmc.Tooltip(
+                    dmc.ActionIcon(
+                        DashIconify(icon="tabler:moon", width=20, id="dark-mode-icon"),
+                        id="dark-mode-toggle",
+                        variant="subtle",
+                        size="lg",
+                    ),
+                    label="Toggle dark mode",
+                ),
             ],
             h="100%",
             px="md",
             gap="xs",
+            wrap="nowrap",
         )
     )
 
@@ -705,6 +714,11 @@ def add_navbar():
                     # in the MCC list panels.
                     dcc.Store(id="mcc-registry-store", storage_type="memory", data=[]),
                     dcc.Store(id="mcc-registry-action-store", storage_type="memory"),
+                    # Current plotly template name (light/dark). Each
+                    # plot-rendering callback reads it via
+                    # ``theme.get_template()`` at fig build time; the
+                    # store is wired as a re-render trigger.
+                    dcc.Store(id="plotly-template-store", storage_type="memory", data=get_template()),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
                     # Log panel state

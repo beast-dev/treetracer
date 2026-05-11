@@ -28,6 +28,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
+from ..theme import get_template
+from ..plot_utils import retheme_figure
+
 
 TREETRACER_BLUE = "#228be6"
 
@@ -362,7 +365,7 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
             fig.update_yaxes(range=axis_ranges[z], row=1, col=3)
 
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         margin=dict(l=50, r=40, t=40, b=45),
         dragmode=dragmode,
         uirevision="within-run",
@@ -661,6 +664,18 @@ def register_within_run_callbacks():
         fig.update_layout(dragmode=dragmode)
         return fig
 
+    # ------ theme toggle → rebuild figure with active template ------
+    @callback(
+        Output("within-run-graph", "figure", allow_duplicate=True),
+        Input("plotly-template-store", "data"),
+        State("within-run-graph", "figure"),
+        prevent_initial_call=True,
+    )
+    def update_plot_theme(_, current_fig):
+        if not current_fig:
+            return no_update
+        return retheme_figure(current_fig)
+
     # ------ selection-info badge ------
     @callback(
         Output("within-run-selection-info", "children"),
@@ -908,7 +923,7 @@ def register_within_run_callbacks():
         if not path:
             return no_update
         fig = go.Figure(fig_dict)
-        fig.update_layout(template="simple_white")
+        fig.update_layout(template=get_template())
         fig.write_image(path, width=1800, height=500, scale=2)
         add_log(f"Exported within-run plot to {path}")
         return dmc.Notification(title="PDF Exported", message=f"Saved to {path}",

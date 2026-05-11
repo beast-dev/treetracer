@@ -199,3 +199,4 @@ cython_debug/
 src/.DS_Store
 /src/treetracer/db/old_tests
 *.trees
+docs/

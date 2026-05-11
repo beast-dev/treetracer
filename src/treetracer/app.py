@@ -79,6 +79,21 @@ def main():
         else:
             import webview
 
+            # macOS: the system menu bar reads its app name from the
+            # running bundle's ``CFBundleName``, which for a plain
+            # ``python -m treetracer`` launch is just "python3". Patch
+            # the in-process info dict before pywebview spins up Cocoa
+            # so the menu shows "TreeTracer" in dev. A properly bundled
+            # .app overrides this via its own Info.plist.
+            if sys.platform == "darwin":
+                try:
+                    from Foundation import NSBundle
+                    bundle = NSBundle.mainBundle()
+                    info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+                    info["CFBundleName"] = "TreeTracer"
+                except Exception:
+                    pass
+
             # Suppress Flask's per-request logging
             logging.getLogger("werkzeug").setLevel(logging.WARNING)
 

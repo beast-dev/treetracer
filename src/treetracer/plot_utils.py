@@ -44,7 +44,13 @@ def placeholder_fig(text):
 # chunk-index order — chunk 0 of all groups, then chunk 1 of all groups, etc.
 # At every z-depth in the resulting plot each group has roughly equal
 # representation, so no single run sits entirely on top of the others.
-N_CHUNKS_2D = 10
+#
+# Bigger K → finer-grained interleaving (less chance a run dominates any
+# zoom level) at the cost of more ``fig.add_trace`` calls (G·K·3 in total).
+# 15 lands at ~135 trace adds for a 3-run plot, which Plotly handles
+# comfortably in WebGL. ``_chunked`` caps at ``min(K, n)`` so small runs
+# aren't penalised.
+N_CHUNKS_2D = 15
 
 
 # Trailing overlay bundles appended to the between-runs figure: one

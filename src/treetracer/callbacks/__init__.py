@@ -4,6 +4,7 @@ from .compute import register_compute_callbacks
 from .treespace import register_treespace_callbacks
 from .diagnostics import register_diagnostics_callbacks
 from .within_run import register_within_run_callbacks
+from .mcc_list import register_mcc_list_callbacks
 
 
 def register_callbacks(app):
@@ -13,3 +14,4 @@ def register_callbacks(app):
     register_treespace_callbacks()
     register_diagnostics_callbacks()
     register_within_run_callbacks()
+    register_mcc_list_callbacks()

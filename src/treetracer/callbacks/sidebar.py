@@ -455,6 +455,9 @@ def register_sidebar_callbacks():
         Output("within-run-info", "children", allow_duplicate=True),
         Output("within-run-graph", "figure", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
+        Output("pseudo-ess-output", "children", allow_duplicate=True),
+        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -509,5 +512,8 @@ def register_sidebar_callbacks():
                     "No MDS result selected. Compute an MDS in the Compute tab."
                 ),
                 [],              # within-run-selected-trees-store
+                html.Div(),      # pseudo-ess-output
+                [],              # mcc-registry-store
+                [],              # treespace-selected-trees-store
             )
-        return (no_update,) * 21
+        return (no_update,) * 24

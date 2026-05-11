@@ -89,10 +89,28 @@ def _add_diagnostics_panel():
     """Build the Diagnostics tab panel content."""
     return html.Div([
         dmc.Stack([
-            # Section 1: Log-Likelihood Trace
+            # Header: shared RF Matrix selector that conditions every
+            # downstream section (LnL trace, RF-to-reference, Pseudo-ESS).
             dmc.Paper([
                 dmc.Group([
-                    dmc.Title("Log-Likelihood Trace", order=5),
+                    dmc.Title("Diagnostics", order=4),
+                    dmc.Select(
+                        id="diagnostics-distmat-select",
+                        label="RF Matrix",
+                        placeholder="No distance matrix available",
+                        data=[],
+                        value=None,
+                        size="xs",
+                        w=300,
+                    ),
+                    html.Div(id="diagnostics-distmat-info"),
+                ], align="flex-end", gap="md"),
+            ], p="md", withBorder=True, radius="sm"),
+
+            # Section 1: Log-Posterior Trace
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("Log-Posterior Trace", order=5),
                     dmc.Badge("from tree metadata", variant="light", size="sm"),
                     dmc.NumberInput(
                         id="lnl-burnin-input",
@@ -105,7 +123,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm", align="center"),
+                ], gap="sm", align="flex-end"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -154,7 +172,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], align="center", gap="md"),
+                ], align="flex-end", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),
@@ -162,6 +180,61 @@ def _add_diagnostics_panel():
                     parent_style={"minHeight": "200px"},
                 ),
             ], p="md", withBorder=True, radius="sm"),
+
+            # Section 3: Pseudo-ESS — picks the runs within the RF
+            # matrix selected at the top of the tab and (eventually)
+            # computes Lanfear-style pseudo-ESS for each.
+            dmc.Paper([
+                dmc.Group([
+                    dmc.Title("Pseudo-ESS", order=5),
+                    dmc.NumberInput(
+                        id="ess-burnin-input",
+                        label="Burn-in (trees)",
+                        value=0,
+                        min=0,
+                        step=100,
+                        size="xs",
+                        w=140,
+                    ),
+                    dmc.NumberInput(
+                        id="ess-n-refs-input",
+                        label="# Reference trees",
+                        value=100,
+                        min=10,
+                        step=10,
+                        size="xs",
+                        w=140,
+                    ),
+                    dmc.Button(
+                        "Compute Pseudo-ESS",
+                        id="compute-pseudo-ess-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                    ),
+                ], align="flex-end", gap="md"),
+                dmc.Space(h=10),
+                # Per-run table: one row per group inside the selected
+                # matrix, each row checkable. Populated by the
+                # ``render_ess_runs_table`` callback.
+                html.Div(id="ess-runs-table"),
+                dmc.Space(h=10),
+                # Result area — filled in by the compute callback once
+                # we wire the math up. Empty for now.
+                html.Div(id="pseudo-ess-output"),
+            ], p="md", withBorder=True, radius="sm"),
+
+            # Per-matrix MCC registry summary. Hidden when no MCCs have
+            # been computed for the currently-selected matrix; otherwise
+            # split into Between-runs and Within-run tables. Driven by
+            # ``render_diagnostics_mcc_panel`` in callbacks/diagnostics.py.
+            dmc.Paper(
+                html.Div(id="diagnostics-mcc-list"),
+                p="md", withBorder=True, radius="sm",
+                id="diagnostics-mcc-paper",
+                style={"display": "none"},
+            ),
         ], gap="md"),
     ], style={"padding": "10px"})
 
@@ -266,6 +339,16 @@ def _add_treespace_panel():
             # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
             # populated by the View-MCC handler with {"uuid", "name"}.
             dcc.Store(id="treespace-view-mcc-store", storage_type="memory"),
+
+            # Per-tab MCC registry list. Hidden when no MCCs match the
+            # currently-selected MDS result. Rendered by
+            # ``render_mcc_list`` in callbacks/treespace.py.
+            dmc.Paper(
+                html.Div(id="treespace-mcc-list"),
+                withBorder=True, p="xs", radius="sm",
+                id="treespace-mcc-list-paper",
+                style={"display": "none"},
+            ),
 
             # Plot canvas — statically defined so the selection callbacks can
             # always target it. Starts empty with a centered placeholder
@@ -400,7 +483,16 @@ def _add_within_run_panel():
             # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
             # populated by the View-MCC handler with {"uuid", "name"}.
             dcc.Store(id="within-run-view-mcc-store", storage_type="memory"),
-            dcc.Interval(id="within-run-anim-interval", interval=500, disabled=True),
+            dcc.Interval(id="within-run-anim-interval", interval=300, disabled=True),
+
+            # Per-tab MCC registry list (hidden when nothing to show).
+            # Rendered by ``render_mcc_list`` in callbacks/within_run.py.
+            dmc.Paper(
+                html.Div(id="within-run-mcc-list"),
+                withBorder=True, p="xs", radius="sm",
+                id="within-run-mcc-list-paper",
+                style={"display": "none"},
+            ),
 
             # Graph — starts with the same placeholder message as between-run
             # so the empty state is consistent across the two tabs.
@@ -616,6 +708,16 @@ def add_navbar():
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
+                    # Persistent registry of computed MCC trees
+                    # (RF_001_Between_MCC_1 etc.) and a one-shot action
+                    # signal driven by the per-row View / Delete buttons
+                    # in the MCC list panels.
+                    dcc.Store(id="mcc-registry-store", storage_type="memory", data=[]),
+                    dcc.Store(id="mcc-registry-action-store", storage_type="memory"),
+                    # Current plotly template name (light/dark). Each
+                    # plot-rendering callback reads it via
+                    # ``theme.get_template()`` at fig build time; the
+                    # store is wired as a re-render trigger.
                     dcc.Store(id="plotly-template-store", storage_type="memory", data=get_template()),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),

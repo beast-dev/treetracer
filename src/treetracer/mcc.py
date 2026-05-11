@@ -139,13 +139,16 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
             and the canonical row ordering.
 
     Returns:
-        ``(mcc_row, mcc_newick_line, missing_taxa)``:
+        ``(mcc_row, mcc_newick_line, log_clade_credibility, missing_taxa)``:
             * ``mcc_row`` — the matched DB row for the MCC tree (a pandas
               Series). ``None`` when ``missing_taxa`` is non-empty.
             * ``mcc_newick_line`` — the full ``tree NAME = …;`` line read
               from disk, with integer labels remapped to the canonical
               translate when the MCC tree came from a non-canonical
               source. ``None`` when ``missing_taxa`` is non-empty.
+            * ``log_clade_credibility`` — sum of ``log(P(split))`` for
+              the chosen tree's splits. ``None`` when ``missing_taxa``
+              is non-empty.
             * ``missing_taxa`` — set of taxa present in some non-canonical
               source but absent from the canonical translate. Non-empty
               means MCC could not be computed; caller should bail and
@@ -160,7 +163,7 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
         unique_sources, db_manager.get_translate_map, canonical_source,
     )
     if missing_taxa:
-        return None, None, missing_taxa
+        return None, None, None, missing_taxa
 
     # Snapshot covers every tree that went into the distmat, in the order
     # state stored them. We index into it by name.
@@ -185,7 +188,37 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
     line = _inject_tree_annotation(line, "lnCladeCred",
                                    format(log_clade_cred, ".4f"))
 
-    return mcc_row, line, set()
+    return mcc_row, line, log_clade_cred, set()
+
+
+def extract_log_posterior(mcc_row) -> float | None:
+    """Pull a log-posterior scalar for an MCC row, or ``None``.
+
+    BEAST commonly writes ``lnP`` (log of joint up to the prior) on
+    every tree; MrBayes writes ``posterior`` / ``joint``. This helper
+    looks for any of those (priority ``lnP > posterior > joint``) and
+    returns the first that parses to a float. Pure log-likelihood
+    fields (``lnL`` / ``loglikelihood``) are not consulted — they're
+    a different quantity.
+    """
+    if mcc_row is None:
+        return None
+    meta = mcc_row.get("metadata") if hasattr(mcc_row, "get") else None
+    if isinstance(meta, str):
+        import json
+        try:
+            meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(meta, dict):
+        return None
+    for key in ("lnP", "posterior", "joint"):
+        if key in meta:
+            try:
+                return float(meta[key])
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
@@ -200,20 +233,22 @@ def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
         <mcc_line, with original tree name + lnCladeCred annotation>
         End;
 
-    Returns ``(nexus_bytes, mcc_tree_name, missing_taxa)``:
+    Returns ``(nexus_bytes, mcc_row, log_clade_credibility, missing_taxa)``:
         * ``nexus_bytes`` — bytes of the assembled NEXUS file. ``None``
           when ``missing_taxa`` is non-empty.
-        * ``mcc_tree_name`` — the original DB ``name`` of the chosen
-          MCC tree (e.g. ``"run1/STATE_5000"``). ``None`` when
-          ``missing_taxa`` is non-empty.
+        * ``mcc_row`` — the matched DB row of the chosen MCC tree
+          (Series, contains ``name`` and source columns). ``None``
+          when ``missing_taxa`` is non-empty.
+        * ``log_clade_credibility`` — score of the chosen tree.
+          ``None`` when ``missing_taxa`` is non-empty.
         * ``missing_taxa`` — set of taxa missing from the canonical
           translate (caller surfaces this as an export error).
     """
-    mcc_row, mcc_line, missing_taxa = compute_mcc_for_selection(
+    mcc_row, mcc_line, log_clade_cred, missing_taxa = compute_mcc_for_selection(
         matched_rows, db_manager, source_distmat,
     )
     if missing_taxa:
-        return None, None, missing_taxa
+        return None, None, None, missing_taxa
 
     canonical_source = matched_rows["file_source"].iloc[0]
     canonical_preamble = (
@@ -222,4 +257,4 @@ def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
     )
     body = mcc_line if mcc_line.endswith("\n") else mcc_line + "\n"
     nexus_bytes = canonical_preamble + body.encode("utf-8") + b"End;\n"
-    return nexus_bytes, mcc_row["name"], set()
+    return nexus_bytes, mcc_row, log_clade_cred, set()

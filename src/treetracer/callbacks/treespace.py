@@ -106,9 +106,15 @@ def _build_canonical_remaps(file_sources, get_translate_map, canonical_source):
 
 
 # Trace-layout invariants set by ``add_trace_multiplot_interleaved``:
-# the last 4 traces are always selection overlays in this exact order.
-SELECTION_OVERLAY_OFFSETS = (-4, -3, -2, -1)
+# the last 8 traces are 2 trailing overlay bundles of 4 each, in this
+# exact order:
+#   -8 … -5 → selection overlays (3D + xy + xz + yz)
+#   -4 … -1 → MCC overlays       (3D + xy + xz + yz)
+SELECTION_OVERLAY_OFFSETS = (-8, -7, -6, -5)
+MCC_OVERLAY_OFFSETS = (-4, -3, -2, -1)
 N_SELECTION_OVERLAYS = 4
+N_MCC_OVERLAYS = 4
+N_TRAILING_OVERLAYS = N_SELECTION_OVERLAYS + N_MCC_OVERLAYS
 
 
 def _panels_2d(x, y, z):
@@ -154,6 +160,104 @@ def _overlay_panels_data(df, selected_pairs, x, y, z):
         {"x": sel[x].tolist(), "y": sel[z].tolist(), "customdata": cd},
         {"x": sel[y].tolist(), "y": sel[z].tolist(), "customdata": cd},
     ]
+
+
+def _mcc_overlay_panels_data(df, registry, source_distmat, x, y, z):
+    """Same shape as ``_overlay_panels_data`` but pulled from the MCC
+    registry, filtered to **Between**-mode entries belonging to
+    *source_distmat*.
+
+    Within-mode MCCs are deliberately excluded so MCCs computed on the
+    within-run tab don't leak as green rings onto the between-runs plot
+    (and vice-versa — the within-run side does its own filtering).
+
+    Each entry contributes one point at ``mcc_tree.(group, treenum)``,
+    looked up in *df*. ``customdata[1]`` carries the MCC's registered
+    name so the hover reads "Tree #N: <RF_001_Between_MCC_2>".
+    """
+    pairs = []
+    name_by_pair = {}
+    for e in registry:
+        if e.get("source_distmat") != source_distmat:
+            continue
+        if e.get("mode") != "Between":
+            continue
+        mt = e.get("mcc_tree") or {}
+        g, t = mt.get("group"), mt.get("treenum")
+        if g is None or t is None:
+            continue
+        pair = (g, int(t))
+        pairs.append(pair)
+        name_by_pair[pair] = e.get("name", "")
+
+    empty_3d = {"x": [], "y": [], "z": [], "customdata": []}
+    empty_2d = {"x": [], "y": [], "customdata": []}
+    if not pairs:
+        return [dict(empty_3d), dict(empty_2d), dict(empty_2d), dict(empty_2d)]
+
+    pair_set = set(pairs)
+    keys = list(zip(df["group"], df["treenum"].astype(int)))
+    mask = pd.Series([k in pair_set for k in keys], index=df.index)
+    sel = df[mask]
+    if len(sel) == 0:
+        return [dict(empty_3d), dict(empty_2d), dict(empty_2d), dict(empty_2d)]
+
+    treenums = sel["treenum"].astype(int).tolist()
+    groups = sel["group"].tolist()
+    labels = [name_by_pair.get((g, t), "") for g, t in zip(groups, treenums)]
+    cd = list(zip(treenums, labels, groups))
+
+    return [
+        {"x": sel[x].tolist(), "y": sel[y].tolist(),
+         "z": sel[z].tolist(), "customdata": cd},
+        {"x": sel[x].tolist(), "y": sel[y].tolist(), "customdata": cd},
+        {"x": sel[x].tolist(), "y": sel[z].tolist(), "customdata": cd},
+        {"x": sel[y].tolist(), "y": sel[z].tolist(), "customdata": cd},
+    ]
+
+
+def _resolve_source_distmat(selected_key, mds_results):
+    """Pull ``source_distmat`` out of the active MDS result metadata."""
+    if not selected_key or not mds_results or selected_key not in mds_results:
+        return None
+    return (mds_results[selected_key] or {}).get("source_distmat")
+
+
+def _stamp_overlay_bundle(fig, panel_data, offsets):
+    """Write a 4-tuple of panel-data dicts (3D + xy + xz + yz) into the
+    overlay traces at *offsets* (negative indices into ``fig.data``)."""
+    if not panel_data:
+        return
+    d3, dxy, dxz, dyz = panel_data
+    n = len(fig.data)
+    o3d, oxy, oxz, oyz = offsets
+    fig.data[n + o3d].x = d3["x"]
+    fig.data[n + o3d].y = d3["y"]
+    fig.data[n + o3d].z = d3["z"]
+    fig.data[n + o3d].customdata = d3["customdata"]
+    for offset, d in zip((oxy, oxz, oyz), (dxy, dxz, dyz)):
+        idx = n + offset
+        fig.data[idx].x = d["x"]
+        fig.data[idx].y = d["y"]
+        fig.data[idx].customdata = d["customdata"]
+
+
+def _patch_overlay_bundle(patch, n_traces, panel_data, offsets):
+    """Same as ``_stamp_overlay_bundle`` but writes through a ``dash.Patch``
+    object — used by patching callbacks that don't rebuild the figure."""
+    if not panel_data:
+        return
+    d3, dxy, dxz, dyz = panel_data
+    o3d, oxy, oxz, oyz = offsets
+    patch["data"][n_traces + o3d]["x"] = d3["x"]
+    patch["data"][n_traces + o3d]["y"] = d3["y"]
+    patch["data"][n_traces + o3d]["z"] = d3["z"]
+    patch["data"][n_traces + o3d]["customdata"] = d3["customdata"]
+    for offset, d in zip((oxy, oxz, oyz), (dxy, dxz, dyz)):
+        idx = n_traces + offset
+        patch["data"][idx]["x"] = d["x"]
+        patch["data"][idx]["y"] = d["y"]
+        patch["data"][idx]["customdata"] = d["customdata"]
 
 
 def register_treespace_callbacks():
@@ -288,11 +392,15 @@ def register_treespace_callbacks():
         State("plot-config-store", "data"),
         State("treespace-dragmode", "value"),
         State("treespace-selected-trees-store", "data"),
+        State("mcc-registry-store", "data"),
+        State("treespace-result-select", "value"),
+        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def update_graph_on_button_click(n_clicks, dim_x, dim_y, dim_z, treenum_range,
                                      show_lines, current_fig, plot_config, dragmode,
-                                     selected):
+                                     selected, mcc_registry, selected_key,
+                                     mds_results):
         if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
             return no_update, no_update
 
@@ -308,7 +416,8 @@ def register_treespace_callbacks():
         # Create new plot with filtered data. The interleaved variant splits
         # each group's points into chunks and stacks them by chunk-index so
         # no single run sits entirely on top of the others in the 2D panels.
-        # It also appends 4 trailing selection-overlay traces (1 3D + 3 2D).
+        # It also appends 8 trailing overlay traces — 4 selection (red) +
+        # 4 MCC (green).
         fig = make_plot_grid()
         add_trace_multiplot_interleaved(
             fig, filtered_dff, dim_x, dim_y, dim_z,
@@ -334,18 +443,21 @@ def register_treespace_callbacks():
         # treenum-range stay invisible (matching how their normal markers
         # would have been hidden too).
         if selected:
-            sel_data = _overlay_panels_data(filtered_dff, selected, dim_x, dim_y, dim_z)
-            d3, dxy, dxz, dyz = sel_data
-            n = len(fig.data)
-            fig.data[n - 4].x = d3["x"]
-            fig.data[n - 4].y = d3["y"]
-            fig.data[n - 4].z = d3["z"]
-            fig.data[n - 4].customdata = d3["customdata"]
-            for offset, d in zip((-3, -2, -1), (dxy, dxz, dyz)):
-                idx = n + offset
-                fig.data[idx].x = d["x"]
-                fig.data[idx].y = d["y"]
-                fig.data[idx].customdata = d["customdata"]
+            _stamp_overlay_bundle(
+                fig, _overlay_panels_data(filtered_dff, selected,
+                                          dim_x, dim_y, dim_z),
+                SELECTION_OVERLAY_OFFSETS,
+            )
+
+        # Re-apply registered MCCs (green rings) for the current matrix.
+        source_distmat = _resolve_source_distmat(selected_key, mds_results)
+        if mcc_registry and source_distmat:
+            _stamp_overlay_bundle(
+                fig,
+                _mcc_overlay_panels_data(filtered_dff, mcc_registry,
+                                         source_distmat, dim_x, dim_y, dim_z),
+                MCC_OVERLAY_OFFSETS,
+            )
 
         return fig, "Update Plot"
 
@@ -469,10 +581,10 @@ def register_treespace_callbacks():
         if not current_fig or not plot_config:
             return no_update
         n_traces = len(current_fig.get("data", []))
-        # We need at least the 4 overlays plus some real traces. Bail if the
-        # graph hasn't been plotted yet or the trace count doesn't have room
-        # for the 4 trailing overlays.
-        if n_traces < N_SELECTION_OVERLAYS:
+        # The trailing overlay block is 8 traces (4 selection + 4 MCC).
+        # Bail if the graph hasn't been plotted yet or the trace count
+        # doesn't have room for them.
+        if n_traces < N_TRAILING_OVERLAYS:
             return no_update
         if not all([dim_x, dim_y, dim_z]):
             return no_update
@@ -495,17 +607,43 @@ def register_treespace_callbacks():
                 continue
             patch["data"][i]["selectedpoints"] = None
 
-        # Last 4 traces in order: 3D, 2D x-y, 2D x-z, 2D y-z.
-        d3, dxy, dxz, dyz = sel_data
-        patch["data"][n_traces - 4]["x"] = d3["x"]
-        patch["data"][n_traces - 4]["y"] = d3["y"]
-        patch["data"][n_traces - 4]["z"] = d3["z"]
-        patch["data"][n_traces - 4]["customdata"] = d3["customdata"]
-        for offset, d in zip((-3, -2, -1), (dxy, dxz, dyz)):
-            idx = n_traces + offset
-            patch["data"][idx]["x"] = d["x"]
-            patch["data"][idx]["y"] = d["y"]
-            patch["data"][idx]["customdata"] = d["customdata"]
+        _patch_overlay_bundle(patch, n_traces, sel_data,
+                              SELECTION_OVERLAY_OFFSETS)
+        return patch
+
+    # ------ MCC registry change → patch only the green overlays ------
+    @callback(
+        Output("graph", "figure", allow_duplicate=True),
+        Input("mcc-registry-store", "data"),
+        State("graph", "figure"),
+        State("dim-x-select", "value"),
+        State("dim-y-select", "value"),
+        State("dim-z-select", "value"),
+        State("plot-config-store", "data"),
+        State("treespace-result-select", "value"),
+        State("mds-result-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_mcc_overlay(registry, current_fig, dim_x, dim_y, dim_z,
+                           plot_config, selected_key, mds_results):
+        if not current_fig or not plot_config:
+            return no_update
+        n_traces = len(current_fig.get("data", []))
+        if n_traces < N_TRAILING_OVERLAYS:
+            return no_update
+        if not all([dim_x, dim_y, dim_z]):
+            return no_update
+
+        source_distmat = _resolve_source_distmat(selected_key, mds_results)
+        combined_df = pd.DataFrame(plot_config["combined_data"])
+        mcc_data = _mcc_overlay_panels_data(
+            combined_df, registry or [], source_distmat,
+            dim_x, dim_y, dim_z,
+        )
+
+        patch = Patch()
+        _patch_overlay_bundle(patch, n_traces, mcc_data,
+                              MCC_OVERLAY_OFFSETS)
         return patch
 
     # ------ reset zoom button ------
@@ -520,10 +658,14 @@ def register_treespace_callbacks():
         State("plot-config-store", "data"),
         State("treespace-selected-trees-store", "data"),
         State("treespace-dragmode", "value"),
+        State("mcc-registry-store", "data"),
+        State("treespace-result-select", "value"),
+        State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def reset_axes(n_clicks, dim_x, dim_y, dim_z, treenum_range,
-                   show_lines, plot_config, selected, dragmode):
+                   show_lines, plot_config, selected, dragmode,
+                   mcc_registry, selected_key, mds_results):
         if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
             return no_update
 
@@ -545,18 +687,20 @@ def register_treespace_callbacks():
 
         # Re-apply current selection so the overlay survives the reset.
         if selected:
-            sel_data = _overlay_panels_data(filtered_dff, selected, dim_x, dim_y, dim_z)
-            d3, dxy, dxz, dyz = sel_data
-            n = len(fig.data)
-            fig.data[n - 4].x = d3["x"]
-            fig.data[n - 4].y = d3["y"]
-            fig.data[n - 4].z = d3["z"]
-            fig.data[n - 4].customdata = d3["customdata"]
-            for offset, d in zip((-3, -2, -1), (dxy, dxz, dyz)):
-                idx = n + offset
-                fig.data[idx].x = d["x"]
-                fig.data[idx].y = d["y"]
-                fig.data[idx].customdata = d["customdata"]
+            _stamp_overlay_bundle(
+                fig, _overlay_panels_data(filtered_dff, selected,
+                                          dim_x, dim_y, dim_z),
+                SELECTION_OVERLAY_OFFSETS,
+            )
+        # Re-apply registered MCCs (green rings).
+        source_distmat = _resolve_source_distmat(selected_key, mds_results)
+        if mcc_registry and source_distmat:
+            _stamp_overlay_bundle(
+                fig,
+                _mcc_overlay_panels_data(filtered_dff, mcc_registry,
+                                         source_distmat, dim_x, dim_y, dim_z),
+                MCC_OVERLAY_OFFSETS,
+            )
         return fig
 
     # ------ export selected trees as a .trees NEXUS file ------
@@ -679,6 +823,8 @@ def register_treespace_callbacks():
     # opens ``/peartree/<uuid>`` in a new browser window.
     @callback(
         Output("treespace-view-mcc-store", "data"),
+        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("treespace-view-mcc", "n_clicks"),
         State("treespace-selected-trees-store", "data"),
@@ -691,20 +837,20 @@ def register_treespace_callbacks():
                       selected_key, results):
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
-        from ..mcc import assemble_mcc_nexus
+        from ..mcc import assemble_mcc_nexus, extract_log_posterior
         from .. import state as _state
         if not n_clicks or not selected_pairs or not plot_config:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         results = results or {}
         if not selected_key or selected_key not in results:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="No MDS result is currently selected.",
                 color="red", action="show", autoClose=5000, id=notif_id())
         source_distmat = (results[selected_key] or {}).get("source_distmat")
         if not source_distmat:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="No RF/snapshot data is associated with this MDS result.",
                 color="red", action="show", autoClose=5000, id=notif_id())
@@ -716,7 +862,7 @@ def register_treespace_callbacks():
         sel_df = combined_df[mask]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="No matching trees found.",
                 color="red", action="show", autoClose=4000, id=notif_id())
@@ -726,17 +872,17 @@ def register_treespace_callbacks():
         all_trees = tree_service.db_manager._trees
         matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
         if len(matched) == 0:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message="Selected trees not found in database. They may have been cleared.",
                 color="red", action="show", autoClose=4000, id=notif_id())
 
         try:
-            nexus_bytes, mcc_name, missing_taxa = assemble_mcc_nexus(
+            nexus_bytes, mcc_row, log_clade_cred, missing_taxa = assemble_mcc_nexus(
                 matched, tree_service.db_manager, source_distmat,
             )
         except Exception as e:
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error", message=str(e),
                 color="red", action="show", autoClose=6000, id=notif_id())
 
@@ -744,7 +890,7 @@ def register_treespace_callbacks():
             sample = ", ".join(sorted(missing_taxa)[:5])
             more = "…" if len(missing_taxa) > 5 else ""
             canonical_source = matched["file_source"].iloc[0]
-            return no_update, dmc.Notification(
+            return no_update, no_update, no_update, dmc.Notification(
                 title="MCC Error",
                 message=(
                     f"Cannot align translate tables: taxa [{sample}{more}] "
@@ -753,13 +899,54 @@ def register_treespace_callbacks():
                 ),
                 color="red", action="show", autoClose=8000, id=notif_id())
 
+        mcc_tree_name = mcc_row["name"]
         uid = _state.cache_mcc_tree(nexus_bytes)
-        add_log(f"Cached MCC tree '{mcc_name}' (from {len(matched)} selected) as {uid}")
+
+        # Look up the MCC's coordinates in the active MDS so the green
+        # ring lands on the right point. Fall back to the file_source-
+        # qualified name if the legacy ``tree`` column carries that.
+        mcc_row_in_mds = combined_df[combined_df["tree"] == mcc_tree_name]
+        if mcc_row_in_mds.empty:
+            mcc_group, mcc_treenum = None, None
+        else:
+            r0 = mcc_row_in_mds.iloc[0]
+            mcc_group = r0["group"]
+            mcc_treenum = int(r0["treenum"])
+
+        entry = _state.register_mcc(
+            source_distmat=source_distmat,
+            mode="Between",
+            run=None,
+            uuid=uid,
+            mcc_tree={
+                "group": mcc_group,
+                "treenum": mcc_treenum,
+                "tree_name": mcc_tree_name,
+            },
+            selection=[[g, int(t)] for g, t in selected_pairs],
+            log_clade_credibility=(None if log_clade_cred is None
+                                   else float(log_clade_cred)),
+            mcc_log_posterior=extract_log_posterior(mcc_row),
+        )
+        registered_name = entry["name"]
+        add_log(
+            f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) "
+            f"as {uid}; registered as {registered_name}"
+        )
         notification = dmc.Notification(
             title="MCC Tree Ready",
-            message=f"MCC tree is '{mcc_name}' (from {len(matched)} selected) — opening in PearTree…",
+            message=(
+                f"MCC tree {registered_name} (from {len(matched)} selected) "
+                "— opening in PearTree…"
+            ),
             color="green", action="show", autoClose=4000, id=notif_id())
-        return {"uuid": uid, "name": mcc_name}, notification
+        # Clear the red selection ring once the MCC has been computed:
+        # the user has moved on to looking at the green ring + the
+        # peartree window, and a stale red ring just clutters the plot.
+        return ({"uuid": uid, "name": registered_name},
+                _state.get_mcc_registry(),
+                [],
+                notification)
 
     # Clientside: when the view-mcc store changes, open the peartree
     # viewer. In desktop pywebview mode we call the Python-side JS API

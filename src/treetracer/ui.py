@@ -354,9 +354,9 @@ def _add_diagnostics_panel():
 
             # Per-matrix MCC registry summary + Clade-Frequency
             # comparison controls (two MCC dropdowns + Compare button).
-            # The dropdowns and button live here, immediately under the
-            # MCC table they pull from, so picking and comparing happen
-            # in the same visual unit.
+            # The dropdowns and button sit at the top of this paper,
+            # with the MCC table immediately below them, so picking
+            # and comparing happen in the same visual unit.
             #
             # Output (scatter + tanglegram) renders into the separate
             # ``_add_clade_freq_panel`` below — those plots get heavy
@@ -367,7 +367,13 @@ def _add_diagnostics_panel():
             # matrix; driven by ``render_diagnostics_mcc_panel`` in
             # callbacks/diagnostics.py.
             dmc.Paper([
-                html.Div(id="diagnostics-mcc-list"),
+                # Layout order: "MCC trees for <matrix>" title, then
+                # the Compare-clade dropdowns + button, then the
+                # registered-MCC table itself. Title and table are
+                # two separate slots so the dropdowns can sit between
+                # them without being re-rendered (and losing state)
+                # every time the registry updates.
+                html.Div(id="diagnostics-mcc-title"),
                 dmc.Space(h=10),
                 dmc.Group([
                     dmc.Select(
@@ -400,6 +406,8 @@ def _add_diagnostics_panel():
                         style={"alignSelf": "flex-end"},
                     ),
                 ], gap="md", align="flex-end"),
+                dmc.Space(h=10),
+                html.Div(id="diagnostics-mcc-list"),
             ], p="md", withBorder=True, radius="sm",
                id="diagnostics-mcc-paper",
                style={"display": "none"}),

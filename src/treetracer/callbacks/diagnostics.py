@@ -952,6 +952,7 @@ def register_diagnostics_callbacks():
     # is viewing the matrix as a whole. Follow-up PRs can wire
     # post-processing actions onto a clicked row.
     @callback(
+        Output("diagnostics-mcc-title", "children"),
         Output("diagnostics-mcc-list", "children"),
         Output("diagnostics-mcc-paper", "style"),
         Input("mcc-registry-store", "data"),
@@ -960,15 +961,14 @@ def register_diagnostics_callbacks():
     def render_diagnostics_mcc_panel(registry, selected_matrix):
         from .mcc_list import _table_for
         if not registry or not selected_matrix:
-            return html.Div(), {"display": "none"}
+            return html.Div(), html.Div(), {"display": "none"}
         matched = [e for e in registry
                    if e.get("source_distmat") == selected_matrix]
         if not matched:
-            return html.Div(), {"display": "none"}
-        return dmc.Stack([
-            dmc.Title(f"MCC trees for {selected_matrix}", order=5),
-            _table_for(matched, show_mode=True),
-        ], gap="sm"), {}
+            return html.Div(), html.Div(), {"display": "none"}
+        title = dmc.Title(f"MCC trees for {selected_matrix}", order=5)
+        table = _table_for(matched, show_mode=True)
+        return title, table, {}
 
     # ─── Pseudo-ESS section ────────────────────────────────────────────
     # Two callbacks own the per-run table + Compute button. Both react

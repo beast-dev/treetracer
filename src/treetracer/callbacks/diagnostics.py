@@ -1,4 +1,4 @@
-from dash import dcc, html, callback, Input, Output, State, no_update, ctx, ALL
+from dash import dcc, html, callback, Input, Output, State, no_update, ctx, ALL, Patch
 import dash_mantine_components as dmc
 import plotly.express as px
 import plotly.graph_objects as go
@@ -141,17 +141,49 @@ def _build_scatter_fig(df_plot, label1, label2):
             "<extra></extra>"
         ),
     ))
+    # Trailing click-marker overlay (trace index 1). Empty until the
+    # user clicks a point; ``update_click_marker`` Patches its x/y to
+    # surround the clicked dot with a hollow red circle. We use
+    # ``go.Scatter`` (SVG) for this — only ever one marker, so the
+    # SVG cost is negligible, and SVG supports ``marker.line`` for the
+    # ring outline (WebGL doesn't).
+    fig.add_trace(go.Scatter(
+        x=[], y=[],
+        mode="markers",
+        marker=dict(
+            size=16,
+            color="rgba(0,0,0,0)",
+            line=dict(color="#e63946", width=2.5),
+            symbol="circle",
+        ),
+        hoverinfo="skip",
+        showlegend=False,
+        name="selected",
+    ))
     fig.update_layout(
         template="simple_white",
         xaxis=dict(title=f"Frequency — {label1}", range=[-0.02, 1.02]),
         yaxis=dict(title=f"Frequency — {label2}", range=[-0.02, 1.02]),
         margin=dict(l=60, r=20, t=30, b=50),
         height=450,
-        clickmode="event+select",
+        # Pure ``event`` mode — Plotly fires clickData on every click
+        # cleanly. We draw the click-marker ourselves via Patch (see
+        # ``update_click_marker`` below) rather than relying on the
+        # ``+select`` auto-grey, which on Scattergl is intermittent.
+        # The ``store_scatter_click`` callback also stamps a nonce so
+        # identical click payloads still propagate through dcc.Store.
+        # dcc.Store.
+        clickmode="event",
     )
     return fig
 
 def register_diagnostics_callbacks():
+    # Monotonic counter that gets stamped on every scatter-plot click
+    # payload (see ``store_scatter_click`` below). Without a unique
+    # value, ``dcc.Store`` deduplicates identical click data and the
+    # downstream tanglegram callback doesn't fire — producing the
+    # "first click does nothing, second click works" behaviour.
+    _click_counter = 0
 
     @callback(
         Output("lnl-trace-plot", "children"),
@@ -980,7 +1012,14 @@ def register_diagnostics_callbacks():
         callback; ``draw_tanglegram`` uses it together with the
         per-distmat canonical-keys cache to resolve the actual tip
         names to highlight.
+
+        The ``_t`` nonce is set to a unique counter each time so
+        ``dcc.Store`` does not deduplicate identical click payloads
+        (e.g. clicking the same point twice). Without it, Plotly's
+        first click on a point sometimes appears to "do nothing"
+        because the store value matches the previous click.
         """
+        nonlocal _click_counter
         if not click_data or not click_data.get("points"):
             return no_update
         point = click_data["points"][0]
@@ -988,12 +1027,42 @@ def register_diagnostics_callbacks():
         if custom is None:
             return no_update
         try:
+            _click_counter += 1
             return {
                 "split_id":   int(custom[0]),
                 "clade_size": int(custom[1]),
+                "x":          float(point["x"]),
+                "y":          float(point["y"]),
+                "_t":         _click_counter,
             }
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, KeyError):
             return no_update
+
+    @callback(
+        Output("clade-freq-scatter", "figure", allow_duplicate=True),
+        Input("clade-freq-click-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_click_marker(click_data):
+        """Patch only the overlay trace (index 1) on the scatter to
+        place a hollow red circle around the clicked point.
+
+        Returns a ``Patch`` so Plotly never redraws the 40k-point
+        Scattergl trace — only the single-point overlay updates.
+        Rebuilds via the Compare button reset this overlay back to
+        empty, which is the right behaviour (a fresh comparison
+        clears the previous click).
+        """
+        if not click_data:
+            return no_update
+        x = click_data.get("x")
+        y = click_data.get("y")
+        if x is None or y is None:
+            return no_update
+        patch = Patch()
+        patch["data"][1]["x"] = [x]
+        patch["data"][1]["y"] = [y]
+        return patch
 
     @callback(
         Output("clade-freq-tanglegram", "children"),

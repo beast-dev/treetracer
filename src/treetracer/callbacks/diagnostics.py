@@ -1062,16 +1062,22 @@ def register_diagnostics_callbacks():
     # ------ Clade Frequency Comparison: enable Compare button ------
     
     @callback(
-        Output("clade-freq-plot", "children", allow_duplicate=True),
+        Output("clade-freq-scatter", "figure", allow_duplicate=True),
         Input("clade-freq-min-clade-size", "value"),
         State("clade-freq-data-store", "data"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
         prevent_initial_call=True,
     )
-    def filter_clade_freq_plot(min_clade_size, store_data, uid1, uid2):
-        """Re-render the scatter plot when the min clade size slider changes.
-        No recomputation — reads from the stored DataFrame."""
+    def filter_clade_freq_plot(min_clade_size, store_data):
+        """Filter the scatter on min-clade-size slider changes.
+
+        Patches only ``data[0]`` (the Scattergl trace) — x/y/customdata/
+        marker.color — so Plotly doesn't rebuild the figure or remount
+        the dcc.Graph on every drag tick. The click-marker overlay
+        (trace 1) is left intact, which means a previously-clicked
+        point's red ring can land on a filtered-away coordinate; the
+        user just re-clicks if they want it on a currently-visible
+        point.
+        """
         if not store_data:
             return no_update
 
@@ -1079,18 +1085,14 @@ def register_diagnostics_callbacks():
         min_size = int(min_clade_size or 2)
         df_plot = df[df["clade_size"] >= min_size]
 
-        entry1 = state.get_mcc_registry_entry(uid1)
-        entry2 = state.get_mcc_registry_entry(uid2)
-        label1 = entry1["name"] if entry1 else "Group 1"
-        label2 = entry2["name"] if entry2 else "Group 2"
-
-        fig = _build_scatter_fig(df_plot, label1, label2)
-        return dcc.Graph(
-            id="clade-freq-scatter",
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"width": "100%"},
+        patch = Patch()
+        patch["data"][0]["x"] = df_plot["freq_1"].tolist()
+        patch["data"][0]["y"] = df_plot["freq_2"].tolist()
+        patch["data"][0]["customdata"] = (
+            df_plot[["split_id", "clade_size"]].values.tolist()
         )
+        patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
+        return patch
 
     @callback(
         Output("clade-freq-compare-button", "disabled"),

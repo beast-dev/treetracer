@@ -1358,3 +1358,30 @@ def register_diagnostics_callbacks():
         )
         return fig, [uid1, uid2]
 
+    @callback(
+        Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
+        Input("tanglegram-yscale-slider", "value"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        prevent_initial_call=True,
+    )
+    def update_tanglegram_height(px_per_tip, uid1, uid2):
+        """Slide-to-resize. The tanglegram's height scales with the
+        number of tips × the slider value. Patches only
+        ``layout.height`` so the 7-trace figure doesn't get rebuilt
+        on every slider drag tick.
+
+        No-ops when no MCC pair is selected yet (slider has nothing
+        to resize against) or when the layout cache is cold (no
+        click has rendered the tanglegram yet).
+        """
+        if not uid1 or not uid2:
+            return no_update
+        layout = _get_tanglegram_layout(uid1, uid2)
+        if layout is None:
+            return no_update
+        px_per_tip = px_per_tip or 1
+        patch = Patch()
+        patch["layout"]["height"] = max(300, int(layout["max_y"] * px_per_tip) + 60)
+        return patch
+

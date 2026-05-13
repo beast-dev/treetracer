@@ -392,11 +392,14 @@ def _build_scatter_fig(df_plot, label1, label2):
         # reliably through clickData than a raw numpy 2D array — without
         # it some Plotly versions drop customdata or pass it as a flat
         # array, which breaks the click→tanglegram resolution below.
-        customdata=df_plot[["split_id", "clade_size"]].values.tolist(),
+        customdata=df_plot[
+            ["split_id", "clade_size", "mcc_membership"]
+        ].values.tolist(),
         hovertemplate=(
             "<b>Clade (%{customdata[1]} tips)</b><br>"
             "Group 1: %{x:.3f}<br>"
-            "Group 2: %{y:.3f}"
+            "Group 2: %{y:.3f}<br>"
+            "In: %{customdata[2]}"
             "<extra></extra>"
         ),
     ))
@@ -1172,7 +1175,7 @@ def register_diagnostics_callbacks():
         patch["data"][0]["x"] = df_plot["freq_1"].tolist()
         patch["data"][0]["y"] = df_plot["freq_2"].tolist()
         patch["data"][0]["customdata"] = (
-            df_plot[["split_id", "clade_size"]].values.tolist()
+            df_plot[["split_id", "clade_size", "mcc_membership"]].values.tolist()
         )
         patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
         return patch
@@ -1279,6 +1282,22 @@ def register_diagnostics_callbacks():
                 c="dimmed", size="sm",
             ), no_update, no_update
 
+        # Pre-render a human-readable membership label per row for
+        # the scatter hover. Stored in the DataFrame so the slider
+        # callback can patch ``customdata`` without rebuilding the
+        # mapping.
+        label1_h = entry1["name"]
+        label2_h = entry2["name"]
+        membership_labels = []
+        for in1, in2 in zip(df["in_mcc_1"], df["in_mcc_2"]):
+            if in1 and in2:
+                membership_labels.append("both MCC trees")
+            elif in1:
+                membership_labels.append(f"{label1_h} only")
+            else:
+                membership_labels.append(f"{label2_h} only")
+        df["mcc_membership"] = membership_labels
+
         # Integer row id replaces the old fragile comma-joined string.
         # The click-handler + tanglegram callbacks resolve split_id to
         # tip names via state.get_canonical_keys at render time.
@@ -1305,7 +1324,7 @@ def register_diagnostics_callbacks():
         # re-running the clade-membership check.
         store_data = df[[
             "split_id", "freq_1", "freq_2", "clade_size",
-            "in_mcc_1", "in_mcc_2",
+            "in_mcc_1", "in_mcc_2", "mcc_membership",
         ]].to_dict("records")
 
         min_size = int(min_clade_size or 2)

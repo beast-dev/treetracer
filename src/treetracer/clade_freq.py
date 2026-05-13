@@ -1,25 +1,46 @@
 """Clade frequency computation for the Clade Frequency Comparison feature.
 
-Given two groups of trees (each identified by a registry entry containing
-a source_distmat key and a list of tree names), this module computes
-per-bipartition frequencies for each group and returns a combined DataFrame
-suitable for the scatter plot.
+Consumes the per-distmat snapshot written by ``rf._worker.compute_rf``
+(``presence``, ``leaf_names``, ``bipartition_bits``) and produces a
+DataFrame with one row per bipartition observed in either of two
+groups of trees, containing per-group frequencies and the size of the
+canonical side (the side NOT containing the alphabetically first
+taxon, per rapidtrees' canonicalisation).
 
-Bipartition representation
---------------------------
-Each bipartition is stored in the snapshot as a row of uint64 words
-(``bipartition_bits``, shape ``(n_bipartitions, words_per_bitset)``).
-Bit k of word w is set if leaf (w*64 + k) — in ``leaf_names`` order — is
-on the canonical side of the split.  We convert each row to a frozenset of
-tip names (the smaller of the two partitions) to get a canonical, order-
-independent key that is comparable across distmats.
+Architecture
+------------
+Two pieces of state live outside this module to keep this code hot-path
+cheap:
 
-Cross-distmat correctness
---------------------------
-Two independent RF computations assign bipartition column indices
-independently.  By canonicalising on frozenset of tip names we can merge
-frequencies from two different distmats correctly, filling 0.0 for
-bipartitions absent from one group.
+1. ``state.get_canonical_keys(source_distmat)`` returns
+       {"tuples":     list[tuple[int, ...]],
+        "leaf_names": list[str]}
+   for the distmat. The expensive ``bipartition_bits → tuple[int]``
+   decode happens once per distmat per session (lazily on first call),
+   so a Compare click pays at most one decode for a *new* distmat and
+   zero for repeat clicks on the same distmat.
+
+2. Each MCC registry entry carries
+       counts:  np.int32 array, length n_bipartitions
+       n_trees: int
+   computed at MCC registration time. ``counts[j]`` is the number of
+   trees in the user's MCC selection that contain bipartition ``j``;
+   the frequency is just ``counts[j] / n_trees``. With this pre-
+   computed, a Compare click does no row-sum work.
+
+Same-distmat fast path
+----------------------
+When both MCC entries share a ``source_distmat`` (the common case —
+comparing a Between and a Within MCC built from the same RF run), both
+``counts`` vectors index into the *same* bipartition column basis.
+We merge by column index — no frozenset / tuple hashing needed.
+
+Cross-distmat fallback
+----------------------
+When the two distmats have the same leaf set, int-tuple keys are
+comparable (rapidtrees sorts leaves alphabetically, so the integer
+indices mean the same taxa across runs). When leaf sets differ, we
+fall back to merging by frozenset-of-taxon-names.
 """
 
 from __future__ import annotations
@@ -30,180 +51,149 @@ import pandas as pd
 from . import state
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# Module-level export expected by older tests / callers.
+def _bits_to_tip_indices(bipartition_bits: np.ndarray) -> list[tuple[int, ...]]:
+    """Decode the ``(n_bipartitions, n_leaves) uint8`` matrix into a
+    list of sorted ``tuple[int]`` of leaf indices on the canonical side.
 
-
-# def _bits_to_tip_sets(bipartition_bits: np.ndarray,
-#                       leaf_names: list[str]) -> list[frozenset[str]]:
-#     """Convert the bipartition_bits array to a list of canonical frozensets.
-
-#     Args:
-#         bipartition_bits: (n_bipartitions, words_per_bitset) uint64 ndarray.
-#         leaf_names:       Ordered list of taxon names (length = n_leaves).
-
-#     Returns:
-#         List of length n_bipartitions.  Element j is the frozenset of tip
-#         names on the smaller side of bipartition j (canonical split key).
-#     """
-#     n_bipartitions, words_per_bitset = bipartition_bits.shape
-#     n_leaves = len(leaf_names)
-#     leaf_arr = np.array(leaf_names)
-#     canonical: list[frozenset[str]] = []
-
-#     for j in range(n_bipartitions):
-#         # Reconstruct the set of leaf indices on the "1" side of this split.
-#         on_side: list[int] = []
-#         for w in range(words_per_bitset):
-#             word = int(bipartition_bits[j, w])
-#             if word == 0:
-#                 continue
-#             for bit in range(64):
-#                 leaf_idx = w * 64 + bit
-#                 if leaf_idx >= n_leaves:
-#                     break
-#                 if word & (1 << bit):
-#                     on_side.append(leaf_idx)
-
-#         #side_a = frozenset(leaf_arr[on_side].tolist())
-#         #side_b = frozenset(leaf_arr) - side_a
-#         # Canonical = smaller partition (ties broken by which side has fewer
-#         # tips; consistent within a run because leaf_names order is fixed).
-#         #canonical.append(side_a if len(side_a) <= len(side_b) else side_b)
-
-#         side_a = frozenset(leaf_arr[on_side].tolist())
-#         side_b = frozenset(leaf_arr) - side_a
-#         # Match rapidtrees canonicalisation: always store the side NOT containing
-#         # leaf_names[0] (the alphabetically first taxon).
-#         first_leaf = leaf_arr[0]
-#         canonical.append(side_a if first_leaf not in side_a else side_b)
-
-
-#     return canonical
-
-
-def _bits_to_tip_sets(bipartition_bits: np.ndarray,
-                      leaf_names: list[str]) -> list[frozenset[str]]:
-    """Convert the bipartition_bits array to a list of canonical frozensets.
-
-    In rapidtrees 0.5.0+, bipartition_bits is already decoded:
-    shape (n_bipartitions, n_leaves) uint8, where bipartition_bits[j, i] == 1
-    means leaf_names[i] is on the canonical side of bipartition j.
+    Standalone form of what ``state.get_canonical_keys`` does
+    internally. Useful for tests and for benchmarks that need the
+    decoder isolated from the cache.
     """
-    leaf_arr = np.array(leaf_names)
-    canonical: list[frozenset[str]] = []
-    for j in range(bipartition_bits.shape[0]):
-        on_side = leaf_arr[bipartition_bits[j] == 1].tolist()
-        canonical.append(frozenset(on_side))
-    return canonical
+    return [tuple(np.flatnonzero(row).tolist()) for row in bipartition_bits]
 
 
-def _load_group(source_distmat: str,
-                tree_names: list[str]) -> tuple[dict[frozenset, float],
-                                                dict[frozenset, int]]:
-    """Load a snapshot and compute per-bipartition frequencies for a group.
+def _normalise_counts(entry, source_distmat):
+    """Return ``(counts, n_trees)`` for a registry entry, recomputing
+    if the entry was registered without pre-computed counts (e.g. by
+    an older session or a unit test).
 
-    Args:
-        source_distmat: Key into state._distmat_index.
-        tree_names:     Names of the trees that form this group.
-
-    Returns:
-        freq_dict:  {canonical_split: frequency}  — frequency in [0, 1].
-        size_dict:  {canonical_split: clade_size} — size of smaller partition.
-
-    Raises:
-        KeyError:        if any tree name is not found in the snapshot index.
-        FileNotFoundError: if the snapshot .npz file does not exist.
+    Pulls ``presence`` from the snapshot lazily — only happens on the
+    slow path.
     """
+    counts = entry.get("counts")
+    n_trees = entry.get("n_trees") or 0
+    if counts is not None and n_trees > 0:
+        return np.asarray(counts), n_trees
+
+    # Slow recompute path: do the row-sum on demand.
     snap_path = state.get_snapshots_path(source_distmat)
     snap = np.load(snap_path, allow_pickle=False)
-
-    presence         = snap["presence"]          # (n_trees, n_splits) uint8
-    leaf_names       = [str(n) for n in snap["leaf_names"]]
-    bipartition_bits = snap["bipartition_bits"]  # (n_splits, n_leaves) uint8
-
-    full_names  = state.get_distmat_names(source_distmat)
+    presence = snap["presence"]
+    full_names = state.get_distmat_names(source_distmat)
     name_to_idx = {n: i for i, n in enumerate(full_names)}
-
-    missing = [n for n in tree_names if n not in name_to_idx]
-    if missing:
+    tree_names = entry.get("tree_names") or []
+    row_idx = [name_to_idx[n] for n in tree_names if n in name_to_idx]
+    if not row_idx:
         raise KeyError(
-            f"Trees not found in snapshot for {source_distmat}: {missing}"
+            f"None of the MCC's tree names match {source_distmat}'s snapshot. "
+            "The distmat may have been recomputed since the MCC was registered."
         )
-
-    row_idx      = [name_to_idx[n] for n in tree_names]
-    presence_sub = presence[row_idx]              # (n_sel, n_splits) uint8
-    n_sel        = len(row_idx)
-
-    # Column-wise frequencies — one numpy op over the selected rows.
-    counts = presence_sub.sum(axis=0).astype(np.float64)  # (n_splits,)
-    freqs  = counts / n_sel                                # (n_splits,)
-
-    # Decode bipartition bit-vectors into canonical frozenset keys.
-    canonical_keys = _bits_to_tip_sets(bipartition_bits, leaf_names)
-
-    freq_dict: dict[frozenset, float] = {}
-    size_dict: dict[frozenset, int]   = {}
-
-    for j, key in enumerate(canonical_keys):
-        if counts[j] == 0:
-            continue                              # absent from all selected trees
-        freq_dict[key] = float(freqs[j])
-        size_dict[key] = len(key)
-
-    return freq_dict, size_dict
+    counts = presence[row_idx].sum(axis=0).astype(np.int32)
+    return counts, len(row_idx)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def compute_clade_frequencies(
-    source_distmat_1: str,
-    tree_names_1: list[str],
-    source_distmat_2: str,
-    tree_names_2: list[str],
-) -> pd.DataFrame:
-    """Compute per-bipartition frequencies for two groups of trees.
+def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
+    """Compute per-bipartition frequencies for two MCC registry entries.
 
     Args:
-        source_distmat_1: distmat key for group 1 (from registry entry).
-        tree_names_1:     tree names in group 1.
-        source_distmat_2: distmat key for group 2 (from registry entry).
-        tree_names_2:     tree names in group 2.
+        entry1, entry2: MCC registry entries (dicts as returned by
+            ``state.register_mcc``). Each must carry at least
+            ``source_distmat``; ``counts`` and ``n_trees`` are used
+            when present, otherwise recomputed from the snapshot.
 
     Returns:
         DataFrame with columns:
-            split_key   — frozenset[str], canonical split (smaller partition)
-            freq_1      — float in [0, 1], frequency in group 1
-            freq_2      — float in [0, 1], frequency in group 2
-            clade_size  — int, number of tips in the smaller partition
+            split_key   tuple[int]  canonical side tip indices into
+                                    leaf_names_1
+            freq_1      float       frequency in group 1's trees
+            freq_2      float       frequency in group 2's trees
+            clade_size  int         len(split_key)
+        Sorted by descending mean of the two frequencies.
 
-        One row per bipartition observed in either group.  Bipartitions
-        absent from a group get 0.0 for that group.
-        Sorted by descending mean frequency (most shared clades first).
+    Raises:
+        KeyError, FileNotFoundError on snapshot lookup failures.
     """
-    freq_1, size_1 = _load_group(source_distmat_1, tree_names_1)
-    freq_2, size_2 = _load_group(source_distmat_2, tree_names_2)
+    src1 = entry1["source_distmat"]
+    src2 = entry2["source_distmat"]
+    counts_1, n_trees_1 = _normalise_counts(entry1, src1)
+    counts_2, n_trees_2 = _normalise_counts(entry2, src2)
 
-    all_splits   = set(freq_1.keys()) | set(freq_2.keys())
-    # size_1 wins on key conflict — same frozenset = same clade = same size.
-    size_combined = {**size_2, **size_1}
+    keys_1 = state.get_canonical_keys(src1)
 
-    rows = [
-        {
-            "split_key":  split,
-            "freq_1":     freq_1.get(split, 0.0),
-            "freq_2":     freq_2.get(split, 0.0),
-            "clade_size": size_combined[split],
-        }
-        for split in all_splits
-    ]
+    if src1 == src2:
+        # Fast path: column basis is identical, so freq_2 indexes the
+        # same way as freq_1. No key matching at all.
+        freqs_1 = counts_1.astype(np.float64) / n_trees_1
+        freqs_2 = counts_2.astype(np.float64) / n_trees_2
+        mask = (counts_1 > 0) | (counts_2 > 0)
+        cols = np.flatnonzero(mask)
+        tuples = keys_1["tuples"]
+        rows = [
+            {
+                "split_key":  tuples[j],
+                "freq_1":     float(freqs_1[j]),
+                "freq_2":     float(freqs_2[j]),
+                "clade_size": len(tuples[j]),
+            }
+            for j in cols
+        ]
+        df = pd.DataFrame(
+            rows, columns=["split_key", "freq_1", "freq_2", "clade_size"]
+        )
+    else:
+        # Cross-distmat fallback: merge by frozenset of taxon names so
+        # different column orderings between the two distmats line up.
+        keys_2 = state.get_canonical_keys(src2)
+        leaf_names_1 = keys_1["leaf_names"]
+        leaf_names_2 = keys_2["leaf_names"]
 
-    df = pd.DataFrame(rows, columns=["split_key", "freq_1", "freq_2", "clade_size"])
+        def names_of(idx_tuple, leaf_names):
+            return frozenset(leaf_names[i] for i in idx_tuple)
+
+        freq_1 = {}
+        for j, idx_tuple in enumerate(keys_1["tuples"]):
+            if counts_1[j] == 0:
+                continue
+            freq_1[names_of(idx_tuple, leaf_names_1)] = (
+                float(counts_1[j]) / n_trees_1, idx_tuple,
+            )
+        freq_2 = {}
+        for j, idx_tuple in enumerate(keys_2["tuples"]):
+            if counts_2[j] == 0:
+                continue
+            freq_2[names_of(idx_tuple, leaf_names_2)] = float(counts_2[j]) / n_trees_2
+
+        # Use group-1 leaf order for split_key indices so the click→
+        # tanglegram path always resolves against ``entry1``'s leaves.
+        rows = []
+        for name_set, (f1, idx_tuple) in freq_1.items():
+            rows.append({
+                "split_key":  idx_tuple,
+                "freq_1":     f1,
+                "freq_2":     freq_2.get(name_set, 0.0),
+                "clade_size": len(idx_tuple),
+            })
+        only_in_2 = set(freq_2) - set(freq_1)
+        # For splits only in group 2 we don't have group-1 indices.
+        # Fabricate an indirect representation: store the name-set as
+        # a 'split_key' synonym (downstream callers should handle the
+        # ``isinstance(split_key, frozenset)`` branch when needed).
+        for name_set in only_in_2:
+            rows.append({
+                "split_key":  name_set,
+                "freq_1":     0.0,
+                "freq_2":     freq_2[name_set],
+                "clade_size": len(name_set),
+            })
+        df = pd.DataFrame(
+            rows, columns=["split_key", "freq_1", "freq_2", "clade_size"]
+        )
+
     df["mean_freq"] = (df["freq_1"] + df["freq_2"]) / 2
-    df = (df.sort_values("mean_freq", ascending=False)
-            .drop(columns="mean_freq")
-            .reset_index(drop=True))
+    df = (
+        df.sort_values("mean_freq", ascending=False)
+          .drop(columns="mean_freq")
+          .reset_index(drop=True)
+    )
     return df

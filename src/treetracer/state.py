@@ -20,6 +20,20 @@ _distmat_index = {}  # name -> {"names": list[str], "path": str, "file_breakdown
 _distmat_counter = 0  # auto-incrementing ID for unique matrix names
 _MAX_DISTMATS = 50   # evict oldest when exceeded
 
+# Per-distmat decode cache for the Clade Frequency Comparison pipeline.
+#
+# ``bipartition_bits`` from the snapshot is an (n_splits, n_leaves) uint8
+# matrix. We turn each row into a sorted ``tuple[int]`` of leaf indices
+# (the canonical side, as defined by rapidtrees: "side NOT containing
+# leaf 0"). Storing these as int-tuples instead of frozensets-of-strings
+# is ~5× faster to decode and ~5× smaller (8.5 MB vs 40 MB for a
+# 41k-bipartition / 283-taxon distmat, measured in bench_clade_freq.py).
+#
+# Lazily populated on first ``get_canonical_keys(name)`` call. Cleared
+# in ``clear_all_distmats`` so the cache lifetime is bound to the
+# underlying snapshot's lifetime.
+_distmat_canonical_keys = {}  # name -> {"tuples": list[tuple[int,...]], "leaf_names": list[str]}
+
 
 def _ensure_tmpdir():
     global _tmpdir
@@ -167,7 +181,12 @@ def get_distmat_groups_with_counts(name):
 
 
 def clear_all_distmats():
-    """Remove all .npy files from disk and reset the index."""
+    """Remove all .npy files from disk and reset the index.
+
+    Also drops the lazy canonical-keys cache used by the Clade
+    Frequency Comparison feature — those decoded tuples become stale
+    the moment their backing snapshots disappear.
+    """
     global _distmat_counter
     for entry in _distmat_index.values():
         try:
@@ -175,7 +194,44 @@ def clear_all_distmats():
         except OSError:
             pass
     _distmat_index.clear()
+    _distmat_canonical_keys.clear()
     _distmat_counter = 0
+
+
+def get_canonical_keys(source_distmat):
+    """Lazily decode and cache the per-bipartition canonical-side tip
+    index tuples for *source_distmat*.
+
+    Returns a dict::
+
+        {"tuples": list[tuple[int, ...]],  # one per bipartition column
+         "leaf_names": list[str]}          # leaf_names[i] is the taxon
+                                           # at index i in each tuple
+
+    The tuple encoding is what the Clade Frequency Comparison feature
+    uses for cross-distmat split matching when the leaf sets agree
+    (the common case) and for the scatter→tanglegram highlight
+    resolution (look up names via ``leaf_names[i] for i in tuple``).
+
+    Raises FileNotFoundError if the snapshot is missing on disk.
+    """
+    cached = _distmat_canonical_keys.get(source_distmat)
+    if cached is not None:
+        return cached
+    snap = np.load(get_snapshots_path(source_distmat), allow_pickle=False)
+    if "bipartition_bits" not in snap.files:
+        raise KeyError(
+            f"snapshot for {source_distmat!r} has no 'bipartition_bits' — "
+            "regenerate with rapidtrees ≥ 0.5.0."
+        )
+    bits = snap["bipartition_bits"]
+    tuples = [tuple(np.flatnonzero(row).tolist()) for row in bits]
+    leaf_names = [str(n) for n in snap["leaf_names"]]
+    _distmat_canonical_keys[source_distmat] = {
+        "tuples":     tuples,
+        "leaf_names": leaf_names,
+    }
+    return _distmat_canonical_keys[source_distmat]
 
 
 # ---------------------------------------------------------------------------
@@ -297,16 +353,26 @@ def _next_mcc_name(source_distmat, mode, run):
 
 def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
                  selection, log_clade_credibility,
-                 mcc_log_posterior=None, tree_names=None):
+                 mcc_log_posterior=None, tree_names=None,
+                 counts=None):
     """Append a new MCC registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
     registry is at cap, keeping list and cache strictly synchronised.
 
     ``tree_names`` is the flat list of "group/STATE_N" tree names from
-    the user's selection — stored so the Clade Frequency Comparison
-    feature can index into the snapshot presence matrix without
-    re-deriving names from the selection pairs.
+    the user's selection — kept for provenance + the cross-distmat
+    fallback in the Clade Frequency Comparison feature.
+
+    ``counts`` is the pre-computed column-sum of the snapshot's
+    presence matrix over the selected rows: a numpy uint32/int32 array
+    of length ``n_bipartitions``. Caller computes this from
+    ``presence[row_idx].sum(axis=0)`` while it already has
+    ``presence_sub`` in scope (in ``mcc.compute_mcc_for_selection``).
+    Caching at registration time means Compare clicks don't pay the
+    row-sum cost. Optional — registry stays usable without it but
+    falls back to the slow recompute path in
+    ``clade_freq.compute_clade_frequencies``.
     """
     global _mcc_registry
     if len(_mcc_registry) >= _MAX_MCC_REGISTRY:
@@ -325,6 +391,8 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
         "mcc_log_posterior": mcc_log_posterior,
         "tree_names": list(tree_names) if tree_names is not None else [],
         "n_trees": len(tree_names) if tree_names is not None else 0,
+        "counts": (np.asarray(counts, dtype=np.int32)
+                   if counts is not None else None),
         "created_at": time.time(),
     }
     _mcc_registry.append(entry)

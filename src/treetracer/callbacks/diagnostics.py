@@ -14,6 +14,19 @@ from ..ess import compute_pseudo_ess
 from .. import state
 from ..theme import get_template
 from ..clade_freq import compute_clade_frequencies
+
+
+# Server-side resolution table for the Clade Frequency scatter →
+# tanglegram round-trip. The scatter's ``customdata`` carries an
+# integer ``split_id`` (the row index in the DataFrame produced by
+# ``compute_clade_frequencies``); this dict maps that id to a
+# ``(source_distmat, split_key)`` pair so the click handler can
+# resolve back to actual tip names. Rebuilt on every Compare click.
+#
+# Keeping the keys server-side avoids serialising 40k frozensets of
+# strings (or tuples of ints) through the browser store, and dodges
+# the previous fragile ", ".join(sorted(s)) → ",".split() round-trip.
+_split_resolution: dict[int, tuple[str, object]] = {}
 from ..newick_layout import parse_nexus, build_tree_traces, build_connector_traces, _collect_nodes
 from ._helpers import _save_file_dialog
 
@@ -104,7 +117,12 @@ def _build_scatter_fig(df_plot, label1, label2):
             opacity=0.75,
             line=dict(width=0.5, color="white"),
         ),
-        customdata=df_plot[["split_label", "clade_size"]].values,
+        # customdata carries the row's split_id (integer key into the
+        # per-distmat canonical_keys cache) and clade_size. Using an
+        # integer ID dodges the previous fragile comma-joined-string
+        # round-trip — taxon names with embedded commas no longer break
+        # the click→tanglegram path.
+        customdata=df_plot[["split_id", "clade_size"]].values,
         hovertemplate=(
             "<b>Clade (%{customdata[1]} tips)</b><br>"
             "Group 1: %{x:.3f}<br>"
@@ -879,8 +897,8 @@ def register_diagnostics_callbacks():
         """Compute clade frequencies for the two selected MCC groups and
         render a scatter plot (freq group 1 vs freq group 2).
 
-        Each dot is one bipartition observed in either group.
-        Dot colour encodes clade_size (number of tips in smaller partition).
+        Each dot is one bipartition observed in either group. Dot colour
+        encodes clade_size (number of tips in the canonical side).
         Clicking a dot triggers the tanglegram callback.
         """
         if not uid1 or not uid2:
@@ -897,29 +915,35 @@ def register_diagnostics_callbacks():
             ), no_update
 
         try:
-            df = compute_clade_frequencies(
-                source_distmat_1=entry1["source_distmat"],
-                tree_names_1=entry1["tree_names"],
-                source_distmat_2=entry2["source_distmat"],
-                tree_names_2=entry2["tree_names"],
-            )
+            df = compute_clade_frequencies(entry1, entry2)
         except (KeyError, FileNotFoundError) as e:
             return dmc.Text(
                 f"Error computing clade frequencies: {e}",
                 c="red", size="sm",
             ), no_update
 
-        # Serialise split_key for hover and click identification.
-        df["split_label"] = df["split_key"].apply(
-            lambda s: ", ".join(sorted(s))
-        )
+        # Integer row id replaces the old fragile comma-joined string.
+        # The click-handler + tanglegram callbacks resolve split_id to
+        # tip names via state.get_canonical_keys at render time.
+        df["split_id"] = np.arange(len(df), dtype=np.int32)
+
+        # Refresh the click-resolution table: split_id → (distmat,
+        # split_key). split_key is tuple[int] for the fast same-distmat
+        # case (resolved via canonical_keys["leaf_names"]) or
+        # frozenset[str] for the cross-distmat fallback (already names).
+        _split_resolution.clear()
+        src1 = entry1["source_distmat"]
+        for split_id, key in zip(df["split_id"].tolist(), df["split_key"].tolist()):
+            _split_resolution[int(split_id)] = (src1, key)
 
         label1 = entry1["name"]
         label2 = entry2["name"]
 
-        # Serialise full DataFrame for the slider callback.
-        # Exclude split_key (frozenset, not JSON-serialisable).
-        store_data = df[["split_label", "freq_1", "freq_2", "clade_size"]].to_dict("records")
+        # Serialise for the slider callback. split_key is a tuple[int]
+        # (or, in the rare cross-distmat fallback, a frozenset[str]) —
+        # neither is JSON-serialisable, so it stays server-side and we
+        # only ship the integer id through the browser.
+        store_data = df[["split_id", "freq_1", "freq_2", "clade_size"]].to_dict("records")
 
         min_size = int(min_clade_size or 2)
         df_plot = df[df["clade_size"] >= min_size]
@@ -938,7 +962,14 @@ def register_diagnostics_callbacks():
         prevent_initial_call=True,
     )
     def store_scatter_click(click_data):
-        """Forward a scatter plot click to the click store."""
+        """Forward a scatter plot click to the click store.
+
+        ``customdata`` is ``[split_id, clade_size]``. The split_id is an
+        integer row index in the DataFrame produced by the compute
+        callback; ``draw_tanglegram`` uses it together with the
+        per-distmat canonical-keys cache to resolve the actual tip
+        names to highlight.
+        """
         if not click_data or not click_data.get("points"):
             return no_update
         point = click_data["points"][0]
@@ -946,8 +977,8 @@ def register_diagnostics_callbacks():
         if not custom or len(custom) < 2:
             return no_update
         return {
-            "split_label": custom[0],
-            "clade_size":  custom[1],
+            "split_id":   int(custom[0]),
+            "clade_size": int(custom[1]),
         }
 
     @callback(
@@ -967,13 +998,41 @@ def register_diagnostics_callbacks():
         Layout: [0, 1] left tree (tips left) | [1, 1+GAP] connector gap |
         [1+GAP, 2+GAP] right tree (tips right). Both trees normalised to
         [0, 1] in x so root-to-tip distances are comparable.
+
+        The clicked split is identified by integer ``split_id`` only;
+        we look the actual tip names up in ``_split_resolution`` (set
+        by the Compare callback) and the per-distmat canonical_keys
+        cache. This avoids the previous comma-joined-string round-trip
+        that broke on taxa whose names contained ``", "``.
         """
         if not click_data or not uid1 or not uid2:
             return no_update
 
-        split_label = click_data.get("split_label", "")
-        if not split_label:
+        split_id = click_data.get("split_id")
+        if split_id is None:
             return no_update
+        resolved = _split_resolution.get(int(split_id))
+        if resolved is None:
+            return dmc.Text(
+                "Split lookup expired (run Compare again).",
+                c="dimmed", size="sm",
+            )
+        src, split_key = resolved
+        if isinstance(split_key, frozenset):
+            # Cross-distmat fallback: split_key already holds taxon names.
+            highlight = set(split_key)
+        else:
+            # Same-distmat fast path: tuple[int] of leaf indices, resolve
+            # against the source distmat's leaf_names ordering.
+            try:
+                canonical = state.get_canonical_keys(src)
+            except (KeyError, FileNotFoundError) as e:
+                return dmc.Text(
+                    f"Cannot resolve clicked split (missing snapshot for {src}): {e}",
+                    c="red", size="sm",
+                )
+            leaf_names = canonical["leaf_names"]
+            highlight = {leaf_names[i] for i in split_key}
 
         nexus1 = state.get_cached_mcc_tree(uid1)
         nexus2 = state.get_cached_mcc_tree(uid2)
@@ -989,8 +1048,6 @@ def register_diagnostics_callbacks():
             root2, _ = parse_nexus(nexus2)
         except Exception as e:
             return dmc.Text(f"Error parsing MCC trees: {e}", c="red", size="sm")
-
-        highlight = frozenset(t.strip() for t in split_label.split(",") if t.strip())
 
         nodes1 = _collect_nodes(root1)
         nodes2 = _collect_nodes(root2)

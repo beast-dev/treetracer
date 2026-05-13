@@ -27,8 +27,184 @@ from ..clade_freq import compute_clade_frequencies
 # strings (or tuples of ints) through the browser store, and dodges
 # the previous fragile ", ".join(sorted(s)) → ",".split() round-trip.
 _split_resolution: dict[int, tuple[str, object]] = {}
+
 from ..newick_layout import parse_nexus, build_tree_traces, build_connector_traces, _collect_nodes
 from ._helpers import _save_file_dialog
+
+
+# ---------------------------------------------------------------------------
+# Tanglegram caches
+# ---------------------------------------------------------------------------
+# Re-parsing the MCC NEXUS bytes on every scatter click was the dominant
+# cost of ``draw_tanglegram`` for big trees (~280 taxa = 100s of ms per
+# click). These two caches plus a deterministic trace layout in the
+# tanglegram figure let the callback Patch only the dynamic traces
+# (highlight markers + connectors) when the MCC pair hasn't changed.
+
+import functools
+
+
+@functools.lru_cache(maxsize=64)
+def _get_parsed_mcc(uid):
+    """Parse the cached NEXUS for an MCC uuid into a laid-out Node tree.
+
+    Cached so repeat clicks on a tanglegram don't re-parse the same
+    NEXUS file. Keyed on uuid — when an MCC is dropped from the LRU
+    cache its uuid is recycled, but since the cached_mcc_tree key
+    space is random-tokens, false hits are impossibly rare.
+    """
+    nexus = state.get_cached_mcc_tree(uid)
+    if nexus is None:
+        return None
+    root, _translate = parse_nexus(nexus)
+    return root
+
+
+@functools.lru_cache(maxsize=32)
+def _get_tanglegram_layout(uid1, uid2):
+    """Pre-computed layout values that don't depend on which clade is
+    highlighted — scales, tip plot-coordinates, plot height.
+
+    Returned dict keys:
+        root1, root2    laid-out Node roots (from the parsed cache)
+        scale1, scale2  per-tree x scale so both trees fit in [0, 1]
+        right_start     x_offset of the right tree (gap + 1.0)
+        tips1, tips2    dict[name, (plot_x, plot_y)] for fast highlight
+                        lookups; plot_x is post-scale, post-flip
+        max_y           tallest tip y across both trees, drives height
+        skeleton_traces 4 static traces (left branches+all-tips,
+                        right branches+all-tips)
+    """
+    root1 = _get_parsed_mcc(uid1)
+    root2 = _get_parsed_mcc(uid2)
+    if root1 is None or root2 is None:
+        return None
+
+    nodes1 = _collect_nodes(root1)
+    nodes2 = _collect_nodes(root2)
+    max_x1 = max(n.x for n in nodes1) or 1.0
+    max_x2 = max(n.x for n in nodes2) or 1.0
+    scale1 = 1.0 / max_x1
+    scale2 = 1.0 / max_x2
+
+    GAP = 0.3
+    right_start = 1.0 + GAP
+
+    # Skeleton: ``build_tree_traces(..., highlight=set())`` returns
+    # exactly 2 traces (branches + all-grey-tips) since no tip lands in
+    # the empty highlight set. That's our static base. Cast to plain
+    # dicts for cleaner Patch interaction downstream.
+    left_skeleton = build_tree_traces(
+        root1, x_offset=0.0, x_scale=scale1, x_flip=False,
+        highlight=set(),
+    )
+    right_skeleton = build_tree_traces(
+        root2, x_offset=right_start + 1.0, x_scale=scale2, x_flip=True,
+        highlight=set(),
+    )
+
+    def tip_plot_x(tip, x_offset, x_scale, x_flip):
+        scaled = tip.x * x_scale
+        return (x_offset - scaled) if x_flip else (x_offset + scaled)
+
+    tips1 = {
+        n.name: (tip_plot_x(n, 0.0, scale1, False), n.y)
+        for n in nodes1 if n.is_tip
+    }
+    tips2 = {
+        n.name: (tip_plot_x(n, right_start + 1.0, scale2, True), n.y)
+        for n in nodes2 if n.is_tip
+    }
+    max_y = max(
+        max((n.y for n in nodes1 if n.is_tip), default=0),
+        max((n.y for n in nodes2 if n.is_tip), default=0),
+    )
+
+    return {
+        "root1": root1,
+        "root2": root2,
+        "scale1": scale1,
+        "scale2": scale2,
+        "right_start": right_start,
+        "tips1": tips1,
+        "tips2": tips2,
+        "max_y": max_y,
+        "skeleton_traces": list(left_skeleton) + list(right_skeleton),
+    }
+
+
+# Dynamic-trace indices in the assembled tanglegram figure. The static
+# skeleton occupies the first 4 indices (2 per tree, lines + grey
+# markers); indices 4, 5, 6 are the dynamic overlays the click
+# callback patches.
+#
+#   0: left branches      (static)
+#   1: left grey tips     (static)
+#   2: right branches     (static)
+#   3: right grey tips    (static)
+#   4: left red highlight (dynamic)
+#   5: right red highlight(dynamic)
+#   6: red connectors     (dynamic)
+_TANGLEGRAM_HIGHLIGHT_LEFT  = 4
+_TANGLEGRAM_HIGHLIGHT_RIGHT = 5
+_TANGLEGRAM_CONNECTORS      = 6
+
+
+def _highlight_overlay_trace(tips_by_name, highlight):
+    """Build the red-marker overlay trace for one tree.
+
+    ``tips_by_name`` is the layout cache's tip-name → (x, y) dict.
+    Returns the trace as a plain dict so Patch can splat its
+    individual fields without ever going through a go.Scatter
+    constructor."""
+    xs, ys, names = [], [], []
+    for name in highlight:
+        coord = tips_by_name.get(name)
+        if coord is None:
+            continue
+        xs.append(coord[0])
+        ys.append(coord[1])
+        names.append(name)
+    return dict(
+        type="scatter",
+        x=xs, y=ys,
+        mode="markers",
+        marker=dict(color="#e63946", size=8),
+        text=names,
+        hovertemplate="%{text}<extra></extra>",
+        showlegend=False,
+    )
+
+
+def _connector_overlay_trace(tips1, tips2, highlight):
+    """Build the red-line connector overlay between the two trees for
+    all tip names in *highlight* that exist on both sides."""
+    xs, ys, names = [], [], []
+    for name in highlight:
+        c1 = tips1.get(name)
+        c2 = tips2.get(name)
+        if c1 is None or c2 is None:
+            continue
+        xs += [c1[0], c2[0], None]
+        ys += [c1[1], c2[1], None]
+        names.append(name)
+    return dict(
+        type="scatter",
+        x=xs, y=ys,
+        mode="lines",
+        line=dict(color="rgba(230,57,70,0.7)", width=2),
+        text=[n for n in names for _ in range(3)],
+        hovertemplate="%{text}<extra></extra>",
+        showlegend=False,
+    )
+
+
+def _tanglegram_title(label1, label2, highlight):
+    return (
+        f"<b>{label1}</b> ← "
+        f"  clade: {len(highlight)} tips  "
+        f"→ <b>{label2}</b>"
+    )
 
 
 def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
@@ -1065,179 +1241,120 @@ def register_diagnostics_callbacks():
         return patch
 
     @callback(
-        Output("clade-freq-tanglegram", "children"),
+        Output("clade-freq-tanglegram", "figure"),
+        Output("clade-freq-tanglegram-pair-store", "data"),
         Input("clade-freq-click-store", "data"),
         State("clade-freq-mcc-select-1", "value"),
         State("clade-freq-mcc-select-2", "value"),
         State("tanglegram-yscale-slider", "value"),
+        State("clade-freq-tanglegram-pair-store", "data"),
         prevent_initial_call=True,
     )
-    def draw_tanglegram(click_data, uid1, uid2, px_per_tip):
+    def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair):
         """Draw a tanglegram of the two MCC trees when a clade dot is clicked.
 
-        The selected clade's tips are highlighted in red on both trees and
-        connected by lines in the centre gap.
+        Two render paths:
 
-        Layout: [0, 1] left tree (tips left) | [1, 1+GAP] connector gap |
-        [1+GAP, 2+GAP] right tree (tips right). Both trees normalised to
-        [0, 1] in x so root-to-tip distances are comparable.
+        * **First click on a new MCC pair** — build the full figure
+          (7 traces: static skeleton for both trees + dynamic overlays
+          for the highlight and connectors). Returns a fresh figure
+          dict and stamps the new pair into the tanglegram-pair-store.
+        * **Subsequent clicks on the same pair** — return a
+          ``dash.Patch`` that updates only the 3 dynamic traces and
+          the title annotation. The static skeleton (≈300 line
+          segments + 280 tip markers per tree) is never re-sent.
 
-        The clicked split is identified by integer ``split_id`` only;
-        we look the actual tip names up in ``_split_resolution`` (set
-        by the Compare callback) and the per-distmat canonical_keys
-        cache. This avoids the previous comma-joined-string round-trip
-        that broke on taxa whose names contained ``", "``.
+        The clicked split is identified by an integer ``split_id``;
+        the actual tip names are resolved server-side via
+        ``_split_resolution`` (rebuilt by the Compare callback) and
+        the per-distmat canonical-keys cache.
         """
         if not click_data or not uid1 or not uid2:
-            return no_update
+            return no_update, no_update
 
+        # ── Resolve the highlight tip-name set ─────────────────────────────
         split_id = click_data.get("split_id")
         if split_id is None:
-            return no_update
+            return no_update, no_update
         resolved = _split_resolution.get(int(split_id))
         if resolved is None:
-            return dmc.Text(
-                "Split lookup expired (run Compare again).",
-                c="dimmed", size="sm",
-            )
+            # Click store survived a Compare-button reset and we no
+            # longer know which split this is. Drop the request
+            # quietly; the next Compare repopulates _split_resolution.
+            return no_update, no_update
         src, split_key = resolved
         if isinstance(split_key, frozenset):
-            # Cross-distmat fallback: split_key already holds taxon names.
             highlight = set(split_key)
         else:
-            # Same-distmat fast path: tuple[int] of leaf indices, resolve
-            # against the source distmat's leaf_names ordering.
             try:
                 canonical = state.get_canonical_keys(src)
-            except (KeyError, FileNotFoundError) as e:
-                return dmc.Text(
-                    f"Cannot resolve clicked split (missing snapshot for {src}): {e}",
-                    c="red", size="sm",
-                )
+            except (KeyError, FileNotFoundError):
+                return no_update, no_update
             leaf_names = canonical["leaf_names"]
             highlight = {leaf_names[i] for i in split_key}
 
-        nexus1 = state.get_cached_mcc_tree(uid1)
-        nexus2 = state.get_cached_mcc_tree(uid2)
+        # ── Look up (or build) the static tanglegram layout ────────────────
+        layout = _get_tanglegram_layout(uid1, uid2)
+        if layout is None:
+            # MCC NEXUS bytes evicted from cache; user must recompute.
+            return no_update, no_update
 
-        if nexus1 is None or nexus2 is None:
-            return dmc.Text(
-                "MCC tree data is no longer available. Please recompute.",
-                c="red", size="sm",
-            )
+        tips1 = layout["tips1"]
+        tips2 = layout["tips2"]
+        right_start = layout["right_start"]
 
-        try:
-            root1, _ = parse_nexus(nexus1)
-            root2, _ = parse_nexus(nexus2)
-        except Exception as e:
-            return dmc.Text(f"Error parsing MCC trees: {e}", c="red", size="sm")
-
-        nodes1 = _collect_nodes(root1)
-        nodes2 = _collect_nodes(root2)
-        max_x1 = max(n.x for n in nodes1) or 1.0
-        max_x2 = max(n.x for n in nodes2) or 1.0
-        scale1 = 1.0 / max_x1
-        scale2 = 1.0 / max_x2
-
-        GAP = 0.3
-        RIGHT_START = 1.0 + GAP
-
-        traces = []
-
-        traces += build_tree_traces(
-            root1,
-            x_offset=0.0,
-            x_scale=scale1,
-            x_flip=False,
-            highlight=highlight,
-        )
-
-        traces += build_tree_traces(
-            root2,
-            x_offset=RIGHT_START + 1.0,
-            x_scale=scale2,
-            x_flip=True,
-            highlight=highlight,
-        )
-
-        tips1 = [n for n in nodes1 if n.is_tip]
-        tips2 = [n for n in nodes2 if n.is_tip]
-
-        def tip_plot_x(tip, x_offset, x_scale, x_flip):
-            scaled = tip.x * x_scale
-            return (x_offset - scaled) if x_flip else (x_offset + scaled)
-
-        conn_x: list[float | None] = []
-        conn_y: list[float | None] = []
-        conn_names: list[str] = []
-
-        tips1_by_name = {n.name: n for n in tips1}
-        tips2_by_name = {n.name: n for n in tips2}
-
-        for name in highlight:
-            if name not in tips1_by_name or name not in tips2_by_name:
-                continue
-            t1 = tips1_by_name[name]
-            t2 = tips2_by_name[name]
-            x1 = tip_plot_x(t1, 0.0, scale1, False)
-            x2 = tip_plot_x(t2, RIGHT_START + 1.0, scale2, True)
-            conn_x += [x1, x2, None]
-            conn_y += [t1.y, t2.y, None]
-            conn_names.append(name)
-
-        if conn_x:
-            traces.append(go.Scatter(
-                x=conn_x, y=conn_y,
-                mode="lines",
-                line=dict(color="rgba(230,57,70,0.7)", width=2),
-                text=[n for n in conn_names for _ in range(3)],
-                hovertemplate="%{text}<extra></extra>",
-                showlegend=False,
-            ))
-
+        # Group labels for the title annotation.
         entry1 = state.get_mcc_registry_entry(uid1)
         entry2 = state.get_mcc_registry_entry(uid2)
         label1 = entry1["name"] if entry1 else "Group 1"
         label2 = entry2["name"] if entry2 else "Group 2"
 
-        n_tips = max(
-            max((n.y for n in nodes1 if n.is_tip), default=0),
-            max((n.y for n in nodes2 if n.is_tip), default=0),
-        )
+        # ── Build the three dynamic traces (highlight + connectors) ───────
+        hl_left  = _highlight_overlay_trace(tips1, highlight)
+        hl_right = _highlight_overlay_trace(tips2, highlight)
+        connectors = _connector_overlay_trace(tips1, tips2, highlight)
+        title = _tanglegram_title(label1, label2, highlight)
 
+        same_pair = current_pair == [uid1, uid2]
+        if same_pair:
+            # ── Patch-only update — never re-sends the static skeleton ───
+            patch = Patch()
+            for idx, trace in (
+                (_TANGLEGRAM_HIGHLIGHT_LEFT,  hl_left),
+                (_TANGLEGRAM_HIGHLIGHT_RIGHT, hl_right),
+                (_TANGLEGRAM_CONNECTORS,      connectors),
+            ):
+                patch["data"][idx]["x"] = trace["x"]
+                patch["data"][idx]["y"] = trace["y"]
+                patch["data"][idx]["text"] = trace["text"]
+            patch["layout"]["annotations"][0]["text"] = title
+            return patch, no_update
+
+        # ── First time this pair is rendered — build the full figure ─────
+        traces = list(layout["skeleton_traces"]) + [hl_left, hl_right, connectors]
         px_per_tip = px_per_tip or 1
+        height = max(300, int(layout["max_y"] * px_per_tip) + 60)
+
         fig = go.Figure(data=[
             t if isinstance(t, go.Scatter) else go.Scatter(**t)
             for t in traces
         ])
         fig.update_layout(
             template="simple_white",
-            height=max(300, int(n_tips * px_per_tip) + 60),
+            height=height,
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis=dict(
-                visible=False,
-                range=[-1.05, RIGHT_START + 1.05],
-            ),
+            xaxis=dict(visible=False, range=[-1.05, right_start + 1.05]),
             yaxis=dict(visible=False),
             hovermode="closest",
             annotations=[
                 dict(
                     x=0.5, y=1.02, xref="paper", yref="paper",
-                    text=(
-                        f"<b>{label1}</b> ← "
-                        f"  clade: {len(highlight)} tips  "
-                        f"→ <b>{label2}</b>"
-                    ),
+                    text=title,
                     showarrow=False,
                     font=dict(size=12),
                     xanchor="center",
                 ),
             ],
         )
-
-        return dcc.Graph(
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"width": "100%"},
-        )
+        return fig, [uid1, uid2]
 

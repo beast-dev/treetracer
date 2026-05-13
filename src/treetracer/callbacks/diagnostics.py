@@ -128,7 +128,12 @@ def _build_scatter_fig(df_plot, label1, label2):
         # integer ID dodges the previous fragile comma-joined-string
         # round-trip — taxon names with embedded commas no longer break
         # the click→tanglegram path.
-        customdata=df_plot[["split_id", "clade_size"]].values,
+        # ``.values.tolist()`` converts the numpy int32 array to native
+        # Python ints in nested lists. Scattergl serialises this more
+        # reliably through clickData than a raw numpy 2D array — without
+        # it some Plotly versions drop customdata or pass it as a flat
+        # array, which breaks the click→tanglegram resolution below.
+        customdata=df_plot[["split_id", "clade_size"]].values.tolist(),
         hovertemplate=(
             "<b>Clade (%{customdata[1]} tips)</b><br>"
             "Group 1: %{x:.3f}<br>"
@@ -979,13 +984,16 @@ def register_diagnostics_callbacks():
         if not click_data or not click_data.get("points"):
             return no_update
         point = click_data["points"][0]
-        custom = point.get("customdata", [])
-        if not custom or len(custom) < 2:
+        custom = point.get("customdata")
+        if custom is None:
             return no_update
-        return {
-            "split_id":   int(custom[0]),
-            "clade_size": int(custom[1]),
-        }
+        try:
+            return {
+                "split_id":   int(custom[0]),
+                "clade_size": int(custom[1]),
+            }
+        except (TypeError, ValueError, IndexError):
+            return no_update
 
     @callback(
         Output("clade-freq-tanglegram", "children"),

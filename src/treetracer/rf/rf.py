@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import rapidtrees
+import math
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ def rf_distance_with_snapshots_from_newick_iter(
     """
     if map_indices is None:
         map_indices = [0] * len(names)
-    names_out, rf_bytes, leaf_names, n_bipartitions, presence_bytes = (
+    names_out, rf_bytes, leaf_names, n_bipartitions, presence_bytes, bip_bytes = (
         rapidtrees.pairwise_rf_with_snapshots_from_newick_iter(
             names, newick_iter, translate_maps, map_indices, rooted=rooted,
         )
@@ -89,6 +90,16 @@ def rf_distance_with_snapshots_from_newick_iter(
     n = len(names_out)
     rf_matrix = np.frombuffer(rf_bytes, dtype=np.uint32).reshape(n, n).copy()
     presence = np.frombuffer(presence_bytes, dtype=np.uint8).reshape(n, n_bipartitions).copy()
-    return names_out, rf_matrix, presence, list(leaf_names), int(n_bipartitions)
+    
+    #words_per_bip = len(bip_bytes) // (n_bipartitions * 8) if n_bipartitions > 0 else 0
+    #bipartition_bits = np.frombuffer(bip_bytes, dtype=np.uint64).reshape(n_bipartitions, words_per_bip).copy()
+    if n_bipartitions > 0:
+        bytes_per_bip = math.ceil(len(list(leaf_names)) / 8)
+        bip_arr = np.frombuffer(bip_bytes, dtype=np.uint8).reshape(n_bipartitions, bytes_per_bip)
+        bipartition_bits = np.unpackbits(bip_arr, axis=1, bitorder='little')[:, :len(leaf_names)].copy()
+    else:
+        bipartition_bits = np.zeros((0, 0), dtype=np.uint8)
+    
+    return names_out, rf_matrix, presence, list(leaf_names), int(n_bipartitions), bipartition_bits
 
 

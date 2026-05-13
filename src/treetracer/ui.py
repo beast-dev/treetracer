@@ -84,7 +84,134 @@ def _add_about_modal():
         ],
     )
 
+def _add_clade_freq_panel():
+    """Output paper for the Clade Frequency Comparison feature.
 
+    The CONTROLS — two MCC-tree dropdowns and the Compare button —
+    live in ``diagnostics-mcc-paper`` (immediately under the MCC table
+    they pull from). This paper is just the output surface: the
+    scatter, the two sliders that re-shape it, and the tanglegram
+    below.
+
+    Components built here:
+        clade-freq-min-clade-size   horizontal slider above the scatter
+        clade-freq-plot             scatter (freq_1 vs freq_2)
+        clade-freq-tanglegram       pair of trees with red-highlighted
+                                    clicked clade
+        tanglegram-yscale-slider    vertical slider beside the tanglegram
+    """
+    return dmc.Paper([
+        dmc.Group([
+            dmc.Title("Clade Frequency Comparison", order=5),
+            dmc.Badge(
+                "select two MCC trees above and click Compare",
+                variant="light", size="sm",
+            ),
+        ], gap="sm", align="center"),
+
+        dmc.Space(h=10),
+
+        # Min-clade-size sits directly above the scatter it filters —
+        # placing it between scatter and tanglegram (as previously)
+        # left it visually orphaned from either chart.
+        dmc.Stack([
+            dmc.Text("Minimum clade size", size="md", fw=500, c="dimmed"),
+            dmc.Slider(
+                id="clade-freq-min-clade-size",
+                min=2, max=50, step=1, value=5,
+                w=300,
+                size="md",
+                marks=[
+                    {"value": 2,  "label": "2"},
+                    {"value": 10, "label": "10"},
+                    {"value": 25, "label": "25"},
+                    {"value": 50, "label": "50"},
+                ],
+                styles={"markLabel": {"fontSize": "13px"}},
+            ),
+        ], gap=6, mt=4, mb=12),
+
+        dcc.Loading(
+            html.Div(id="clade-freq-plot"),
+            type="circle",
+            parent_style={"minHeight": "200px"},
+        ),
+        # Tanglegram + its vertical Expand-tree slider. The slider
+        # scales the figure's y-axis so it reads naturally as a
+        # vertical control on the right edge of the chart. Static
+        # dcc.Graph so ``dash.Patch`` can update only the dynamic
+        # traces (highlight markers + connectors) on each click —
+        # the branches and grey-tips skeleton stays put. The
+        # tanglegram-pair-store tracks which MCC pair is currently
+        # rendered so the callback knows when a full rebuild is
+        # required (different uids) vs a Patch-only update.
+        dmc.Group([
+            dcc.Loading(
+                dcc.Graph(
+                    id="clade-freq-tanglegram",
+                    figure={
+                        "data": [],
+                        "layout": {
+                            "height": 200,
+                            "xaxis": {"visible": False},
+                            "yaxis": {"visible": False},
+                            "plot_bgcolor": "white",
+                            "paper_bgcolor": "white",
+                            "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+                            "annotations": [{
+                                "text": "Select two MCC trees and click "
+                                        "<b>Compare Clade Frequencies</b>,"
+                                        " then click a dot in the scatter "
+                                        "above to draw the tanglegram.",
+                                "xref": "paper", "yref": "paper",
+                                "x": 0.5, "y": 0.5,
+                                "showarrow": False,
+                                "font": {"size": 13, "color": "#888"},
+                                "align": "center",
+                            }],
+                        },
+                    },
+                    config={"displayModeBar": False},
+                    style={"width": "100%"},
+                ),
+                type="circle",
+                parent_style={"minHeight": "200px", "flex": "1"},
+                style={"flex": "1"},
+            ),
+            dmc.Stack([
+                dmc.Text("Expand tree", size="md", fw=500, c="dimmed",
+                         style={"writingMode": "vertical-rl",
+                                "transform": "rotate(180deg)"}),
+                # dcc.Slider has a native vertical orientation; dmc
+                # currently does not, so we drop down to dcc here.
+                # ``verticalHeight`` is in px and is independent of
+                # the tanglegram's dynamic height — 240 keeps it
+                # reachable for short trees and not overwhelming for
+                # tall ones.
+                # ``reverse=True`` puts the slider's max at the BOTTOM
+                # so dragging the thumb downwards expands the tree —
+                # parallels how the tanglegram itself grows downward
+                # as its height increases.
+                dcc.Slider(
+                    id="tanglegram-yscale-slider",
+                    min=1, max=30, step=1, value=1,
+                    vertical=True,
+                    verticalHeight=240,
+                    reverse=True,
+                    marks={1: "", 10: "", 20: "", 30: ""},
+                    tooltip={"placement": "left", "always_visible": False},
+                ),
+            ], gap=6, align="center", pt=8),
+        ], gap="md", align="flex-start", wrap="nowrap"),
+        dcc.Store(id="clade-freq-tanglegram-pair-store"),
+    ], p="md", withBorder=True, radius="sm",
+       # Hidden until ``compute_and_plot_clade_frequencies`` succeeds —
+       # nothing useful to show before Compare has run. Cleared back to
+       # hidden by the sidebar's Clear-data flow.
+       id="clade-freq-output-paper",
+       style={"display": "none"})
+ 
+ 
 def _add_diagnostics_panel():
     """Build the Diagnostics tab panel content."""
     return html.Div([
@@ -107,7 +234,7 @@ def _add_diagnostics_panel():
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Section 1: Log-Posterior Trace
+            # Section 1: Log-Likelihood Trace
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("Log-Posterior Trace", order=5),
@@ -123,7 +250,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm", align="flex-end"),
+                ], gap="sm", align="center"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -131,8 +258,8 @@ def _add_diagnostics_panel():
                     parent_style={"minHeight": "200px"},
                 ),
             ], p="md", withBorder=True, radius="sm"),
-
-            # Section 2: RF Distance to Reference
+ 
+            # Section 2: RF Distance to Reference  (unchanged)
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("RF Distance to Reference", order=5),
@@ -172,7 +299,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], align="flex-end", gap="md"),
+                ], align="center", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),
@@ -225,19 +352,70 @@ def _add_diagnostics_panel():
                 html.Div(id="pseudo-ess-output"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Per-matrix MCC registry summary. Hidden when no MCCs have
-            # been computed for the currently-selected matrix; otherwise
-            # split into Between-runs and Within-run tables. Driven by
-            # ``render_diagnostics_mcc_panel`` in callbacks/diagnostics.py.
-            dmc.Paper(
+            # Per-matrix MCC registry summary + Clade-Frequency
+            # comparison controls (two MCC dropdowns + Compare button).
+            # The dropdowns and button sit at the top of this paper,
+            # with the MCC table immediately below them, so picking
+            # and comparing happen in the same visual unit.
+            #
+            # Output (scatter + tanglegram) renders into the separate
+            # ``_add_clade_freq_panel`` below — those plots get heavy
+            # and benefit from owning the page width without the table
+            # crammed above them.
+            #
+            # Whole paper is hidden when no MCCs match the active
+            # matrix; driven by ``render_diagnostics_mcc_panel`` in
+            # callbacks/diagnostics.py.
+            dmc.Paper([
+                # Layout order: "MCC trees for <matrix>" title, then
+                # the Compare-clade dropdowns + button, then the
+                # registered-MCC table itself. Title and table are
+                # two separate slots so the dropdowns can sit between
+                # them without being re-rendered (and losing state)
+                # every time the registry updates.
+                html.Div(id="diagnostics-mcc-title"),
+                dmc.Space(h=10),
+                dmc.Group([
+                    dmc.Select(
+                        id="clade-freq-mcc-select-1",
+                        label="Group 1 (MCC tree)",
+                        placeholder="No MCC trees saved yet",
+                        data=[],
+                        value=None,
+                        disabled=True,
+                        w=280,
+                        size="sm",
+                    ),
+                    dmc.Select(
+                        id="clade-freq-mcc-select-2",
+                        label="Group 2 (MCC tree)",
+                        placeholder="No MCC trees saved yet",
+                        data=[],
+                        value=None,
+                        disabled=True,
+                        w=280,
+                        size="sm",
+                    ),
+                    dmc.Button(
+                        "Compare Clade Frequencies",
+                        id="clade-freq-compare-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                        style={"alignSelf": "flex-end"},
+                    ),
+                ], gap="md", align="flex-end"),
+                dmc.Space(h=10),
                 html.Div(id="diagnostics-mcc-list"),
-                p="md", withBorder=True, radius="sm",
-                id="diagnostics-mcc-paper",
-                style={"display": "none"},
-            ),
+            ], p="md", withBorder=True, radius="sm",
+               id="diagnostics-mcc-paper",
+               style={"display": "none"}),
+
+            # Clade frequency comparison panel (local feature).
+            _add_clade_freq_panel(),
         ], gap="md"),
     ], style={"padding": "10px"})
-
 
 def _add_treespace_panel():
     """Build the Between-run Analysis tab panel content."""
@@ -719,6 +897,10 @@ def add_navbar():
                     # ``theme.get_template()`` at fig build time; the
                     # store is wired as a re-render trigger.
                     dcc.Store(id="plotly-template-store", storage_type="memory", data=get_template()),
+                    # Clade frequency comparison — intermediate results and
+                    # scatter-click state, kept server-side-friendly.
+                    dcc.Store(id="clade-freq-data-store", storage_type="memory"),
+                    dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
                     # Log panel state

@@ -104,7 +104,14 @@ def _build_scatter_fig(df_plot, label1, label2):
         line=dict(color="grey", width=1, dash="dash"),
         layer="below",
     )
-    fig.add_trace(go.Scatter(
+    # ``Scattergl`` (WebGL) instead of ``Scatter`` (SVG). At ~40k
+    # bipartitions per Compare click the SVG path creates one DOM node
+    # per marker and freezes the browser; WebGL renders the same
+    # point set in a single canvas frame. Trade-off: ``marker.line``
+    # is not supported in WebGL — the white outline around each dot
+    # is dropped, but the colour-coded fill is enough to distinguish
+    # clade sizes on a dense scatter anyway.
+    fig.add_trace(go.Scattergl(
         x=df_plot["freq_1"],
         y=df_plot["freq_2"],
         mode="markers",
@@ -115,7 +122,6 @@ def _build_scatter_fig(df_plot, label1, label2):
             showscale=True,
             colorbar=dict(title="Clade size", thickness=12),
             opacity=0.75,
-            line=dict(width=0.5, color="white"),
         ),
         # customdata carries the row's split_id (integer key into the
         # per-distmat canonical_keys cache) and clade_size. Using an

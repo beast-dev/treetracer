@@ -94,10 +94,11 @@ def _add_clade_freq_panel():
     below.
 
     Components built here:
-        clade-freq-plot         scatter (freq_1 vs freq_2)
-        tanglegram-yscale-slider, clade-freq-min-clade-size
-        clade-freq-tanglegram   pair of trees with red-highlighted
-                                clicked clade
+        clade-freq-min-clade-size   horizontal slider above the scatter
+        clade-freq-plot             scatter (freq_1 vs freq_2)
+        clade-freq-tanglegram       pair of trees with red-highlighted
+                                    clicked clade
+        tanglegram-yscale-slider    vertical slider beside the tanglegram
     """
     return dmc.Paper([
         dmc.Group([
@@ -110,72 +111,98 @@ def _add_clade_freq_panel():
 
         dmc.Space(h=10),
 
-        dcc.Loading(
-            html.Div(id="clade-freq-plot"),
-            type="circle",
-            parent_style={"minHeight": "200px"},
-        ),
+        # Min-clade-size sits directly above the scatter it filters —
+        # placing it between scatter and tanglegram (as previously)
+        # left it visually orphaned from either chart.
         dmc.Stack([
-            dmc.Text("Expand tree", size="xs", c="dimmed"),
-            dmc.Slider(
-                id="tanglegram-yscale-slider",
-                min=1, max=30, step=1, value=1,
-                w=300,
-                marks=[],
-            ),
-        ], gap=4, mt=8, mb=4),
-        dmc.Stack([
-            dmc.Text("Minimum clade size", size="xs", c="dimmed"),
+            dmc.Text("Minimum clade size", size="md", fw=500, c="dimmed"),
             dmc.Slider(
                 id="clade-freq-min-clade-size",
                 min=2, max=50, step=1, value=5,
                 w=300,
+                size="md",
                 marks=[
                     {"value": 2,  "label": "2"},
                     {"value": 10, "label": "10"},
                     {"value": 25, "label": "25"},
                     {"value": 50, "label": "50"},
                 ],
+                styles={"markLabel": {"fontSize": "13px"}},
             ),
-        ], gap=4, mt=8, mb=4),
-        # Static dcc.Graph so ``dash.Patch`` can update only the
-        # dynamic traces (highlight markers + connectors) on each
-        # click — the branches and grey-tips skeleton stays put,
-        # which is the heavy bit. Tanglegram-pair-store tracks which
-        # MCC pair is currently rendered so the callback knows when a
-        # full rebuild is required (different uids) vs a Patch-only
-        # update (same uids, different highlight).
+        ], gap=6, mt=4, mb=12),
+
         dcc.Loading(
-            dcc.Graph(
-                id="clade-freq-tanglegram",
-                figure={
-                    "data": [],
-                    "layout": {
-                        "height": 200,
-                        "xaxis": {"visible": False},
-                        "yaxis": {"visible": False},
-                        "plot_bgcolor": "white",
-                        "paper_bgcolor": "white",
-                        "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
-                        "annotations": [{
-                            "text": "Select two MCC trees and click "
-                                    "<b>Compare Clade Frequencies</b>,"
-                                    " then click a dot in the scatter "
-                                    "above to draw the tanglegram.",
-                            "xref": "paper", "yref": "paper",
-                            "x": 0.5, "y": 0.5,
-                            "showarrow": False,
-                            "font": {"size": 13, "color": "#888"},
-                            "align": "center",
-                        }],
-                    },
-                },
-                config={"displayModeBar": False},
-                style={"width": "100%"},
-            ),
+            html.Div(id="clade-freq-plot"),
             type="circle",
             parent_style={"minHeight": "200px"},
         ),
+        # Tanglegram + its vertical Expand-tree slider. The slider
+        # scales the figure's y-axis so it reads naturally as a
+        # vertical control on the right edge of the chart. Static
+        # dcc.Graph so ``dash.Patch`` can update only the dynamic
+        # traces (highlight markers + connectors) on each click —
+        # the branches and grey-tips skeleton stays put. The
+        # tanglegram-pair-store tracks which MCC pair is currently
+        # rendered so the callback knows when a full rebuild is
+        # required (different uids) vs a Patch-only update.
+        dmc.Group([
+            dcc.Loading(
+                dcc.Graph(
+                    id="clade-freq-tanglegram",
+                    figure={
+                        "data": [],
+                        "layout": {
+                            "height": 200,
+                            "xaxis": {"visible": False},
+                            "yaxis": {"visible": False},
+                            "plot_bgcolor": "white",
+                            "paper_bgcolor": "white",
+                            "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+                            "annotations": [{
+                                "text": "Select two MCC trees and click "
+                                        "<b>Compare Clade Frequencies</b>,"
+                                        " then click a dot in the scatter "
+                                        "above to draw the tanglegram.",
+                                "xref": "paper", "yref": "paper",
+                                "x": 0.5, "y": 0.5,
+                                "showarrow": False,
+                                "font": {"size": 13, "color": "#888"},
+                                "align": "center",
+                            }],
+                        },
+                    },
+                    config={"displayModeBar": False},
+                    style={"width": "100%"},
+                ),
+                type="circle",
+                parent_style={"minHeight": "200px", "flex": "1"},
+                style={"flex": "1"},
+            ),
+            dmc.Stack([
+                dmc.Text("Expand tree", size="md", fw=500, c="dimmed",
+                         style={"writingMode": "vertical-rl",
+                                "transform": "rotate(180deg)"}),
+                # dcc.Slider has a native vertical orientation; dmc
+                # currently does not, so we drop down to dcc here.
+                # ``verticalHeight`` is in px and is independent of
+                # the tanglegram's dynamic height — 240 keeps it
+                # reachable for short trees and not overwhelming for
+                # tall ones.
+                # ``reverse=True`` puts the slider's max at the BOTTOM
+                # so dragging the thumb downwards expands the tree —
+                # parallels how the tanglegram itself grows downward
+                # as its height increases.
+                dcc.Slider(
+                    id="tanglegram-yscale-slider",
+                    min=1, max=30, step=1, value=1,
+                    vertical=True,
+                    verticalHeight=240,
+                    reverse=True,
+                    marks={1: "", 10: "", 20: "", 30: ""},
+                    tooltip={"placement": "left", "always_visible": False},
+                ),
+            ], gap=6, align="center", pt=8),
+        ], gap="md", align="flex-start", wrap="nowrap"),
         dcc.Store(id="clade-freq-tanglegram-pair-store"),
     ], p="md", withBorder=True, radius="sm",
        # Hidden until ``compute_and_plot_clade_frequencies`` succeeds —

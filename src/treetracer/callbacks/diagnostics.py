@@ -185,7 +185,10 @@ def _get_tanglegram_layout(uid1, uid2):
     scale1 = 1.0 / max_x1
     scale2 = 1.0 / max_x2
 
-    GAP = 0.3
+    # GAP is the empty middle band where the red tip-connector lines
+    # live. Bigger feels less cramped on dense (~280 tip) trees and
+    # gives the eye room to follow each line.
+    GAP = 0.6
     right_start = 1.0 + GAP
 
     # Skeleton: ``build_tree_traces(..., highlight=set())`` returns
@@ -297,11 +300,25 @@ def _connector_overlay_trace(tips1, tips2, highlight):
     )
 
 
-def _tanglegram_title(label1, label2, highlight):
+def _tanglegram_title(label1, label2, highlight, in_1=False, in_2=False):
+    """Build the tanglegram's annotation text.
+
+    ``in_1`` / ``in_2`` mark whether the clicked bipartition is a
+    monophyletic clade of MCC1 / MCC2. The corresponding label is
+    drawn in green so the user can read at a glance which tree(s)
+    actually contain the highlighted split — useful when the dot
+    sits along the "only in MCC1" axis on the scatter and the user
+    wants to confirm at the tanglegram.
+    """
+    green = "#2f9e44"
+    def fmt(label, contains):
+        if contains:
+            return f"<b><span style='color:{green}'>{label}</span></b>"
+        return f"<b>{label}</b>"
     return (
-        f"<b>{label1}</b> ← "
+        f"{fmt(label1, in_1)} ← "
         f"  clade: {len(highlight)} tips  "
-        f"→ <b>{label2}</b>"
+        f"→ {fmt(label2, in_2)}"
     )
 
 
@@ -1611,11 +1628,11 @@ def register_diagnostics_callbacks():
                 return complement
             return None
 
-        highlight_bits = _pick(bits, desc_1)
-        if highlight_bits is None:
-            highlight_bits = _pick(bits, desc_2)
-        if highlight_bits is None:
-            highlight_bits = bits
+        side_1 = _pick(bits, desc_1)
+        side_2 = _pick(bits, desc_2)
+        in_1 = side_1 is not None
+        in_2 = side_2 is not None
+        highlight_bits = side_1 or side_2 or bits
 
         highlight = {
             leaf_names[i] for i in range(len(leaf_names))
@@ -1642,7 +1659,8 @@ def register_diagnostics_callbacks():
         hl_left  = _highlight_overlay_trace(tips1, highlight)
         hl_right = _highlight_overlay_trace(tips2, highlight)
         connectors = _connector_overlay_trace(tips1, tips2, highlight)
-        title = _tanglegram_title(label1, label2, highlight)
+        title = _tanglegram_title(label1, label2, highlight,
+                                  in_1=in_1, in_2=in_2)
 
         same_pair = current_pair == [uid1, uid2]
         if same_pair:
@@ -1671,7 +1689,7 @@ def register_diagnostics_callbacks():
         fig.update_layout(
             template="simple_white",
             height=height,
-            margin=dict(l=10, r=10, t=40, b=10),
+            margin=dict(l=10, r=10, t=60, b=10),
             # Content lives in [0, right_start + 1.0] (left tree
             # 0–1, gap 1–1.3, right tree 1.3–2.3). Use a tiny equal
             # padding on both sides so the two trees stay centred
@@ -1686,7 +1704,7 @@ def register_diagnostics_callbacks():
                     x=0.5, y=1.02, xref="paper", yref="paper",
                     text=title,
                     showarrow=False,
-                    font=dict(size=12),
+                    font=dict(size=18),
                     xanchor="center",
                 ),
             ],

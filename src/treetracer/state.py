@@ -6,7 +6,9 @@ Only lightweight metadata (tree names) goes through dcc.Store / JSON.
 """
 
 import atexit
+import glob
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -21,10 +23,56 @@ _distmat_counter = 0  # auto-incrementing ID for unique matrix names
 _MAX_DISTMATS = 50   # evict oldest when exceeded
 
 
+# Tmpdir name format: ``treetracer_distmat_<pid>_<random>``. Embedding
+# the PID lets a startup sweep distinguish leaked dirs (owning process
+# is dead) from dirs owned by a still-running treetracer instance.
+_TMPDIR_PREFIX = "treetracer_distmat_"
+_TMPDIR_RE = re.compile(rf"^{re.escape(_TMPDIR_PREFIX)}(\d+)_")
+
+
+def _sweep_stale_tmpdirs():
+    """Remove leaked tmpdirs from previous sessions whose owning PID
+    is no longer alive.
+
+    Safe under concurrent treetracer windows: another live session's
+    PID will be found alive and its dir spared. PIDs can in theory be
+    reused after death, but the chance of a recycled PID running yet
+    another treetracer instance is astronomically small in practice.
+    """
+    pattern = os.path.join(tempfile.gettempdir(), f"{_TMPDIR_PREFIX}*")
+    try:
+        import psutil
+        pid_alive = psutil.pid_exists
+    except Exception:
+        # psutil should be available (declared in deps), but if anything
+        # goes wrong, skip the sweep rather than risk deleting live dirs.
+        return
+
+    for path in glob.glob(pattern):
+        name = os.path.basename(path)
+        m = _TMPDIR_RE.match(name)
+        if not m:
+            # Old-style ``treetracer_distmat_<random>`` without an
+            # embedded PID. Don't touch — can't tell if it's a leak
+            # or a live session running an older code path.
+            continue
+        try:
+            owning_pid = int(m.group(1))
+        except ValueError:
+            continue
+        if pid_alive(owning_pid):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _ensure_tmpdir():
     global _tmpdir
     if _tmpdir is None:
-        _tmpdir = tempfile.mkdtemp(prefix="treetracer_distmat_")
+        # First call of the session: sweep stale leaks before we add
+        # our own dir to the pile. Cheap (a few stat calls per leaked
+        # dir) and self-healing for users with previous-session leaks.
+        _sweep_stale_tmpdirs()
+        _tmpdir = tempfile.mkdtemp(prefix=f"{_TMPDIR_PREFIX}{os.getpid()}_")
         atexit.register(_cleanup_tmpdir)
     return _tmpdir
 

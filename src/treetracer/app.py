@@ -114,9 +114,23 @@ def main():
                     time.sleep(0.5)
 
             def _kill_process_tree():
-                """Kill all child processes (subprocess workers, resource trackers) then exit."""
+                """Kill all child processes (subprocess workers, resource trackers) then exit.
+
+                ``os._exit(0)`` below is a HARD exit that bypasses every
+                Python finalizer — including ``atexit`` handlers. Anything
+                that needs cleanup on close (the tmp distmat directory, in
+                particular) must be torn down explicitly here.
+                """
                 import os
                 import psutil
+                # Wipe the on-disk distmat tmpdir before the hard exit;
+                # the atexit handler registered in state._ensure_tmpdir
+                # would otherwise never run.
+                try:
+                    from . import state
+                    state._cleanup_tmpdir()
+                except Exception:
+                    pass
                 try:
                     parent = psutil.Process(os.getpid())
                     for child in parent.children(recursive=True):
@@ -130,6 +144,25 @@ def main():
 
             def _on_closed():
                 _kill_process_tree()
+
+            # Catch SIGTERM / SIGINT so the tmpdir is wiped on:
+            #   * macOS "Force Quit" from the dock (sends SIGTERM)
+            #   * Ctrl-C in dev mode (sends SIGINT)
+            # The window-close event already routes through _on_closed
+            # → _kill_process_tree above, but those signal paths bypass
+            # pywebview's closed-event entirely. Without explicit
+            # handlers they'd hard-exit and leak the tmpdir again.
+            import signal
+            def _on_signal(signum, _frame):
+                _kill_process_tree()
+            try:
+                signal.signal(signal.SIGTERM, _on_signal)
+                signal.signal(signal.SIGINT, _on_signal)
+            except (ValueError, AttributeError):
+                # signal.signal only works on the main thread; on some
+                # platforms SIGTERM may not be supported. In either
+                # case fall back to the existing _on_closed path.
+                pass
 
             # Expose the peartree JS API on this window so the View-MCC
             # clientside callback can spawn sibling pywebview windows via
@@ -152,9 +185,17 @@ def main():
         import traceback
         traceback.print_exc(file=sys.stderr)
 
-    # Fallback
+    # Fallback (reached when the try block above falls through, e.g.
+    # an unexpected exception during pywebview startup). Same tmpdir
+    # cleanup rationale as ``_kill_process_tree`` — ``os._exit`` skips
+    # atexit handlers.
     import os
     import psutil
+    try:
+        from . import state
+        state._cleanup_tmpdir()
+    except Exception:
+        pass
     try:
         parent = psutil.Process(os.getpid())
         for child in parent.children(recursive=True):

@@ -1345,7 +1345,13 @@ def register_diagnostics_callbacks():
             template="simple_white",
             height=height,
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis=dict(visible=False, range=[-1.05, right_start + 1.05]),
+            # Content lives in [0, right_start + 1.0] (left tree
+            # 0–1, gap 1–1.3, right tree 1.3–2.3). Use a tiny equal
+            # padding on both sides so the two trees stay centred
+            # in the panel — the previous ``-1.05`` left edge was
+            # asymmetric and shoved the tanglegram visibly right.
+            xaxis=dict(visible=False,
+                       range=[-0.05, right_start + 1.05]),
             yaxis=dict(visible=False),
             hovermode="closest",
             annotations=[

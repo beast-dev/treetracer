@@ -28,7 +28,7 @@ from ..clade_freq import compute_clade_frequencies
 # the previous fragile ", ".join(sorted(s)) → ",".split() round-trip.
 _split_resolution: dict[int, tuple[str, object]] = {}
 
-from ..newick_layout import parse_nexus, build_tree_traces, build_connector_traces, _collect_nodes
+from ..newick_layout import parse_nexus, build_tree_traces, _collect_nodes
 from ._helpers import _save_file_dialog
 
 
@@ -42,6 +42,46 @@ from ._helpers import _save_file_dialog
 # (highlight markers + connectors) when the MCC pair hasn't changed.
 
 import functools
+
+
+@functools.lru_cache(maxsize=64)
+def _get_mcc_clade_sets(uid):
+    """Set of frozenset[str] — every internal bipartition of the MCC
+    tree, encoded as the descendant-tip-name set AND its complement
+    (so an unrooted-side match works without canonicalisation).
+
+    Used by ``compute_and_plot_clade_frequencies`` to filter the
+    scatter to splits that actually correspond to a clade in at
+    least one of the two displayed MCC trees — otherwise the
+    tanglegram below shows "scattered red tips" because the
+    bipartition isn't a topological element of either tree.
+
+    Returns None when the MCC's NEXUS bytes have been evicted from
+    state's LRU cache.
+    """
+    root = _get_parsed_mcc(uid)
+    if root is None:
+        return None
+
+    # One post-order pass: each node's subtree-tip-set is the union
+    # of its children's sets. Record every non-trivial side; add the
+    # complement for free so unrooted comparison just becomes
+    # ``names in clade_set``.
+    subtree_sets = []
+    def visit(node):
+        if node.is_tip:
+            return frozenset([node.name])
+        s = frozenset().union(*(visit(c) for c in node.children))
+        subtree_sets.append(s)
+        return s
+
+    all_tips = visit(root)
+    clades = set()
+    for side in subtree_sets:
+        if 0 < len(side) < len(all_tips):
+            clades.add(side)
+            clades.add(all_tips - side)
+    return clades
 
 
 @functools.lru_cache(maxsize=64)
@@ -245,6 +285,7 @@ def clear_clade_freq_caches():
     uuids that are about to disappear from ``state._mcc_cache``.
     """
     _get_parsed_mcc.cache_clear()
+    _get_mcc_clade_sets.cache_clear()
     _get_tanglegram_layout.cache_clear()
     _split_resolution.clear()
 
@@ -1189,6 +1230,55 @@ def register_diagnostics_callbacks():
                 c="red", size="sm",
             ), no_update, no_update
 
+        # Annotate every split with whether it's an actual clade in
+        # MCC 1 / MCC 2. Stored as boolean columns so downstream code
+        # can use them for filtering (default), hover text, or
+        # colour-coding (e.g. "this split is only in MCC 1") without
+        # having to recompute the membership test.
+        clades1 = _get_mcc_clade_sets(uid1)
+        clades2 = _get_mcc_clade_sets(uid2)
+        if clades1 is None or clades2 is None:
+            return dmc.Text(
+                "MCC tree data is no longer available. Please recompute.",
+                c="red", size="sm",
+            ), no_update, no_update
+
+        try:
+            canonical = state.get_canonical_keys(entry1["source_distmat"])
+        except (KeyError, FileNotFoundError) as e:
+            return dmc.Text(
+                f"Error reading distmat snapshot: {e}",
+                c="red", size="sm",
+            ), no_update, no_update
+        leaf_names = canonical["leaf_names"]
+
+        def _names_of(key):
+            """Resolve a DataFrame split_key to a frozenset of taxon
+            names — works for both the same-distmat tuple[int] case
+            and the cross-distmat frozenset[str] fallback."""
+            if isinstance(key, frozenset):
+                return key
+            return frozenset(leaf_names[i] for i in key)
+
+        in_1, in_2 = [], []
+        for key in df["split_key"]:
+            names = _names_of(key)
+            in_1.append(names in clades1)
+            in_2.append(names in clades2)
+        df["in_mcc_1"] = in_1
+        df["in_mcc_2"] = in_2
+
+        # Show only splits that are a clade in at least one of the two
+        # MCCs — keeps the tanglegram meaningful when the user clicks.
+        df = df[df["in_mcc_1"] | df["in_mcc_2"]].reset_index(drop=True)
+
+        if df.empty:
+            return dmc.Text(
+                "None of the bipartitions observed in the two groups "
+                "is a clade of either MCC tree — nothing to plot.",
+                c="dimmed", size="sm",
+            ), no_update, no_update
+
         # Integer row id replaces the old fragile comma-joined string.
         # The click-handler + tanglegram callbacks resolve split_id to
         # tip names via state.get_canonical_keys at render time.
@@ -1209,8 +1299,14 @@ def register_diagnostics_callbacks():
         # Serialise for the slider callback. split_key is a tuple[int]
         # (or, in the rare cross-distmat fallback, a frozenset[str]) —
         # neither is JSON-serialisable, so it stays server-side and we
-        # only ship the integer id through the browser.
-        store_data = df[["split_id", "freq_1", "freq_2", "clade_size"]].to_dict("records")
+        # only ship the integer id through the browser. The
+        # in_mcc_1/in_mcc_2 booleans ride along so any future filter
+        # or colour-coding callback can consume them without
+        # re-running the clade-membership check.
+        store_data = df[[
+            "split_id", "freq_1", "freq_2", "clade_size",
+            "in_mcc_1", "in_mcc_2",
+        ]].to_dict("records")
 
         min_size = int(min_clade_size or 2)
         df_plot = df[df["clade_size"] >= min_size]

@@ -58,19 +58,6 @@ _TOKEN_RE = re.compile(
 )
 
 
-#def _tokenise(newick: str) -> list[str]:
-#    """Return a flat list of meaningful tokens, stripping comments."""
-#    tokens: list[str] = []
-#    for m in _TOKEN_RE.finditer(newick):
-#        punct, label, length = m.group(1), m.group(2), m.group(3)
-#        if punct:
-#            tokens.append(punct)
-#        elif label:
-#            tokens.append(label)
-#        elif length:
-#            tokens.append(":" + length)
-#    return tokens
-
 _COMMENT_RE = re.compile(r"\[[^\]]*\]")
 
 def _tokenise(newick: str) -> list[str]:
@@ -220,50 +207,6 @@ _TREE_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
-
-# def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
-#     """Parse NEXUS bytes into a laid-out root Node and translate map.
-
-#     Args:
-#         nexus_bytes: Raw bytes of a NEXUS file with a single tree.
-
-#     Returns:
-#         root:      Root Node with x/y layout assigned.
-#         translate: The Translate map {token: taxon_name}.  Empty dict if
-#                    no Translate block is present (tip names already resolved).
-#     """
-#     text = nexus_bytes.decode("utf-8", errors="replace")
-#     print("DEBUG NEXUS first 500 chars:")
-#     print(repr(text[:500])) 
-
-#     # Extract translate map.
-#     translate: dict[str, str] = {}
-#     tm = _TRANSLATE_RE.search(text)
-#     if tm:
-#         for line in tm.group(1).splitlines():
-#             line = line.strip().rstrip(",")
-#             if not line:
-#                 continue
-#             parts = line.split(None, 1)
-#             if len(parts) == 2:
-#                 translate[parts[0]] = parts[1].strip("'\"")
-
-#     # Extract newick string.
-#     tm2 = _TREE_LINE_RE.search(text)
-#     if not tm2:
-#         raise ValueError("No 'tree ... = <newick>' line found in NEXUS bytes.")
-#     newick = tm2.group(1).strip().rstrip(";")
-
-#     root = _parse_newick(newick)
-#     if translate:
-#         _apply_translate(root, translate)
-
-#     # Mark tips (nodes with no children) explicitly.
-#     for node in _collect_nodes(root):
-#         node.is_tip = not bool(node.children)
-
-#     _assign_layout(root)
-#     return root, translate
 
 def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
     """Parse NEXUS bytes into a laid-out root Node and translate map."""
@@ -441,72 +384,3 @@ def build_tree_traces(
     return traces
 
 
-def build_connector_traces(
-    tips_left:  list[Node],
-    tips_right: list[Node],
-    highlight:  set[str],
-    x_left:     float,
-    x_right:    float,
-) -> list[dict]:
-    """Build horizontal connector lines between matching tips in a tanglegram.
-
-    Connectors are drawn for every tip present in both trees.
-    Highlighted tips (in the selected clade) are drawn in red; others in
-    light grey.
-
-    Args:
-        tips_left:  Tip nodes of the left tree (x positions already flipped).
-        tips_right: Tip nodes of the right tree.
-        highlight:  Set of tip names in the selected clade.
-        x_left:     The rightmost x coordinate of the left tree (tip end).
-        x_right:    The leftmost x coordinate of the right tree (tip end).
-
-    Returns:
-        List of Plotly trace dicts.
-    """
-    left_by_name  = {n.name: n for n in tips_left}
-    right_by_name = {n.name: n for n in tips_right}
-    common        = set(left_by_name) & set(right_by_name)
-
-    conn_x_hi: list[float | None] = []
-    conn_y_hi: list[float | None] = []
-    conn_x_lo: list[float | None] = []
-    conn_y_lo: list[float | None] = []
-    conn_names_hi: list[str]      = []
-    conn_names_lo: list[str]      = []
-
-    for name in common:
-        y_l = left_by_name[name].y
-        y_r = right_by_name[name].y
-        if name in highlight:
-            conn_x_hi += [x_left, x_right, None]
-            conn_y_hi += [y_l,    y_r,     None]
-            conn_names_hi.append(name)
-        else:
-            conn_x_lo += [x_left, x_right, None]
-            conn_y_lo += [y_l,    y_r,     None]
-            conn_names_lo.append(name)
-
-    traces = []
-    if conn_x_lo:
-        traces.append(dict(
-            type="scatter",
-            x=conn_x_lo, y=conn_y_lo,
-            mode="lines",
-            line=dict(color="rgba(180,180,180,0.4)", width=1),
-            text=[n for n in conn_names_lo for _ in range(3)],
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False,
-        ))
-    if conn_x_hi:
-        traces.append(dict(
-            type="scatter",
-            x=conn_x_hi, y=conn_y_hi,
-            mode="lines",
-            line=dict(color="rgba(230,57,70,0.7)", width=2),
-            text=[n for n in conn_names_hi for _ in range(3)],
-            hovertemplate="%{text}<extra></extra>",
-            showlegend=False,
-        ))
-
-    return traces

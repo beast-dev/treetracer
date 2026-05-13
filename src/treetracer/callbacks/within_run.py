@@ -817,7 +817,8 @@ def register_within_run_callbacks():
                 color="red", action="show", autoClose=4000, id=notif_id())
 
         try:
-            nexus_bytes, mcc_row, log_clade_cred, counts, missing_taxa = assemble_mcc_nexus(
+            (nexus_bytes, mcc_row, log_clade_cred, counts,
+             cols_in_mcc, missing_taxa) = assemble_mcc_nexus(
                 matched, tree_service.db_manager, source_distmat,
             )
         except Exception as e:
@@ -862,6 +863,7 @@ def register_within_run_callbacks():
             mcc_log_posterior=extract_log_posterior(mcc_row),
             tree_names=tree_names,
             counts=counts,
+            cols_in_mcc=cols_in_mcc,
         )
         registered_name = entry["name"]
         add_log(

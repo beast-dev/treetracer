@@ -104,8 +104,14 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns:
-            split_key   tuple[int]  canonical side tip indices into
-                                    leaf_names_1
+            split_key   tuple[int] | frozenset[str]  canonical side tip
+                                    indices into leaf_names_1, or (for
+                                    cross-distmat-only splits) a
+                                    frozenset of taxon names.
+            column_j    int | None  presence-matrix column index in
+                                    ``entry1.source_distmat``'s snapshot
+                                    (same-distmat fast path); ``None``
+                                    for the cross-distmat fallback.
             freq_1      float       frequency in group 1's trees
             freq_2      float       frequency in group 2's trees
             clade_size  int         len(split_key)
@@ -132,6 +138,7 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
         rows = [
             {
                 "split_key":  tuples[j],
+                "column_j":   int(j),
                 "freq_1":     float(freqs_1[j]),
                 "freq_2":     float(freqs_2[j]),
                 "clade_size": len(tuples[j]),
@@ -139,7 +146,8 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
             for j in cols
         ]
         df = pd.DataFrame(
-            rows, columns=["split_key", "freq_1", "freq_2", "clade_size"]
+            rows,
+            columns=["split_key", "column_j", "freq_1", "freq_2", "clade_size"],
         )
     else:
         # Cross-distmat fallback: merge by frozenset of taxon names so
@@ -170,6 +178,7 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
         for name_set, (f1, idx_tuple) in freq_1.items():
             rows.append({
                 "split_key":  idx_tuple,
+                "column_j":   None,
                 "freq_1":     f1,
                 "freq_2":     freq_2.get(name_set, 0.0),
                 "clade_size": len(idx_tuple),
@@ -182,12 +191,14 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
         for name_set in only_in_2:
             rows.append({
                 "split_key":  name_set,
+                "column_j":   None,
                 "freq_1":     0.0,
                 "freq_2":     freq_2[name_set],
                 "clade_size": len(name_set),
             })
         df = pd.DataFrame(
-            rows, columns=["split_key", "freq_1", "freq_2", "clade_size"]
+            rows,
+            columns=["split_key", "column_j", "freq_1", "freq_2", "clade_size"],
         )
 
     df["mean_freq"] = (df["freq_1"] + df["freq_2"]) / 2

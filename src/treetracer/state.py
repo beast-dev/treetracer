@@ -354,7 +354,7 @@ def _next_mcc_name(source_distmat, mode, run):
 def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
                  selection, log_clade_credibility,
                  mcc_log_posterior=None, tree_names=None,
-                 counts=None):
+                 counts=None, cols_in_mcc=None):
     """Append a new MCC registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
@@ -373,6 +373,15 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
     row-sum cost. Optional — registry stays usable without it but
     falls back to the slow recompute path in
     ``clade_freq.compute_clade_frequencies``.
+
+    ``cols_in_mcc`` is an iterable of presence-matrix column indices
+    that appear in the chosen MCC tree itself (``np.flatnonzero(
+    presence_sub[mcc_local])``). These are the interned bipartition IDs
+    of the MCC's own clades; the Clade Frequency Comparison filter wraps
+    them in a ``set`` once per Compare click for O(1) membership.
+    Stored as a sorted list because the registry travels through the
+    browser-side ``mcc-registry-store`` and ``frozenset`` is not
+    JSON-serialisable.
     """
     global _mcc_registry
     if len(_mcc_registry) >= _MAX_MCC_REGISTRY:
@@ -393,6 +402,13 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
         "n_trees": len(tree_names) if tree_names is not None else 0,
         "counts": (np.asarray(counts, dtype=np.int32)
                    if counts is not None else None),
+        # Stored as a plain list (JSON-serialisable) because the
+        # registry payload flows through ``mcc-registry-store`` in
+        # the browser. Callers that need O(1) membership wrap with
+        # ``set(...)`` at use time — cheap (~few hundred ints) and
+        # only paid once per Compare click.
+        "cols_in_mcc": (sorted(cols_in_mcc)
+                        if cols_in_mcc is not None else None),
         "created_at": time.time(),
     }
     _mcc_registry.append(entry)

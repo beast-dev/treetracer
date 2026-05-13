@@ -13,7 +13,7 @@ dependencies = [
     "dash-mantine-components",
     "dendropy>=5.0.8",
     "pandas",
-    "rapidtrees==0.4.0",
+    "rapidtrees==0.5.1",
     "plotly",
     "psutil>=7.0.0",
     "numpy",

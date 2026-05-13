@@ -903,8 +903,7 @@ def register_treespace_callbacks():
         uid = _state.cache_mcc_tree(nexus_bytes)
 
         # Look up the MCC's coordinates in the active MDS so the green
-        # ring lands on the right point. Fall back to the file_source-
-        # qualified name if the legacy ``tree`` column carries that.
+        # ring lands on the right point.
         mcc_row_in_mds = combined_df[combined_df["tree"] == mcc_tree_name]
         if mcc_row_in_mds.empty:
             mcc_group, mcc_treenum = None, None
@@ -927,6 +926,7 @@ def register_treespace_callbacks():
             log_clade_credibility=(None if log_clade_cred is None
                                    else float(log_clade_cred)),
             mcc_log_posterior=extract_log_posterior(mcc_row),
+            tree_names=tree_names,
         )
         registered_name = entry["name"]
         add_log(
@@ -940,9 +940,7 @@ def register_treespace_callbacks():
                 "— opening in PearTree…"
             ),
             color="green", action="show", autoClose=4000, id=notif_id())
-        # Clear the red selection ring once the MCC has been computed:
-        # the user has moved on to looking at the green ring + the
-        # peartree window, and a stale red ring just clutters the plot.
+        # Clear the red selection ring once the MCC has been computed.
         return ({"uuid": uid, "name": registered_name},
                 _state.get_mcc_registry(),
                 [],

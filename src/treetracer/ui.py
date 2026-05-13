@@ -84,7 +84,120 @@ def _add_about_modal():
         ],
     )
 
-
+def _add_clade_freq_panel():
+    """Build the Clade Frequency Comparison section for the Diagnostics tab.
+ 
+    This is a self-contained helper so other branches can import or reuse it
+    without touching _add_diagnostics_panel directly.
+ 
+    Layout
+    ------
+    A single dmc.Paper containing:
+      - A title row with a badge explaining the prerequisite.
+      - Two Select dropdowns side by side (Group 1 / Group 2), each listing
+        every MCC tree computed this session via the mcc-registry-store.
+      - A "Compare" button, enabled only when both dropdowns have a value.
+      - A hint line explaining where MCC trees come from.
+      - Two Div placeholders:
+          "clade-freq-plot"    — receives the frequency scatter plot
+          "clade-freq-tanglegram" — receives the tanglegram
+    """
+    return dmc.Paper([
+        # ── Header row ──────────────────────────────────────────────────────
+        dmc.Group([
+            dmc.Title("Clade Frequency Comparison", order=5),
+            dmc.Badge(
+                "requires two saved MCC trees",
+                variant="light", size="sm",
+            ),
+        ], gap="sm", align="center"),
+ 
+        dmc.Space(h=10),
+ 
+        # ── Controls row ────────────────────────────────────────────────────
+        dmc.Group([
+            dmc.Select(
+                id="clade-freq-mcc-select-1",
+                label="Group 1 (MCC tree)",
+                placeholder="No MCC trees saved yet",
+                data=[],
+                value=None,
+                disabled=True,
+                w=280,
+                size="sm",
+            ),
+            dmc.Select(
+                id="clade-freq-mcc-select-2",
+                label="Group 2 (MCC tree)",
+                placeholder="No MCC trees saved yet",
+                data=[],
+                value=None,
+                disabled=True,
+                w=280,
+                size="sm",
+            ),
+            dmc.Button(
+                "Compare Clade Frequencies",
+                id="clade-freq-compare-button",
+                variant="filled",
+                color="green",
+                size="sm",
+                disabled=True,
+                style={"alignSelf": "flex-end"},
+            ),
+        ], gap="md", align="flex-end"),
+ 
+        dmc.Text(
+            "Save MCC trees by selecting trees in the Within-run or "
+            "Between-run Analysis tabs and clicking 'View MCC'.",
+            size="xs", c="dimmed", mt=4,
+        ),
+ 
+        dmc.Space(h=10),
+ 
+        # ── Output placeholders ─────────────────────────────────────────────
+        dcc.Loading(
+            html.Div(id="clade-freq-plot"),
+            type="circle",
+            parent_style={"minHeight": "200px"},
+        ),
+        dmc.Stack([
+            dmc.Text("Expand tree", size="xs", c="dimmed"),
+            dmc.Slider(
+                id="tanglegram-yscale-slider",
+                min=1, max=30, step=1, value=1,
+                w=300,
+                marks=[
+                    #{"value": 4,  "label": "4"},
+                    #{"value": 10, "label": "10"},
+                    #{"value": 20, "label": "20"},
+                    #{"value": 30, "label": "30"},
+                ],
+            ),
+        ], gap=4, mt=8, mb=4),
+        dmc.Stack([
+            dmc.Text("Minimum clade size", size="xs", c="dimmed"),
+            dmc.Slider(
+                id="clade-freq-min-clade-size",
+                min=2, max=50, step=1, value=5,
+                w=300,
+                marks=[
+                    {"value": 2,  "label": "2"},
+                    {"value": 10, "label": "10"},
+                    {"value": 25, "label": "25"},
+                    {"value": 50, "label": "50"},
+                ],
+            ),
+        ], gap=4, mt=8, mb=4),
+        dcc.Loading(
+            html.Div(id="clade-freq-tanglegram"),
+            type="circle",
+            parent_style={"minHeight": "200px"},
+        ),
+ 
+    ], p="md", withBorder=True, radius="sm")
+ 
+ 
 def _add_diagnostics_panel():
     """Build the Diagnostics tab panel content."""
     return html.Div([
@@ -107,7 +220,7 @@ def _add_diagnostics_panel():
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Section 1: Log-Posterior Trace
+            # Section 1: Log-Likelihood Trace
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("Log-Posterior Trace", order=5),
@@ -123,7 +236,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm", align="flex-end"),
+                ], gap="sm", align="center"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -131,8 +244,8 @@ def _add_diagnostics_panel():
                     parent_style={"minHeight": "200px"},
                 ),
             ], p="md", withBorder=True, radius="sm"),
-
-            # Section 2: RF Distance to Reference
+ 
+            # Section 2: RF Distance to Reference  (unchanged)
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("RF Distance to Reference", order=5),
@@ -172,7 +285,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], align="flex-end", gap="md"),
+                ], align="center", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),
@@ -235,9 +348,11 @@ def _add_diagnostics_panel():
                 id="diagnostics-mcc-paper",
                 style={"display": "none"},
             ),
+
+            # Clade frequency comparison panel (local feature).
+            _add_clade_freq_panel(),
         ], gap="md"),
     ], style={"padding": "10px"})
-
 
 def _add_treespace_panel():
     """Build the Between-run Analysis tab panel content."""
@@ -719,6 +834,10 @@ def add_navbar():
                     # ``theme.get_template()`` at fig build time; the
                     # store is wired as a re-render trigger.
                     dcc.Store(id="plotly-template-store", storage_type="memory", data=get_template()),
+                    # Clade frequency comparison — intermediate results and
+                    # scatter-click state, kept server-side-friendly.
+                    dcc.Store(id="clade-freq-data-store", storage_type="memory"),
+                    dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
                     # Log panel state

@@ -44,7 +44,7 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path):
 
     t0 = time.time()
     from .rf import rf_distance_with_snapshots_from_newick_iter
-    result_names, rf_matrix, presence, leaf_names, _n_bip = (
+    result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
         rf_distance_with_snapshots_from_newick_iter(
             names, iter(newicks), translate_maps, map_indices, rooted=False,
         )
@@ -56,7 +56,10 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path):
     # Save the presence matrix + leaf_names alongside, with a derived path
     # so a single registry entry implicitly knows where to find both.
     snap_path = Path(save_path).with_name(Path(save_path).stem + "_snapshots.npz")
-    np.savez(snap_path, presence=presence, leaf_names=np.array(leaf_names))
+    np.savez(snap_path,
+             presence=presence,
+             leaf_names=np.array(leaf_names),
+             bipartition_bits=bipartition_bits)
 
     elapsed = time.time() - t0
     return list(result_names), elapsed

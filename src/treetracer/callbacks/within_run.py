@@ -860,6 +860,7 @@ def register_within_run_callbacks():
             log_clade_credibility=(None if log_clade_cred is None
                                    else float(log_clade_cred)),
             mcc_log_posterior=extract_log_posterior(mcc_row),
+            tree_names=tree_names,
         )
         registered_name = entry["name"]
         add_log(
@@ -873,8 +874,7 @@ def register_within_run_callbacks():
                 "— opening in PearTree…"
             ),
             color="green", action="show", autoClose=4000, id=notif_id())
-        # Clear the red selection ring once the MCC is registered — same
-        # rationale as the Between-runs tab.
+        # Clear the red selection ring once the MCC is registered.
         return ({"uuid": uid, "name": registered_name},
                 _state.get_mcc_registry(),
                 [],

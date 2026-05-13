@@ -11,8 +11,10 @@ from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..ess.rf_trace import compute_rf_trace_data
 from ..ess import compute_pseudo_ess
-from ..theme import get_template
 from .. import state
+from ..theme import get_template
+from ..clade_freq import compute_clade_frequencies
+from ..newick_layout import parse_nexus, build_tree_traces, build_connector_traces, _collect_nodes
 from ._helpers import _save_file_dialog
 
 
@@ -81,8 +83,47 @@ def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
     )
     return fig
 
+def _build_scatter_fig(df_plot, label1, label2):
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    fig.add_shape(
+        type="line", x0=0, y0=0, x1=1, y1=1,
+        line=dict(color="grey", width=1, dash="dash"),
+        layer="below",
+    )
+    fig.add_trace(go.Scatter(
+        x=df_plot["freq_1"],
+        y=df_plot["freq_2"],
+        mode="markers",
+        marker=dict(
+            size=8,
+            color=df_plot["clade_size"],
+            colorscale="Viridis",
+            showscale=True,
+            colorbar=dict(title="Clade size", thickness=12),
+            opacity=0.75,
+            line=dict(width=0.5, color="white"),
+        ),
+        customdata=df_plot[["split_label", "clade_size"]].values,
+        hovertemplate=(
+            "<b>Clade (%{customdata[1]} tips)</b><br>"
+            "Group 1: %{x:.3f}<br>"
+            "Group 2: %{y:.3f}"
+            "<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        template="simple_white",
+        xaxis=dict(title=f"Frequency — {label1}", range=[-0.02, 1.02]),
+        yaxis=dict(title=f"Frequency — {label2}", range=[-0.02, 1.02]),
+        margin=dict(l=60, r=20, t=30, b=50),
+        height=450,
+        clickmode="event+select",
+    )
+    return fig
 
 def register_diagnostics_callbacks():
+
     @callback(
         Output("lnl-trace-plot", "children"),
         Output("export-lnl-trace-button", "disabled", allow_duplicate=True),
@@ -748,3 +789,315 @@ def register_diagnostics_callbacks():
             withTableBorder=True,
             withColumnBorders=True,
         )
+
+
+    # ------ Clade Frequency Comparison: populate dropdowns ------
+ 
+    @callback(
+        Output("clade-freq-mcc-select-1", "data"),
+        Output("clade-freq-mcc-select-1", "disabled"),
+        Output("clade-freq-mcc-select-2", "data"),
+        Output("clade-freq-mcc-select-2", "disabled"),
+        Input("mcc-registry-store", "data"),
+    )
+    def populate_mcc_selects(registry):
+        """Rebuild the MCC-tree dropdown options whenever a new MCC is saved.
+
+        The registry list has the shape returned by get_mcc_registry():
+            [{"uuid": str, "name": str, "n_trees": int, ...}, ...]
+
+        Each option's value is the MCC's uuid (used to retrieve the cached
+        NEXUS bytes and registry entry). The label shows the structured name
+        and tree count so the user can see which selection each MCC summarises.
+        """
+        if not registry:
+            return [], True, [], True
+
+        options = [
+            {
+                "value": e["uuid"],
+                "label": f"{e['name']}  ({e['n_trees']} trees)",
+            }
+            for e in registry
+        ]
+        return options, False, options, False
+ 
+    # ------ Clade Frequency Comparison: enable Compare button ------
+    
+    @callback(
+        Output("clade-freq-plot", "children", allow_duplicate=True),
+        Input("clade-freq-min-clade-size", "value"),
+        State("clade-freq-data-store", "data"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        prevent_initial_call=True,
+    )
+    def filter_clade_freq_plot(min_clade_size, store_data, uid1, uid2):
+        """Re-render the scatter plot when the min clade size slider changes.
+        No recomputation — reads from the stored DataFrame."""
+        if not store_data:
+            return no_update
+
+        df = pd.DataFrame(store_data)
+        min_size = int(min_clade_size or 2)
+        df_plot = df[df["clade_size"] >= min_size]
+
+        entry1 = state.get_mcc_registry_entry(uid1)
+        entry2 = state.get_mcc_registry_entry(uid2)
+        label1 = entry1["name"] if entry1 else "Group 1"
+        label2 = entry2["name"] if entry2 else "Group 2"
+
+        fig = _build_scatter_fig(df_plot, label1, label2)
+        return dcc.Graph(
+            id="clade-freq-scatter",
+            figure=fig,
+            config={"displayModeBar": False},
+            style={"width": "100%"},
+        )
+
+    @callback(
+        Output("clade-freq-compare-button", "disabled"),
+        Input("clade-freq-mcc-select-1", "value"),
+        Input("clade-freq-mcc-select-2", "value"),
+    )
+    def toggle_compare_button(uid1, uid2):
+        """Enable the Compare button only when both dropdowns have a selection."""
+        return not (uid1 and uid2)
+
+    # ------ Clade Frequency Comparison: compute and plot ------
+
+    @callback(
+        Output("clade-freq-plot", "children"),
+        Output("clade-freq-data-store", "data"),
+        Input("clade-freq-compare-button", "n_clicks"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-min-clade-size", "value"),
+        prevent_initial_call=True,
+    )
+    def compute_and_plot_clade_frequencies(n_clicks, uid1, uid2, min_clade_size):
+        """Compute clade frequencies for the two selected MCC groups and
+        render a scatter plot (freq group 1 vs freq group 2).
+
+        Each dot is one bipartition observed in either group.
+        Dot colour encodes clade_size (number of tips in smaller partition).
+        Clicking a dot triggers the tanglegram callback.
+        """
+        if not uid1 or not uid2:
+            return no_update, no_update
+
+        entry1 = state.get_mcc_registry_entry(uid1)
+        entry2 = state.get_mcc_registry_entry(uid2)
+
+        if entry1 is None or entry2 is None:
+            return dmc.Text(
+                "One or both selected MCC trees are no longer available. "
+                "Please recompute them.",
+                c="red", size="sm",
+            ), no_update
+
+        try:
+            df = compute_clade_frequencies(
+                source_distmat_1=entry1["source_distmat"],
+                tree_names_1=entry1["tree_names"],
+                source_distmat_2=entry2["source_distmat"],
+                tree_names_2=entry2["tree_names"],
+            )
+        except (KeyError, FileNotFoundError) as e:
+            return dmc.Text(
+                f"Error computing clade frequencies: {e}",
+                c="red", size="sm",
+            ), no_update
+
+        # Serialise split_key for hover and click identification.
+        df["split_label"] = df["split_key"].apply(
+            lambda s: ", ".join(sorted(s))
+        )
+
+        label1 = entry1["name"]
+        label2 = entry2["name"]
+
+        # Serialise full DataFrame for the slider callback.
+        # Exclude split_key (frozenset, not JSON-serialisable).
+        store_data = df[["split_label", "freq_1", "freq_2", "clade_size"]].to_dict("records")
+
+        min_size = int(min_clade_size or 2)
+        df_plot = df[df["clade_size"] >= min_size]
+
+        fig = _build_scatter_fig(df_plot, label1, label2)
+        return dcc.Graph(
+            id="clade-freq-scatter",
+            figure=fig,
+            config={"displayModeBar": False},
+            style={"width": "100%"},
+        ), store_data
+
+    @callback(
+        Output("clade-freq-click-store", "data"),
+        Input("clade-freq-scatter", "clickData"),
+        prevent_initial_call=True,
+    )
+    def store_scatter_click(click_data):
+        """Forward a scatter plot click to the click store."""
+        if not click_data or not click_data.get("points"):
+            return no_update
+        point = click_data["points"][0]
+        custom = point.get("customdata", [])
+        if not custom or len(custom) < 2:
+            return no_update
+        return {
+            "split_label": custom[0],
+            "clade_size":  custom[1],
+        }
+
+    @callback(
+        Output("clade-freq-tanglegram", "children"),
+        Input("clade-freq-click-store", "data"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        State("tanglegram-yscale-slider", "value"),
+        prevent_initial_call=True,
+    )
+    def draw_tanglegram(click_data, uid1, uid2, px_per_tip):
+        """Draw a tanglegram of the two MCC trees when a clade dot is clicked.
+
+        The selected clade's tips are highlighted in red on both trees and
+        connected by lines in the centre gap.
+
+        Layout: [0, 1] left tree (tips left) | [1, 1+GAP] connector gap |
+        [1+GAP, 2+GAP] right tree (tips right). Both trees normalised to
+        [0, 1] in x so root-to-tip distances are comparable.
+        """
+        if not click_data or not uid1 or not uid2:
+            return no_update
+
+        split_label = click_data.get("split_label", "")
+        if not split_label:
+            return no_update
+
+        nexus1 = state.get_cached_mcc_tree(uid1)
+        nexus2 = state.get_cached_mcc_tree(uid2)
+
+        if nexus1 is None or nexus2 is None:
+            return dmc.Text(
+                "MCC tree data is no longer available. Please recompute.",
+                c="red", size="sm",
+            )
+
+        try:
+            root1, _ = parse_nexus(nexus1)
+            root2, _ = parse_nexus(nexus2)
+        except Exception as e:
+            return dmc.Text(f"Error parsing MCC trees: {e}", c="red", size="sm")
+
+        highlight = frozenset(t.strip() for t in split_label.split(",") if t.strip())
+
+        nodes1 = _collect_nodes(root1)
+        nodes2 = _collect_nodes(root2)
+        max_x1 = max(n.x for n in nodes1) or 1.0
+        max_x2 = max(n.x for n in nodes2) or 1.0
+        scale1 = 1.0 / max_x1
+        scale2 = 1.0 / max_x2
+
+        GAP = 0.3
+        RIGHT_START = 1.0 + GAP
+
+        traces = []
+
+        traces += build_tree_traces(
+            root1,
+            x_offset=0.0,
+            x_scale=scale1,
+            x_flip=False,
+            highlight=highlight,
+        )
+
+        traces += build_tree_traces(
+            root2,
+            x_offset=RIGHT_START + 1.0,
+            x_scale=scale2,
+            x_flip=True,
+            highlight=highlight,
+        )
+
+        tips1 = [n for n in nodes1 if n.is_tip]
+        tips2 = [n for n in nodes2 if n.is_tip]
+
+        def tip_plot_x(tip, x_offset, x_scale, x_flip):
+            scaled = tip.x * x_scale
+            return (x_offset - scaled) if x_flip else (x_offset + scaled)
+
+        conn_x: list[float | None] = []
+        conn_y: list[float | None] = []
+        conn_names: list[str] = []
+
+        tips1_by_name = {n.name: n for n in tips1}
+        tips2_by_name = {n.name: n for n in tips2}
+
+        for name in highlight:
+            if name not in tips1_by_name or name not in tips2_by_name:
+                continue
+            t1 = tips1_by_name[name]
+            t2 = tips2_by_name[name]
+            x1 = tip_plot_x(t1, 0.0, scale1, False)
+            x2 = tip_plot_x(t2, RIGHT_START + 1.0, scale2, True)
+            conn_x += [x1, x2, None]
+            conn_y += [t1.y, t2.y, None]
+            conn_names.append(name)
+
+        if conn_x:
+            traces.append(go.Scatter(
+                x=conn_x, y=conn_y,
+                mode="lines",
+                line=dict(color="rgba(230,57,70,0.7)", width=2),
+                text=[n for n in conn_names for _ in range(3)],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            ))
+
+        entry1 = state.get_mcc_registry_entry(uid1)
+        entry2 = state.get_mcc_registry_entry(uid2)
+        label1 = entry1["name"] if entry1 else "Group 1"
+        label2 = entry2["name"] if entry2 else "Group 2"
+
+        n_tips = max(
+            max((n.y for n in nodes1 if n.is_tip), default=0),
+            max((n.y for n in nodes2 if n.is_tip), default=0),
+        )
+
+        px_per_tip = px_per_tip or 1
+        fig = go.Figure(data=[
+            t if isinstance(t, go.Scatter) else go.Scatter(**t)
+            for t in traces
+        ])
+        fig.update_layout(
+            template="simple_white",
+            height=max(300, int(n_tips * px_per_tip) + 60),
+            margin=dict(l=10, r=10, t=40, b=10),
+            xaxis=dict(
+                visible=False,
+                range=[-1.05, RIGHT_START + 1.05],
+            ),
+            yaxis=dict(visible=False),
+            hovermode="closest",
+            annotations=[
+                dict(
+                    x=0.5, y=1.02, xref="paper", yref="paper",
+                    text=(
+                        f"<b>{label1}</b> ← "
+                        f"  clade: {len(highlight)} tips  "
+                        f"→ <b>{label2}</b>"
+                    ),
+                    showarrow=False,
+                    font=dict(size=12),
+                    xanchor="center",
+                ),
+            ],
+        )
+
+        return dcc.Graph(
+            figure=fig,
+            config={"displayModeBar": False},
+            style={"width": "100%"},
+        )
+

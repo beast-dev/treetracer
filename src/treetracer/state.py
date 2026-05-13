@@ -260,8 +260,9 @@ def has_cached_mcc_tree(uid):
 
 
 def clear_all_mcc_trees():
-    """Drop every cached MCC tree. Called from the sidebar's Clear-data
-    handler so the cache doesn't outlive the data it summarises."""
+    """Drop every cached MCC tree and its registry entry. Called from the
+    sidebar's Clear-data handler so the cache doesn't outlive the data it
+    summarises."""
     _mcc_cache.clear()
     clear_all_mcc_registry()
 
@@ -296,11 +297,16 @@ def _next_mcc_name(source_distmat, mode, run):
 
 def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
                  selection, log_clade_credibility,
-                 mcc_log_posterior=None):
+                 mcc_log_posterior=None, tree_names=None):
     """Append a new MCC registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
     registry is at cap, keeping list and cache strictly synchronised.
+
+    ``tree_names`` is the flat list of "group/STATE_N" tree names from
+    the user's selection — stored so the Clade Frequency Comparison
+    feature can index into the snapshot presence matrix without
+    re-deriving names from the selection pairs.
     """
     global _mcc_registry
     if len(_mcc_registry) >= _MAX_MCC_REGISTRY:
@@ -317,6 +323,8 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
         "selection": selection,
         "log_clade_credibility": log_clade_credibility,
         "mcc_log_posterior": mcc_log_posterior,
+        "tree_names": list(tree_names) if tree_names is not None else [],
+        "n_trees": len(tree_names) if tree_names is not None else 0,
         "created_at": time.time(),
     }
     _mcc_registry.append(entry)
@@ -326,6 +334,14 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
 def get_mcc_registry():
     """Snapshot the registry for a dcc.Store payload."""
     return list(_mcc_registry)
+
+
+def get_mcc_registry_entry(uid):
+    """Return the registry entry whose uuid matches *uid*, or None."""
+    for e in _mcc_registry:
+        if e.get("uuid") == uid:
+            return e
+    return None
 
 
 def get_mcc_registry_filtered(*, source_distmat=None, mode=None, run=None):

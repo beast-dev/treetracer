@@ -207,6 +207,48 @@ def _tanglegram_title(label1, label2, highlight):
     )
 
 
+def _tanglegram_placeholder_fig():
+    """The empty-state figure that lives in the tanglegram panel
+    before any Compare+click has happened — also restored when the
+    user clears all data."""
+    return {
+        "data": [],
+        "layout": {
+            "height": 200,
+            "xaxis": {"visible": False},
+            "yaxis": {"visible": False},
+            "plot_bgcolor": "white",
+            "paper_bgcolor": "white",
+            "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+            "annotations": [{
+                "text": "Select two MCC trees and click "
+                        "<b>Compare Clade Frequencies</b>,"
+                        " then click a dot in the scatter "
+                        "above to draw the tanglegram.",
+                "xref": "paper", "yref": "paper",
+                "x": 0.5, "y": 0.5,
+                "showarrow": False,
+                "font": {"size": 13, "color": "#888"},
+                "align": "center",
+            }],
+        },
+    }
+
+
+def clear_clade_freq_caches():
+    """Drop every per-session cache used by the Clade Frequency
+    Comparison feature.
+
+    Called from ``sidebar.clear_uploads`` so a Clear-data click
+    actually wipes the bipartition→tip-set decode, the parsed-NEXUS
+    LRU, and the click→split lookup table — they're keyed on MCC
+    uuids that are about to disappear from ``state._mcc_cache``.
+    """
+    _get_parsed_mcc.cache_clear()
+    _get_tanglegram_layout.cache_clear()
+    _split_resolution.clear()
+
+
 def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
     """Build the RF trace figure with optional burnin zoom."""
     all_groups = sorted(trace_df['group'].unique().tolist())
@@ -1108,6 +1150,10 @@ def register_diagnostics_callbacks():
     @callback(
         Output("clade-freq-plot", "children"),
         Output("clade-freq-data-store", "data"),
+        # Toggle the output Paper visible only on success; stays
+        # hidden on any error path or before the first successful
+        # Compare. Cleared by the sidebar's Clear-data flow.
+        Output("clade-freq-output-paper", "style"),
         Input("clade-freq-compare-button", "n_clicks"),
         State("clade-freq-mcc-select-1", "value"),
         State("clade-freq-mcc-select-2", "value"),
@@ -1123,7 +1169,7 @@ def register_diagnostics_callbacks():
         Clicking a dot triggers the tanglegram callback.
         """
         if not uid1 or not uid2:
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         entry1 = state.get_mcc_registry_entry(uid1)
         entry2 = state.get_mcc_registry_entry(uid2)
@@ -1133,7 +1179,7 @@ def register_diagnostics_callbacks():
                 "One or both selected MCC trees are no longer available. "
                 "Please recompute them.",
                 c="red", size="sm",
-            ), no_update
+            ), no_update, no_update
 
         try:
             df = compute_clade_frequencies(entry1, entry2)
@@ -1141,7 +1187,7 @@ def register_diagnostics_callbacks():
             return dmc.Text(
                 f"Error computing clade frequencies: {e}",
                 c="red", size="sm",
-            ), no_update
+            ), no_update, no_update
 
         # Integer row id replaces the old fragile comma-joined string.
         # The click-handler + tanglegram callbacks resolve split_id to
@@ -1170,12 +1216,17 @@ def register_diagnostics_callbacks():
         df_plot = df[df["clade_size"] >= min_size]
 
         fig = _build_scatter_fig(df_plot, label1, label2)
-        return dcc.Graph(
-            id="clade-freq-scatter",
-            figure=fig,
-            config={"displayModeBar": False},
-            style={"width": "100%"},
-        ), store_data
+        # Success path: reveal the output paper.
+        return (
+            dcc.Graph(
+                id="clade-freq-scatter",
+                figure=fig,
+                config={"displayModeBar": False},
+                style={"width": "100%"},
+            ),
+            store_data,
+            {},
+        )
 
     @callback(
         Output("clade-freq-click-store", "data"),

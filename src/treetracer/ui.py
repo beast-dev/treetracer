@@ -85,77 +85,31 @@ def _add_about_modal():
     )
 
 def _add_clade_freq_panel():
-    """Build the Clade Frequency Comparison section for the Diagnostics tab.
- 
-    This is a self-contained helper so other branches can import or reuse it
-    without touching _add_diagnostics_panel directly.
- 
-    Layout
-    ------
-    A single dmc.Paper containing:
-      - A title row with a badge explaining the prerequisite.
-      - Two Select dropdowns side by side (Group 1 / Group 2), each listing
-        every MCC tree computed this session via the mcc-registry-store.
-      - A "Compare" button, enabled only when both dropdowns have a value.
-      - A hint line explaining where MCC trees come from.
-      - Two Div placeholders:
-          "clade-freq-plot"    — receives the frequency scatter plot
-          "clade-freq-tanglegram" — receives the tanglegram
+    """Output paper for the Clade Frequency Comparison feature.
+
+    The CONTROLS — two MCC-tree dropdowns and the Compare button —
+    live in ``diagnostics-mcc-paper`` (immediately under the MCC table
+    they pull from). This paper is just the output surface: the
+    scatter, the two sliders that re-shape it, and the tanglegram
+    below.
+
+    Components built here:
+        clade-freq-plot         scatter (freq_1 vs freq_2)
+        tanglegram-yscale-slider, clade-freq-min-clade-size
+        clade-freq-tanglegram   pair of trees with red-highlighted
+                                clicked clade
     """
     return dmc.Paper([
-        # ── Header row ──────────────────────────────────────────────────────
         dmc.Group([
             dmc.Title("Clade Frequency Comparison", order=5),
             dmc.Badge(
-                "requires two saved MCC trees",
+                "select two MCC trees above and click Compare",
                 variant="light", size="sm",
             ),
         ], gap="sm", align="center"),
- 
+
         dmc.Space(h=10),
- 
-        # ── Controls row ────────────────────────────────────────────────────
-        dmc.Group([
-            dmc.Select(
-                id="clade-freq-mcc-select-1",
-                label="Group 1 (MCC tree)",
-                placeholder="No MCC trees saved yet",
-                data=[],
-                value=None,
-                disabled=True,
-                w=280,
-                size="sm",
-            ),
-            dmc.Select(
-                id="clade-freq-mcc-select-2",
-                label="Group 2 (MCC tree)",
-                placeholder="No MCC trees saved yet",
-                data=[],
-                value=None,
-                disabled=True,
-                w=280,
-                size="sm",
-            ),
-            dmc.Button(
-                "Compare Clade Frequencies",
-                id="clade-freq-compare-button",
-                variant="filled",
-                color="green",
-                size="sm",
-                disabled=True,
-                style={"alignSelf": "flex-end"},
-            ),
-        ], gap="md", align="flex-end"),
- 
-        dmc.Text(
-            "Save MCC trees by selecting trees in the Within-run or "
-            "Between-run Analysis tabs and clicking 'View MCC'.",
-            size="xs", c="dimmed", mt=4,
-        ),
- 
-        dmc.Space(h=10),
- 
-        # ── Output placeholders ─────────────────────────────────────────────
+
         dcc.Loading(
             html.Div(id="clade-freq-plot"),
             type="circle",
@@ -167,12 +121,7 @@ def _add_clade_freq_panel():
                 id="tanglegram-yscale-slider",
                 min=1, max=30, step=1, value=1,
                 w=300,
-                marks=[
-                    #{"value": 4,  "label": "4"},
-                    #{"value": 10, "label": "10"},
-                    #{"value": 20, "label": "20"},
-                    #{"value": 30, "label": "30"},
-                ],
+                marks=[],
             ),
         ], gap=4, mt=8, mb=4),
         dmc.Stack([
@@ -189,13 +138,51 @@ def _add_clade_freq_panel():
                 ],
             ),
         ], gap=4, mt=8, mb=4),
+        # Static dcc.Graph so ``dash.Patch`` can update only the
+        # dynamic traces (highlight markers + connectors) on each
+        # click — the branches and grey-tips skeleton stays put,
+        # which is the heavy bit. Tanglegram-pair-store tracks which
+        # MCC pair is currently rendered so the callback knows when a
+        # full rebuild is required (different uids) vs a Patch-only
+        # update (same uids, different highlight).
         dcc.Loading(
-            html.Div(id="clade-freq-tanglegram"),
+            dcc.Graph(
+                id="clade-freq-tanglegram",
+                figure={
+                    "data": [],
+                    "layout": {
+                        "height": 200,
+                        "xaxis": {"visible": False},
+                        "yaxis": {"visible": False},
+                        "plot_bgcolor": "white",
+                        "paper_bgcolor": "white",
+                        "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
+                        "annotations": [{
+                            "text": "Select two MCC trees and click "
+                                    "<b>Compare Clade Frequencies</b>,"
+                                    " then click a dot in the scatter "
+                                    "above to draw the tanglegram.",
+                            "xref": "paper", "yref": "paper",
+                            "x": 0.5, "y": 0.5,
+                            "showarrow": False,
+                            "font": {"size": 13, "color": "#888"},
+                            "align": "center",
+                        }],
+                    },
+                },
+                config={"displayModeBar": False},
+                style={"width": "100%"},
+            ),
             type="circle",
             parent_style={"minHeight": "200px"},
         ),
- 
-    ], p="md", withBorder=True, radius="sm")
+        dcc.Store(id="clade-freq-tanglegram-pair-store"),
+    ], p="md", withBorder=True, radius="sm",
+       # Hidden until ``compute_and_plot_clade_frequencies`` succeeds —
+       # nothing useful to show before Compare has run. Cleared back to
+       # hidden by the sidebar's Clear-data flow.
+       id="clade-freq-output-paper",
+       style={"display": "none"})
  
  
 def _add_diagnostics_panel():
@@ -338,16 +325,57 @@ def _add_diagnostics_panel():
                 html.Div(id="pseudo-ess-output"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Per-matrix MCC registry summary. Hidden when no MCCs have
-            # been computed for the currently-selected matrix; otherwise
-            # split into Between-runs and Within-run tables. Driven by
-            # ``render_diagnostics_mcc_panel`` in callbacks/diagnostics.py.
-            dmc.Paper(
+            # Per-matrix MCC registry summary + Clade-Frequency
+            # comparison controls (two MCC dropdowns + Compare button).
+            # The dropdowns and button live here, immediately under the
+            # MCC table they pull from, so picking and comparing happen
+            # in the same visual unit.
+            #
+            # Output (scatter + tanglegram) renders into the separate
+            # ``_add_clade_freq_panel`` below — those plots get heavy
+            # and benefit from owning the page width without the table
+            # crammed above them.
+            #
+            # Whole paper is hidden when no MCCs match the active
+            # matrix; driven by ``render_diagnostics_mcc_panel`` in
+            # callbacks/diagnostics.py.
+            dmc.Paper([
                 html.Div(id="diagnostics-mcc-list"),
-                p="md", withBorder=True, radius="sm",
-                id="diagnostics-mcc-paper",
-                style={"display": "none"},
-            ),
+                dmc.Space(h=10),
+                dmc.Group([
+                    dmc.Select(
+                        id="clade-freq-mcc-select-1",
+                        label="Group 1 (MCC tree)",
+                        placeholder="No MCC trees saved yet",
+                        data=[],
+                        value=None,
+                        disabled=True,
+                        w=280,
+                        size="sm",
+                    ),
+                    dmc.Select(
+                        id="clade-freq-mcc-select-2",
+                        label="Group 2 (MCC tree)",
+                        placeholder="No MCC trees saved yet",
+                        data=[],
+                        value=None,
+                        disabled=True,
+                        w=280,
+                        size="sm",
+                    ),
+                    dmc.Button(
+                        "Compare Clade Frequencies",
+                        id="clade-freq-compare-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                        style={"alignSelf": "flex-end"},
+                    ),
+                ], gap="md", align="flex-end"),
+            ], p="md", withBorder=True, radius="sm",
+               id="diagnostics-mcc-paper",
+               style={"display": "none"}),
 
             # Clade frequency comparison panel (local feature).
             _add_clade_freq_panel(),

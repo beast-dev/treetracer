@@ -14,8 +14,8 @@ This module owns the two routes that window depends on:
 
 peartree itself is loaded from /assets/peartree.bundle.min.js; the
 vendored bundle sits in ``src/treetracer/assets/`` and Dash auto-serves
-it at that URL. (Auto-injection of the bundle into the main TreeTracer
-page is suppressed via ``assets_ignore`` in app.py — see plan.)
+it at that URL. Auto-injection of the bundle into the main TreeTracer
+page is suppressed via ``assets_ignore`` in app.py.
 """
 
 from __future__ import annotations
@@ -41,12 +41,39 @@ _PEARTREE_PAGE = """<!doctype html>
   <div id="tree"></div>
   <script src="/assets/peartree.bundle.min.js"></script>
   <script>
+    // Embed the tree, then apply descending clade-size sort.
+    //
+    // We synthesise a click on the toolbar's "Sort descending" button
+    // (``btn-order-desc``) rather than calling ``controller.sort('desc')``
+    // from ``onTreeLoad``. Both run the same internal ``gs(true)`` sort,
+    // but the bundle only un-disables ``btn-order-desc`` once its tree
+    // state is fully hydrated, so polling the button's ``disabled`` flag
+    // gives us a robust "tree is ready" signal that ``onTreeLoad`` alone
+    // didn't reliably provide.
+    //
+    // ``introAnimation: 'none'`` is load-bearing: the bundle starts the
+    // intro animation BEFORE dispatching ``peartree-tree-loaded``, so a
+    // sort applied mid-animation gets clobbered when peartree finishes
+    // the animation by snapping back to the pre-sort layout ("appears
+    // sorted, then unsorts"). Disabling the animation means the layout
+    // is final at sort time.
     PearTreeEmbed.embed({
       container: "tree",
       treeUrl:   "/peartree/{{ uid }}/tree.nex",
       filename:  "mcc.nex",
       height:    "100vh",
+      settings: { introAnimation: "none" },
     });
+    (() => {
+      const iv = setInterval(() => {
+        const btn = document.getElementById("btn-order-desc");
+        if (!btn || btn.disabled) return;
+        btn.click();
+        clearInterval(iv);
+      }, 100);
+      // Hard cap so the interval doesn't leak if the tree never loads.
+      setTimeout(() => clearInterval(iv), 10000);
+    })();
   </script>
   <script>
     // Pywebview-only download interceptor.

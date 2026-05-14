@@ -400,21 +400,32 @@ def register_compute_callbacks():
         # Shared outputs (2)
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        # Auto-collapse sidebar on RF success (3 outputs mirror the
+        # shell sidebar-toggle callback's outputs).
+        Output("navbar", "style", allow_duplicate=True),
+        Output("sidebar-visible", "data", allow_duplicate=True),
+        Output("appshell", "navbar", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
+        State("sidebar-visible", "data"),
         prevent_initial_call=True,
     )
-    def poll_completion(n_intervals):
+    def poll_completion(n_intervals, sidebar_visible):
         global _rf_future, _mds_future
 
         rf_done = _rf_future is not None and _rf_future.done()
         mds_done = _mds_future is not None and _mds_future.done()
 
         if not rf_done and not mds_done:
-            return (no_update,) * 12
+            return (no_update,) * 15
 
         rf_out = [no_update] * 5
         mds_out = [no_update] * 5
         notif = no_update
+        # Sidebar outputs: (navbar.style, sidebar-visible, appshell.navbar).
+        # Only flipped on RF success when the sidebar is currently open;
+        # everything else stays no_update so we don't fight the user's
+        # last toggle.
+        sidebar_out = [no_update, no_update, no_update]
 
         # --- Process RF ---
         if rf_done:
@@ -450,6 +461,14 @@ def register_compute_callbacks():
                     title=f"RF Distances Computed ({rf_name})",
                     message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
                     color="green", action="show", autoClose=3000, id=notif_id())
+                # Auto-collapse the sidebar to give the results area room.
+                if sidebar_visible:
+                    sidebar_out = [
+                        {"display": "none"},
+                        False,
+                        {"width": 0, "breakpoint": "sm",
+                         "collapsed": {"mobile": True}},
+                    ]
 
         # --- Process MDS ---
         if mds_done:
@@ -514,7 +533,7 @@ def register_compute_callbacks():
                        (_mds_future is not None and not _mds_future.done()))
         poll_disabled = not any_running
 
-        return (*rf_out, *mds_out, notif, poll_disabled)
+        return (*rf_out, *mds_out, notif, poll_disabled, *sidebar_out)
 
     # ------ EXPORT CALLBACKS ------
 

@@ -28,19 +28,14 @@ cheap:
    the frequency is just ``counts[j] / n_trees``. With this pre-
    computed, a Compare click does no row-sum work.
 
-Same-distmat fast path
-----------------------
-When both MCC entries share a ``source_distmat`` (the common case —
-comparing a Between and a Within MCC built from the same RF run), both
-``counts`` vectors index into the *same* bipartition column basis.
-We merge by column index — no frozenset / tuple hashing needed.
-
-Cross-distmat fallback
-----------------------
-When the two distmats have the same leaf set, int-tuple keys are
-comparable (rapidtrees sorts leaves alphabetically, so the integer
-indices mean the same taxa across runs). When leaf sets differ, we
-fall back to merging by frozenset-of-taxon-names.
+Same-distmat only
+-----------------
+Both MCC entries MUST share ``source_distmat``. The diagnostics UI
+filters the Compare-clade dropdowns to the active RF matrix so this
+is always true; ``compute_clade_frequencies`` raises ``ValueError``
+on a mismatch as a defensive check. With shared distmat, both
+``counts`` vectors index into the *same* rooted-clade column basis
+and merging is a pure column-index alignment — no key hashing.
 """
 
 from __future__ import annotations
@@ -94,7 +89,15 @@ def _normalise_counts(entry, source_distmat):
 
 
 def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
-    """Compute per-bipartition frequencies for two MCC registry entries.
+    """Compute per-rooted-clade frequencies for two MCC registry entries.
+
+    Both entries MUST share ``source_distmat`` — clade-frequency
+    comparison is only meaningful for MCCs computed from the same RF
+    matrix, since column indices in rapidtrees' rooted-clade presence
+    table are basis-specific to that matrix. The dropdowns in the
+    Diagnostics UI enforce this by filtering MCC options to the active
+    distmat (see ``callbacks.diagnostics.populate_mcc_selects``); this
+    function raises if a caller bypasses that filter.
 
     Args:
         entry1, entry2: MCC registry entries (dicts as returned by
@@ -104,103 +107,54 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns:
-            split_key   tuple[int] | frozenset[str]  canonical side tip
-                                    indices into leaf_names_1, or (for
-                                    cross-distmat-only splits) a
-                                    frozenset of taxon names.
-            column_j    int | None  presence-matrix column index in
-                                    ``entry1.source_distmat``'s snapshot
-                                    (same-distmat fast path); ``None``
-                                    for the cross-distmat fallback.
-            freq_1      float       frequency in group 1's trees
-            freq_2      float       frequency in group 2's trees
-            clade_size  int         len(split_key)
+            split_key   tuple[int]  rooted-clade descendant tip indices
+                                    into ``state.get_canonical_keys(
+                                    source_distmat)["leaf_names"]``.
+            column_j    int         presence-matrix column index in the
+                                    snapshot. Always populated.
+            freq_1      float       frequency in group 1's trees.
+            freq_2      float       frequency in group 2's trees.
+            clade_size  int         ``len(split_key)``.
         Sorted by descending mean of the two frequencies.
 
     Raises:
-        KeyError, FileNotFoundError on snapshot lookup failures.
+        ValueError: if the two entries' ``source_distmat`` differ.
+        KeyError, FileNotFoundError: on snapshot lookup failures.
     """
     src1 = entry1["source_distmat"]
     src2 = entry2["source_distmat"]
+    if src1 != src2:
+        raise ValueError(
+            f"Cannot compare MCCs from different RF matrices "
+            f"({src1!r} vs {src2!r}); UI must filter the dropdowns to "
+            f"the active distmat."
+        )
     counts_1, n_trees_1 = _normalise_counts(entry1, src1)
-    counts_2, n_trees_2 = _normalise_counts(entry2, src2)
+    counts_2, n_trees_2 = _normalise_counts(entry2, src1)
 
-    keys_1 = state.get_canonical_keys(src1)
+    keys = state.get_canonical_keys(src1)
+    tuples = keys["tuples"]
 
-    if src1 == src2:
-        # Fast path: column basis is identical, so freq_2 indexes the
-        # same way as freq_1. No key matching at all.
-        freqs_1 = counts_1.astype(np.float64) / n_trees_1
-        freqs_2 = counts_2.astype(np.float64) / n_trees_2
-        mask = (counts_1 > 0) | (counts_2 > 0)
-        cols = np.flatnonzero(mask)
-        tuples = keys_1["tuples"]
-        rows = [
-            {
-                "split_key":  tuples[j],
-                "column_j":   int(j),
-                "freq_1":     float(freqs_1[j]),
-                "freq_2":     float(freqs_2[j]),
-                "clade_size": len(tuples[j]),
-            }
-            for j in cols
-        ]
-        df = pd.DataFrame(
-            rows,
-            columns=["split_key", "column_j", "freq_1", "freq_2", "clade_size"],
-        )
-    else:
-        # Cross-distmat fallback: merge by frozenset of taxon names so
-        # different column orderings between the two distmats line up.
-        keys_2 = state.get_canonical_keys(src2)
-        leaf_names_1 = keys_1["leaf_names"]
-        leaf_names_2 = keys_2["leaf_names"]
-
-        def names_of(idx_tuple, leaf_names):
-            return frozenset(leaf_names[i] for i in idx_tuple)
-
-        freq_1 = {}
-        for j, idx_tuple in enumerate(keys_1["tuples"]):
-            if counts_1[j] == 0:
-                continue
-            freq_1[names_of(idx_tuple, leaf_names_1)] = (
-                float(counts_1[j]) / n_trees_1, idx_tuple,
-            )
-        freq_2 = {}
-        for j, idx_tuple in enumerate(keys_2["tuples"]):
-            if counts_2[j] == 0:
-                continue
-            freq_2[names_of(idx_tuple, leaf_names_2)] = float(counts_2[j]) / n_trees_2
-
-        # Use group-1 leaf order for split_key indices so the click→
-        # tanglegram path always resolves against ``entry1``'s leaves.
-        rows = []
-        for name_set, (f1, idx_tuple) in freq_1.items():
-            rows.append({
-                "split_key":  idx_tuple,
-                "column_j":   None,
-                "freq_1":     f1,
-                "freq_2":     freq_2.get(name_set, 0.0),
-                "clade_size": len(idx_tuple),
-            })
-        only_in_2 = set(freq_2) - set(freq_1)
-        # For splits only in group 2 we don't have group-1 indices.
-        # Fabricate an indirect representation: store the name-set as
-        # a 'split_key' synonym (downstream callers should handle the
-        # ``isinstance(split_key, frozenset)`` branch when needed).
-        for name_set in only_in_2:
-            rows.append({
-                "split_key":  name_set,
-                "column_j":   None,
-                "freq_1":     0.0,
-                "freq_2":     freq_2[name_set],
-                "clade_size": len(name_set),
-            })
-        df = pd.DataFrame(
-            rows,
-            columns=["split_key", "column_j", "freq_1", "freq_2", "clade_size"],
-        )
-
+    # Column basis is identical, so ``counts_2`` indexes the same way
+    # as ``counts_1`` — merge purely by column position.
+    freqs_1 = counts_1.astype(np.float64) / n_trees_1
+    freqs_2 = counts_2.astype(np.float64) / n_trees_2
+    mask = (counts_1 > 0) | (counts_2 > 0)
+    cols = np.flatnonzero(mask)
+    rows = [
+        {
+            "split_key":  tuples[j],
+            "column_j":   int(j),
+            "freq_1":     float(freqs_1[j]),
+            "freq_2":     float(freqs_2[j]),
+            "clade_size": len(tuples[j]),
+        }
+        for j in cols
+    ]
+    df = pd.DataFrame(
+        rows,
+        columns=["split_key", "column_j", "freq_1", "freq_2", "clade_size"],
+    )
     df["mean_freq"] = (df["freq_1"] + df["freq_2"]) / 2
     df = (
         df.sort_values("mean_freq", ascending=False)

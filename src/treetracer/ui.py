@@ -250,7 +250,13 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], gap="sm", align="center"),
+                    # ``flex-end`` lines every control on the row's
+                    # bottom edge. The Burnin ``NumberInput`` has a
+                    # stacked label and is therefore taller than the
+                    # title/badge/button, so ``align="center"`` used
+                    # to center its midpoint and shove the label
+                    # above the rest of the row.
+                ], gap="sm", align="flex-end"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="lnl-trace-plot"),
@@ -280,14 +286,6 @@ def _add_diagnostics_panel():
                         value="last",
                         w=150,
                     ),
-                    dmc.Button(
-                        "Compute RF Trace",
-                        id="compute-rf-trace-button",
-                        variant="filled",
-                        color="green",
-                        size="sm",
-                        disabled=True,
-                    ),
                     dmc.NumberInput(
                         id="rf-burnin-input",
                         label="Burnin",
@@ -297,9 +295,19 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=120,
                     ),
+                    dmc.Button(
+                        "Compute RF Trace",
+                        id="compute-rf-trace-button",
+                        variant="filled",
+                        color="green",
+                        size="sm",
+                        disabled=True,
+                    ),
                     dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True),
-                ], align="center", gap="md"),
+                    # Bottom-align (see Log-Posterior Trace) so the
+                    # labeled Burnin input doesn't drift above the row.
+                ], align="flex-end", gap="md"),
                 dmc.Space(h=10),
                 dcc.Loading(
                     html.Div(id="rf-trace-plot"),

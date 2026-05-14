@@ -256,10 +256,10 @@ def get_canonical_keys(source_distmat):
          "leaf_names": list[str]}          # leaf_names[i] is the taxon
                                            # at index i in each tuple
 
-    The tuple encoding is what the Clade Frequency Comparison feature
-    uses for cross-distmat split matching when the leaf sets agree
-    (the common case) and for the scatter→tanglegram highlight
-    resolution (look up names via ``leaf_names[i] for i in tuple``).
+    The tuple encoding feeds the scatter→tanglegram highlight
+    resolution: each rooted clade's tuple holds the leaf indices of
+    its descendants, and the click handler resolves those to tip
+    names via ``leaf_names[i] for i in tuple``.
 
     Raises FileNotFoundError if the snapshot is missing on disk.
     """
@@ -274,7 +274,16 @@ def get_canonical_keys(source_distmat):
         )
     bits = snap["bipartition_bits"]
     tuples = [tuple(np.flatnonzero(row).tolist()) for row in bits]
-    leaf_names = [str(n) for n in snap["leaf_names"]]
+    # ``parse_nexus`` strips outer single/double quotes from quoted
+    # taxon identifiers when reading the Translate block (per NEXUS
+    # spec: quotes are syntactic, not part of the name). Rapidtrees
+    # passes the translate values through verbatim, so its snapshot
+    # ``leaf_names`` keep the quote characters. Without normalising
+    # here, the canonical names (e.g. ``"'24P021_..._2024'"``) and the
+    # parsed MCC-tree node names (e.g. ``"24P021_..._2024"``) don't
+    # match, the descendant-bits walk silently drops 1000+ tips, and
+    # the tanglegram highlights scatter across paraphyletic groups.
+    leaf_names = [str(n).strip("'\"") for n in snap["leaf_names"]]
     _distmat_canonical_keys[source_distmat] = {
         "tuples":     tuples,
         "leaf_names": leaf_names,
@@ -409,8 +418,7 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
     registry is at cap, keeping list and cache strictly synchronised.
 
     ``tree_names`` is the flat list of "group/STATE_N" tree names from
-    the user's selection — kept for provenance + the cross-distmat
-    fallback in the Clade Frequency Comparison feature.
+    the user's selection — kept for provenance.
 
     ``counts`` is the pre-computed column-sum of the snapshot's
     presence matrix over the selected rows: a numpy uint32/int32 array

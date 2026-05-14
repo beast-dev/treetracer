@@ -20,13 +20,15 @@ from ..clade_freq import compute_clade_frequencies
 # tanglegram round-trip. The scatter's ``customdata`` carries an
 # integer ``split_id`` (the row index in the DataFrame produced by
 # ``compute_clade_frequencies``); this dict maps that id to a
-# ``(source_distmat, split_key)`` pair so the click handler can
-# resolve back to actual tip names. Rebuilt on every Compare click.
+# ``(source_distmat, column_j, split_key)`` triple so the click
+# handler can both resolve the clade's tip names AND check MCC
+# membership via ``column_j in cols_in_mcc`` (the rapidtrees-encoded
+# rooted-clade column index in that distmat's snapshot). Rebuilt on
+# every Compare click.
 #
-# Keeping the keys server-side avoids serialising 40k frozensets of
-# strings (or tuples of ints) through the browser store, and dodges
-# the previous fragile ", ".join(sorted(s)) → ",".split() round-trip.
-_split_resolution: dict[int, tuple[str, object]] = {}
+# Keeping the keys server-side avoids serialising tens of thousands
+# of tuples through the browser store on every click.
+_split_resolution: dict[int, tuple[str, int, tuple]] = {}
 
 from ..newick_layout import parse_nexus, build_tree_traces, _collect_nodes
 from ._helpers import _save_file_dialog
@@ -42,104 +44,6 @@ from ._helpers import _save_file_dialog
 # (highlight markers + connectors) when the MCC pair hasn't changed.
 
 import functools
-
-
-@functools.lru_cache(maxsize=64)
-def _get_mcc_descendant_size_by_column(uid, source_distmat):
-    """``dict[int, int]`` mapping each presence-matrix column index that
-    appears in the MCC tree to the size (in tips) of that bipartition's
-    descendant side in the rooted tree.
-
-    Used to overwrite the DataFrame's ``clade_size`` so the scatter
-    reports the size of the side that will actually be highlighted on
-    click — not the rapidtrees-canonical side, which can be the
-    paraphyletic complement and so visually confusing.
-    """
-    entry = state.get_mcc_registry_entry(uid)
-    if entry is None:
-        return None
-    cols = entry.get("cols_in_mcc")
-    if cols is None:
-        return None
-    desc = _get_mcc_descendant_bits(uid, source_distmat)
-    if desc is None:
-        return None
-    descendant_bits, all_tips_bits = desc
-    try:
-        canonical = state.get_canonical_keys(source_distmat)
-    except (KeyError, FileNotFoundError):
-        return None
-    tuples = canonical["tuples"]
-
-    size_map: dict[int, int] = {}
-    for j in cols:
-        t = tuples[j]
-        bits = 0
-        for i in t:
-            bits |= 1 << i
-        if bits in descendant_bits:
-            size_map[j] = len(t)
-        else:
-            # Complement is the descendant side; its size is the
-            # popcount of (all_tips ^ bits). Falls back to len(t) if
-            # neither side matches (shouldn't happen, but be safe).
-            complement = all_tips_bits ^ bits
-            if complement in descendant_bits:
-                size_map[j] = bin(complement).count("1")
-            else:
-                size_map[j] = len(t)
-    return size_map
-
-
-@functools.lru_cache(maxsize=64)
-def _get_mcc_descendant_bits(uid, source_distmat):
-    """``(descendant_bits, all_tips_bits)`` for the MCC tree.
-
-    ``descendant_bits`` is a ``frozenset[int]`` of Python-int
-    bitvectors — one per internal node, each a mask over the
-    distmat's canonical leaf indices marking that node's descendant
-    tip set in the rooted MCC tree. The descendant side of an
-    internal node is the monophyletic side that draws as a single
-    contiguous clade in the tanglegram; the other side is
-    paraphyletic in the rooted layout and would render as scattered
-    red tips. At click time we pick whichever side of the clicked
-    bipartition is in this set, which fixes the "scattered tips for
-    a 226-tip clade" bug where the rapidtrees-canonical side happened
-    to land on the paraphyletic half.
-
-    Cache key is ``(uid, source_distmat)`` because the bit positions
-    follow the distmat's canonical leaf order (the same order
-    indexed by ``state.get_canonical_keys(source_distmat)["tuples"]``
-    and the presence-matrix columns), so each MCC is keyed by which
-    distmat coordinate system it's being looked up in.
-
-    Returns ``None`` when the MCC's NEXUS bytes have been evicted
-    from state's LRU cache or the distmat snapshot can't be loaded.
-    """
-    root = _get_parsed_mcc(uid)
-    if root is None:
-        return None
-    try:
-        canonical = state.get_canonical_keys(source_distmat)
-    except (KeyError, FileNotFoundError):
-        return None
-    name_to_bit = {n: 1 << i for i, n in enumerate(canonical["leaf_names"])}
-
-    subtree_bits: list[int] = []
-    def visit(node):
-        if node.is_tip:
-            return name_to_bit.get(node.name, 0)
-        b = 0
-        for c in node.children:
-            b |= visit(c)
-        subtree_bits.append(b)
-        return b
-
-    all_tips_bits = visit(root)
-    descendant_bits = frozenset(
-        b for b in subtree_bits if 0 < b < all_tips_bits
-    )
-    return descendant_bits, all_tips_bits
 
 
 @functools.lru_cache(maxsize=64)
@@ -303,23 +207,21 @@ def _connector_overlay_trace(tips1, tips2, highlight):
 def _tanglegram_title(label1, label2, highlight, in_1=False, in_2=False):
     """Build the tanglegram's annotation text.
 
-    ``in_1`` / ``in_2`` mark whether the clicked bipartition is a
-    monophyletic clade of MCC1 / MCC2. The corresponding label is
-    drawn in green so the user can read at a glance which tree(s)
-    actually contain the highlighted split — useful when the dot
-    sits along the "only in MCC1" axis on the scatter and the user
-    wants to confirm at the tanglegram.
+    ``in_1`` / ``in_2`` mark whether the clicked rooted clade is
+    present in MCC1 / MCC2. The corresponding label is drawn in
+    green so the user can read at a glance which tree(s) contain
+    the highlighted clade. In rooted-clade mode the descendant set
+    is identical between any two MCCs that contain it, so a single
+    highlight (and a single ``N tips`` size) is always correct —
+    no orientation-flip case to handle.
     """
     green = "#2f9e44"
     def fmt(label, contains):
         if contains:
             return f"<b><span style='color:{green}'>{label}</span></b>"
         return f"<b>{label}</b>"
-    return (
-        f"{fmt(label1, in_1)} ← "
-        f"  clade: {len(highlight)} tips  "
-        f"→ {fmt(label2, in_2)}"
-    )
+    size_str = f"clade: {len(highlight)} tips"
+    return f"{fmt(label1, in_1)} ←   {size_str}   → {fmt(label2, in_2)}"
 
 
 def _tanglegram_placeholder_fig():
@@ -360,8 +262,6 @@ def clear_clade_freq_caches():
     uuids that are about to disappear from ``state._mcc_cache``.
     """
     _get_parsed_mcc.cache_clear()
-    _get_mcc_descendant_bits.cache_clear()
-    _get_mcc_descendant_size_by_column.cache_clear()
     _get_tanglegram_layout.cache_clear()
     _split_resolution.clear()
 
@@ -1221,31 +1121,56 @@ def register_diagnostics_callbacks():
     @callback(
         Output("clade-freq-mcc-select-1", "data"),
         Output("clade-freq-mcc-select-1", "disabled"),
+        Output("clade-freq-mcc-select-1", "value", allow_duplicate=True),
         Output("clade-freq-mcc-select-2", "data"),
         Output("clade-freq-mcc-select-2", "disabled"),
+        Output("clade-freq-mcc-select-2", "value", allow_duplicate=True),
         Input("mcc-registry-store", "data"),
+        Input("diagnostics-distmat-select", "value"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        prevent_initial_call=True,
     )
-    def populate_mcc_selects(registry):
-        """Rebuild the MCC-tree dropdown options whenever a new MCC is saved.
+    def populate_mcc_selects(registry, selected_matrix, sel1, sel2):
+        """Rebuild the MCC-tree dropdown options whenever a new MCC is
+        saved OR the active distmat changes.
 
-        The registry list has the shape returned by get_mcc_registry():
-            [{"uuid": str, "name": str, "n_trees": int, ...}, ...]
+        **Filtered by the active distmat**: clade-frequency comparison
+        only makes sense between MCCs computed from the SAME RF matrix
+        (= same trees, same column basis in the rooted-clade presence
+        table). Showing MCCs from other matrices in the dropdowns would
+        let the user pick a meaningless cross-matrix pair, so we
+        restrict each dropdown's options to ``e["source_distmat"] ==
+        selected_matrix``. The previously-stale "cross-distmat
+        fallback" code in clade_freq.py + the tanglegram click handler
+        relied on this being possible; with this filter in place that
+        branch is unreachable and was removed in the same pass.
 
-        Each option's value is the MCC's uuid (used to retrieve the cached
-        NEXUS bytes and registry entry). The label shows the structured name
-        and tree count so the user can see which selection each MCC summarises.
+        When the user switches the active distmat, any selection that
+        no longer belongs to the new matrix is cleared so the Compare
+        button doesn't fire on a phantom pair.
         """
-        if not registry:
-            return [], True, [], True
+        if not registry or not selected_matrix:
+            return [], True, None, [], True, None
+
+        matched = [
+            e for e in registry
+            if e.get("source_distmat") == selected_matrix
+        ]
+        if not matched:
+            return [], True, None, [], True, None
 
         options = [
             {
                 "value": e["uuid"],
                 "label": f"{e['name']}  ({e['n_trees']} trees)",
             }
-            for e in registry
+            for e in matched
         ]
-        return options, False, options, False
+        valid_uids = {e["uuid"] for e in matched}
+        new_sel1 = sel1 if sel1 in valid_uids else None
+        new_sel2 = sel2 if sel2 in valid_uids else None
+        return options, False, new_sel1, options, False, new_sel2
  
     # ------ Clade Frequency Comparison: enable Compare button ------
     
@@ -1338,107 +1263,26 @@ def register_diagnostics_callbacks():
                 c="red", size="sm",
             ), no_update, no_update
 
-        # Annotate every split with whether it's an actual clade in
-        # MCC 1 / MCC 2. Stored as boolean columns so downstream code
-        # can use them for filtering (default), hover text, or
-        # colour-coding (e.g. "this split is only in MCC 1") without
-        # having to recompute the membership test.
+        # Annotate every rooted clade with whether it's present in
+        # MCC 1 / MCC 2. The dropdowns in ``populate_mcc_selects``
+        # restrict choices to the active distmat, so by construction
+        # ``entry1.source_distmat == entry2.source_distmat`` and both
+        # ``cols_in_mcc`` lists are in the same column basis as the
+        # DataFrame's ``column_j`` — a pure int-in-set check.
         src1 = entry1["source_distmat"]
-        src2 = entry2["source_distmat"]
-        cols_in_mcc_1 = entry1.get("cols_in_mcc")
-        cols_in_mcc_2 = entry2.get("cols_in_mcc")
+        cols_in_mcc_1 = entry1.get("cols_in_mcc") or []
+        cols_in_mcc_2 = entry2.get("cols_in_mcc") or []
+        df["in_mcc_1"] = df["column_j"].isin(set(cols_in_mcc_1))
+        df["in_mcc_2"] = df["column_j"].isin(set(cols_in_mcc_2))
 
-        if src1 == src2 and cols_in_mcc_1 is not None and cols_in_mcc_2 is not None:
-            # Fast path: both MCCs share a column basis with the DataFrame,
-            # so membership is an O(1) int-in-set check per row. The
-            # registry stores cols_in_mcc as a list (browser-safe);
-            # promote to a set once for the isin call.
-            df["in_mcc_1"] = df["column_j"].isin(set(cols_in_mcc_1))
-            df["in_mcc_2"] = df["column_j"].isin(set(cols_in_mcc_2))
-        else:
-            # Slow / cross-distmat fallback: encode each row's tip set
-            # into a bitvector in MCC1's (resp. MCC2's) leaf coordinates
-            # and check that bitvector (or its complement) against the
-            # MCC's descendant-bits set.
-            desc_1 = _get_mcc_descendant_bits(uid1, src1)
-            desc_2 = _get_mcc_descendant_bits(uid2, src2)
-            if desc_1 is None or desc_2 is None:
-                return dmc.Text(
-                    "MCC tree data is no longer available. Please recompute.",
-                    c="red", size="sm",
-                ), no_update, no_update
-            descendant_bits_1, all_tips_bits_1 = desc_1
-            descendant_bits_2, all_tips_bits_2 = desc_2
-
-            try:
-                canonical_1 = state.get_canonical_keys(src1)
-                canonical_2 = state.get_canonical_keys(src2)
-            except (KeyError, FileNotFoundError) as e:
-                return dmc.Text(
-                    f"Error reading distmat snapshot: {e}",
-                    c="red", size="sm",
-                ), no_update, no_update
-
-            leaf_names_1 = canonical_1["leaf_names"]
-            leaf_names_2 = canonical_2["leaf_names"]
-            name_to_bit_1 = {n: 1 << i for i, n in enumerate(leaf_names_1)}
-            name_to_bit_2 = {n: 1 << i for i, n in enumerate(leaf_names_2)}
-
-            def _bits_in(key, name_to_bit, leaf_names):
-                if isinstance(key, frozenset):
-                    b = 0
-                    for n in key:
-                        bit = name_to_bit.get(n)
-                        if bit is not None:
-                            b |= bit
-                    return b
-                b = 0
-                # key is a tuple[int] in src1's leaf order; translate via
-                # leaf_names[i] when we're encoding for a different distmat.
-                for i in key:
-                    bit = name_to_bit.get(leaf_names[i])
-                    if bit is not None:
-                        b |= bit
-                return b
-
-            def _side_present(bits, descendants, all_tips_bits):
-                if bits == 0 or bits == all_tips_bits:
-                    return False
-                return (bits in descendants) or ((all_tips_bits ^ bits) in descendants)
-
-            in_1, in_2 = [], []
-            for key in df["split_key"]:
-                b1 = _bits_in(key, name_to_bit_1, leaf_names_1)
-                b2 = _bits_in(key, name_to_bit_2, leaf_names_1)
-                in_1.append(_side_present(b1, descendant_bits_1, all_tips_bits_1))
-                in_2.append(_side_present(b2, descendant_bits_2, all_tips_bits_2))
-            df["in_mcc_1"] = in_1
-            df["in_mcc_2"] = in_2
-
-        # Show only splits that are a clade in at least one of the two
+        # Show only clades that are present in at least one of the two
         # MCCs — keeps the tanglegram meaningful when the user clicks.
         df = df[df["in_mcc_1"] | df["in_mcc_2"]].reset_index(drop=True)
 
-        # Re-stamp ``clade_size`` to reflect the descendant (monophyletic)
-        # side of each bipartition in the MCC that contains it — the side
-        # the tanglegram will actually highlight on click. The bipartition's
-        # rapidtrees-canonical side is the one "not containing leaf 0",
-        # which is often the paraphyletic complement in the rooted tree
-        # and can leave the scatter reporting e.g. "226 tips" for a split
-        # whose visible clade is only 57 tips. MCC1 takes precedence; rows
-        # in MCC2 only fall back to MCC2's descendant size. The
-        # cross-distmat fallback writes ``column_j = None`` for every row
-        # in clade_freq.py, so the .notna() check makes this a no-op
-        # there (where it'd need a separate name-set encoding anyway).
-        if "column_j" in df.columns and df["column_j"].notna().any():
-            size_map_1 = _get_mcc_descendant_size_by_column(uid1, src1) or {}
-            size_map_2 = _get_mcc_descendant_size_by_column(uid2, src2) or {}
-            merged = {**size_map_2, **size_map_1}
-            if merged:
-                mapped = df["column_j"].map(merged)
-                df["clade_size"] = (
-                    mapped.fillna(df["clade_size"]).astype(int)
-                )
+        # No clade-size re-stamping in rooted mode: each rapidtrees
+        # column is already a rooted clade with one specific descendant
+        # set, so the size computed in ``compute_clade_frequencies``
+        # (``len(split_key)``) is already the size we want to display.
 
         if df.empty:
             return dmc.Text(
@@ -1469,12 +1313,19 @@ def register_diagnostics_callbacks():
         df["split_id"] = np.arange(len(df), dtype=np.int32)
 
         # Refresh the click-resolution table: split_id → (distmat,
-        # split_key). split_key is tuple[int] for the fast same-distmat
-        # case (resolved via canonical_keys["leaf_names"]) or
-        # frozenset[str] for the cross-distmat fallback (already names).
+        # column_j, split_key). ``column_j`` is the rapidtrees-encoded
+        # rooted-clade column index in the snapshot; the click handler
+        # uses it for the in_1/in_2 check against each MCC's
+        # ``cols_in_mcc``. ``split_key`` is the descendant-set tuple
+        # of leaf indices, used only to resolve tip names for the
+        # highlight overlay.
         _split_resolution.clear()
-        for split_id, key in zip(df["split_id"].tolist(), df["split_key"].tolist()):
-            _split_resolution[int(split_id)] = (src1, key)
+        for split_id, col_j, key in zip(
+            df["split_id"].tolist(),
+            df["column_j"].tolist(),
+            df["split_key"].tolist(),
+        ):
+            _split_resolution[int(split_id)] = (src1, int(col_j), key)
 
         label1 = entry1["name"]
         label2 = entry2["name"]
@@ -1604,7 +1455,9 @@ def register_diagnostics_callbacks():
         if not click_data or not uid1 or not uid2:
             return no_update, no_update
 
-        # ── Resolve the highlight tip-name set ─────────────────────────────
+        # ── Resolve the click via _split_resolution ───────────────────────
+        # Yields ``(src, column_j, split_key)`` where ``split_key`` is the
+        # tuple of leaf indices that make up the rooted clade.
         split_id = click_data.get("split_id")
         if split_id is None:
             return no_update, no_update
@@ -1614,56 +1467,28 @@ def register_diagnostics_callbacks():
             # longer know which split this is. Drop the request
             # quietly; the next Compare repopulates _split_resolution.
             return no_update, no_update
-        src, split_key = resolved
+        src, column_j, split_key = resolved
 
-        # Encode the clicked bipartition as a bitvector over src's
-        # leaf order. The rapidtrees-canonical side stored in
-        # split_key may be either side of the rooted MCC — we ask
-        # each MCC's descendant-bits set which side is monophyletic
-        # there, and highlight that side. Falling back to the
-        # canonical side preserves the legacy "scattered tips"
-        # rendering only when neither MCC contains the bipartition.
         try:
             canonical = state.get_canonical_keys(src)
         except (KeyError, FileNotFoundError):
             return no_update, no_update
         leaf_names = canonical["leaf_names"]
-        if isinstance(split_key, frozenset):
-            name_to_bit = {n: 1 << i for i, n in enumerate(leaf_names)}
-            bits = 0
-            for n in split_key:
-                bit = name_to_bit.get(n)
-                if bit is not None:
-                    bits |= bit
-        else:
-            bits = 0
-            for i in split_key:
-                bits |= 1 << i
 
-        desc_1 = _get_mcc_descendant_bits(uid1, src)
-        desc_2 = _get_mcc_descendant_bits(uid2, src)
+        # Single highlight (same on both trees): MCC1 and MCC2 are
+        # both anchored to ``src`` (the Compare-clade dropdowns
+        # filter to the active distmat), so a column in the rooted
+        # presence table represents the same descendant set in both.
+        highlight = {leaf_names[i] for i in split_key}
 
-        def _pick(bits, desc):
-            if desc is None:
-                return None
-            descendant_bits, all_tips_bits = desc
-            if bits in descendant_bits:
-                return bits
-            complement = all_tips_bits ^ bits
-            if complement in descendant_bits:
-                return complement
-            return None
-
-        side_1 = _pick(bits, desc_1)
-        side_2 = _pick(bits, desc_2)
-        in_1 = side_1 is not None
-        in_2 = side_2 is not None
-        highlight_bits = side_1 or side_2 or bits
-
-        highlight = {
-            leaf_names[i] for i in range(len(leaf_names))
-            if highlight_bits & (1 << i)
-        }
+        # Containment is an O(1) ``column_j ∈ cols_in_mcc`` check
+        # straight off the registry entries.
+        entry1 = state.get_mcc_registry_entry(uid1)
+        entry2 = state.get_mcc_registry_entry(uid2)
+        cols1 = set(entry1.get("cols_in_mcc") or []) if entry1 else set()
+        cols2 = set(entry2.get("cols_in_mcc") or []) if entry2 else set()
+        in_1 = column_j in cols1
+        in_2 = column_j in cols2
 
         # ── Look up (or build) the static tanglegram layout ────────────────
         layout = _get_tanglegram_layout(uid1, uid2)

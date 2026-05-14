@@ -31,10 +31,17 @@ _VIEW_BTN = {"type": "mcc-row-view"}
 _DELETE_BTN = {"type": "mcc-row-delete"}
 
 
-def _row_action_button(*, kind, name, color, icon, disabled=False, title=""):
+def _row_action_button(*, kind, name, source, color, icon,
+                       disabled=False, title=""):
+    # ``source`` disambiguates buttons that share a ``name`` across
+    # different MCC tables (e.g. the same Between-mode MCC appears in
+    # the treespace tab AND the diagnostics tab). Without it, Dash
+    # treats the two ActionIcons as duplicate components and silently
+    # routes clicks to only one of them, leaving the other table's
+    # buttons unresponsive.
     btn = dmc.ActionIcon(
         DashIconify(icon=icon, width=14),
-        id={"type": kind, "name": name},
+        id={"type": kind, "name": name, "source": source},
         color=color,
         variant="subtle",
         size="sm",
@@ -45,7 +52,7 @@ def _row_action_button(*, kind, name, color, icon, disabled=False, title=""):
     return dmc.Tooltip(btn, label=title, withArrow=True, position="top")
 
 
-def _entry_summary_row(entry, *, show_mode=False):
+def _entry_summary_row(entry, *, show_mode=False, source):
     """Render one registry entry as a ``dmc.TableTr`` row.
 
     By default the mode column is suppressed because the Between /
@@ -84,6 +91,7 @@ def _entry_summary_row(entry, *, show_mode=False):
                 _row_action_button(
                     kind="mcc-row-view",
                     name=name,
+                    source=source,
                     color="violet",
                     icon="tabler:tree",
                     disabled=not cached,
@@ -93,6 +101,7 @@ def _entry_summary_row(entry, *, show_mode=False):
                 _row_action_button(
                     kind="mcc-row-delete",
                     name=name,
+                    source=source,
                     color="red",
                     icon="tabler:trash",
                     title="Remove from registry",
@@ -103,10 +112,11 @@ def _entry_summary_row(entry, *, show_mode=False):
     return dmc.TableTr(cells)
 
 
-def _table_for(entries, *, show_mode=False):
+def _table_for(entries, *, show_mode=False, source):
     if not entries:
         return None
-    rows = [_entry_summary_row(e, show_mode=show_mode) for e in entries]
+    rows = [_entry_summary_row(e, show_mode=show_mode, source=source)
+            for e in entries]
     headers = [dmc.TableTh("Name")]
     if show_mode:
         headers.append(dmc.TableTh("Mode"))
@@ -168,7 +178,7 @@ def register_mcc_list_callbacks():
         entries = _filter_for_treespace(registry, selected_key, results)
         if not entries:
             return html.Div(), {"display": "none"}
-        return _table_for(entries), {}
+        return _table_for(entries, source="treespace"), {}
 
     # Within-run tab list
     @callback(
@@ -185,13 +195,13 @@ def register_mcc_list_callbacks():
                                      results)
         if not entries:
             return html.Div(), {"display": "none"}
-        return _table_for(entries), {}
+        return _table_for(entries, source="within"), {}
 
     # Pattern-matching: any row View / Delete click → action store
     @callback(
         Output("mcc-registry-action-store", "data", allow_duplicate=True),
-        Input({"type": "mcc-row-view", "name": ALL}, "n_clicks"),
-        Input({"type": "mcc-row-delete", "name": ALL}, "n_clicks"),
+        Input({"type": "mcc-row-view",   "name": ALL, "source": ALL}, "n_clicks"),
+        Input({"type": "mcc-row-delete", "name": ALL, "source": ALL}, "n_clicks"),
         State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )

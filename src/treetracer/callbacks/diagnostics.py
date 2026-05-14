@@ -976,7 +976,7 @@ def register_diagnostics_callbacks():
         if not matched:
             return html.Div(), html.Div(), {"display": "none"}
         title = dmc.Title(f"MCC trees for {selected_matrix}", order=5)
-        table = _table_for(matched, show_mode=True)
+        table = _table_for(matched, show_mode=True, source="diagnostics")
         return title, table, {}
 
     # ─── Pseudo-ESS section ────────────────────────────────────────────
@@ -1199,8 +1199,25 @@ def register_diagnostics_callbacks():
         )
 
 
+    # ------ Hide the Clade Frequency panel when the MCC registry is
+    # empty (covers the "user deleted every MCC" case — the other two
+    # writers, Compare-button success and Clear-Data, handle the show
+    # and full-reset paths respectively). ``no_update`` when there are
+    # still MCCs so we never fight the Compare path that just opened
+    # the panel.
+
+    @callback(
+        Output("clade-freq-output-paper", "style", allow_duplicate=True),
+        Input("mcc-registry-store", "data"),
+        prevent_initial_call=True,
+    )
+    def hide_clade_freq_when_no_mccs(registry):
+        if registry:
+            return no_update
+        return {"display": "none"}
+
     # ------ Clade Frequency Comparison: populate dropdowns ------
- 
+
     @callback(
         Output("clade-freq-mcc-select-1", "data"),
         Output("clade-freq-mcc-select-1", "disabled"),

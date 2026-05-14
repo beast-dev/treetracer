@@ -194,7 +194,7 @@ def _add_clade_freq_panel():
                 # as its height increases.
                 dcc.Slider(
                     id="tanglegram-yscale-slider",
-                    min=1, max=30, step=1, value=1,
+                    min=1, max=30, step=1, value=2,
                     vertical=True,
                     verticalHeight=240,
                     reverse=True,

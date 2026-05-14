@@ -453,6 +453,9 @@ def _build_scatter_fig(df_plot, label1, label2):
         x=df_plot["freq_1"],
         y=df_plot["freq_2"],
         mode="markers",
+        # Only one data trace + the colourbar already labels the axis,
+        # so suppress the otherwise meaningless "trace 0" legend chip.
+        showlegend=False,
         marker=dict(
             size=8,
             color=df_plot["clade_size"],

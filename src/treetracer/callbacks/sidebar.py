@@ -463,6 +463,7 @@ def register_sidebar_callbacks():
         # the three stores backing them, and both MCC dropdown values.
         Output("clade-freq-plot", "children", allow_duplicate=True),
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
+        Output("clade-freq-tanglegram-title", "children", allow_duplicate=True),
         Output("clade-freq-data-store", "data", allow_duplicate=True),
         Output("clade-freq-click-store", "data", allow_duplicate=True),
         Output("clade-freq-tanglegram-pair-store", "data", allow_duplicate=True),
@@ -539,6 +540,7 @@ def register_sidebar_callbacks():
                 # initial figure defined in ui.py's _add_clade_freq_panel
                 # via the diagnostics helper.
                 _tanglegram_placeholder_fig(),
+                None,            # clade-freq-tanglegram-title.children
                 None,            # clade-freq-data-store
                 None,            # clade-freq-click-store
                 None,            # clade-freq-tanglegram-pair-store
@@ -546,4 +548,4 @@ def register_sidebar_callbacks():
                 None,            # clade-freq-mcc-select-2.value
                 {"display": "none"},  # clade-freq-output-paper.style
             )
-        return (no_update,) * 32
+        return (no_update,) * 33

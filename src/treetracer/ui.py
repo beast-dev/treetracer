@@ -145,6 +145,24 @@ def _add_clade_freq_panel():
         # tanglegram-pair-store tracks which MCC pair is currently
         # rendered so the callback knows when a full rebuild is
         # required (different uids) vs a Patch-only update.
+        # Title lives in its own ``position: sticky`` div above the
+        # tanglegram graph so it stays visible when the user expands
+        # the tree (the figure can grow to many thousands of pixels
+        # tall; an in-figure annotation at paper-y=1.02 scrolls off
+        # the top of the viewport along with the plot's upper edge).
+        html.Div(
+            id="clade-freq-tanglegram-title",
+            style={
+                "position": "sticky",
+                "top": 0,
+                "zIndex": 10,
+                "background": "white",
+                "padding": "6px 0",
+                "textAlign": "center",
+                "fontSize": "18px",
+                "minHeight": "30px",
+            },
+        ),
         dmc.Group([
             dcc.Loading(
                 dcc.Graph(
@@ -194,11 +212,11 @@ def _add_clade_freq_panel():
                 # as its height increases.
                 dcc.Slider(
                     id="tanglegram-yscale-slider",
-                    min=1, max=30, step=1, value=2,
+                    min=1, max=5, step=1, value=1,
                     vertical=True,
                     verticalHeight=240,
                     reverse=True,
-                    marks={1: "", 10: "", 20: "", 30: ""},
+                    marks={1: "", 3: "", 5: ""},
                     tooltip={"placement": "left", "always_visible": False},
                 ),
             ], gap=6, align="center", pt=8),
@@ -220,7 +238,6 @@ def _add_diagnostics_panel():
             # downstream section (LnL trace, RF-to-reference, Pseudo-ESS).
             dmc.Paper([
                 dmc.Group([
-                    dmc.Title("Diagnostics", order=4),
                     dmc.Select(
                         id="diagnostics-distmat-select",
                         label="RF Matrix",
@@ -234,6 +251,36 @@ def _add_diagnostics_panel():
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
+            # Placeholder shown until an RF matrix is selected. The
+            # diagnostic sections below (Log-Posterior Trace, RF Distance
+            # to Reference, Pseudo-ESS) all depend on having a distmat
+            # to operate against, so until one exists they're hidden
+            # behind ``diagnostics-rf-sections`` and this placeholder
+            # takes their place. Visibility flips in
+            # ``toggle_diagnostics_rf_sections`` (callbacks/diagnostics.py).
+            dmc.Paper(
+                id="diagnostics-no-rf-placeholder",
+                children=dmc.Stack([
+                    dmc.Text(
+                        "No RF distance matrix selected.",
+                        size="md", fw=500, c="dimmed",
+                    ),
+                    dmc.Text(
+                        "Compute an RF matrix in the Compute tab, then "
+                        "pick one above to enable the diagnostics.",
+                        size="sm", c="dimmed",
+                    ),
+                ], gap="xs", align="center"),
+                p="md", withBorder=True, radius="sm",
+                style={"textAlign": "center"},
+            ),
+
+            # ── RF-gated diagnostic sections ────────────────────────────
+            # Wrapped in a single div so the visibility toggle is one
+            # callback writing one style. Individual sections inside
+            # keep their existing IDs / callbacks.
+            html.Div(id="diagnostics-rf-sections", style={"display": "none"}, children=[
+            dmc.Stack([
             # Section 1: Log-Likelihood Trace
             dmc.Paper([
                 dmc.Group([
@@ -264,7 +311,7 @@ def _add_diagnostics_panel():
                     parent_style={"minHeight": "200px"},
                 ),
             ], p="md", withBorder=True, radius="sm"),
- 
+
             # Section 2: RF Distance to Reference  (unchanged)
             dmc.Paper([
                 dmc.Group([
@@ -359,6 +406,8 @@ def _add_diagnostics_panel():
                 # we wire the math up. Empty for now.
                 html.Div(id="pseudo-ess-output"),
             ], p="md", withBorder=True, radius="sm"),
+            ], gap="md"),
+            ]),  # end ``diagnostics-rf-sections``
 
             # Per-matrix MCC registry summary + Clade-Frequency
             # comparison controls (two MCC dropdowns + Compare button).

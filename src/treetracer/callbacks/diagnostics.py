@@ -204,24 +204,48 @@ def _connector_overlay_trace(tips1, tips2, highlight):
     )
 
 
-def _tanglegram_title(label1, label2, highlight, in_1=False, in_2=False):
-    """Build the tanglegram's annotation text.
+def _tanglegram_title_children(label1, label2, highlight,
+                               in_1=False, in_2=False):
+    """Build the tanglegram's title as Dash children for the sticky
+    ``clade-freq-tanglegram-title`` div above the graph.
 
-    ``in_1`` / ``in_2`` mark whether the clicked rooted clade is
-    present in MCC1 / MCC2. The corresponding label is drawn in
-    green so the user can read at a glance which tree(s) contain
-    the highlighted clade. In rooted-clade mode the descendant set
-    is identical between any two MCCs that contain it, so a single
-    highlight (and a single ``N tips`` size) is always correct —
-    no orientation-flip case to handle.
+    The title lives outside the figure so it doesn't scroll off the
+    top of the viewport when the user expands the tree (the figure
+    can grow to tens of thousands of pixels tall). Returns a list of
+    ``html.Span`` elements — the MCC label whose tree contains the
+    clade is drawn green, the other in default colour, and the
+    middle segment shows the clade size.
     """
     green = "#2f9e44"
     def fmt(label, contains):
+        style = {"fontWeight": "bold"}
         if contains:
-            return f"<b><span style='color:{green}'>{label}</span></b>"
-        return f"<b>{label}</b>"
-    size_str = f"clade: {len(highlight)} tips"
-    return f"{fmt(label1, in_1)} ←   {size_str}   → {fmt(label2, in_2)}"
+            style["color"] = green
+        return html.Span(label, style=style)
+    return [
+        fmt(label1, in_1),
+        html.Span("  ←   "),
+        html.Span(f"clade: {len(highlight)} tips"),
+        html.Span("   →  "),
+        fmt(label2, in_2),
+    ]
+
+
+# Slider-default-aware tanglegram height. The slider value 1..5 is
+# "pixels per tip" — fine for small trees, but at 1000+ taxa even
+# px_per_tip=1 produces a ~1500 px figure that overflows the viewport
+# on first render. Cap at ``_TANGLEGRAM_DEFAULT_MAX_HEIGHT`` while the
+# user is at the default; the moment they step up the slider the cap
+# lifts and the figure scales linearly with ``px_per_tip * n_tips``.
+_TANGLEGRAM_DEFAULT_MAX_HEIGHT = 700  # px, fits typical browser viewports
+
+
+def _tanglegram_height(px_per_tip, max_y):
+    px_per_tip = px_per_tip or 1
+    natural = int(max_y * px_per_tip) + 60
+    if px_per_tip == 1:
+        natural = min(natural, _TANGLEGRAM_DEFAULT_MAX_HEIGHT)
+    return max(300, natural)
 
 
 def _tanglegram_placeholder_fig():
@@ -428,6 +452,24 @@ def register_diagnostics_callbacks():
     # downstream tanglegram callback doesn't fire — producing the
     # "first click does nothing, second click works" behaviour.
     _click_counter = 0
+
+    # ------ Show/hide the RF-dependent diagnostic sections ------
+    # Log-Posterior Trace, RF Distance to Reference, and Pseudo-ESS
+    # all need a distmat to operate against. Until the user has
+    # selected one (or none exists yet), hide them behind a single
+    # wrapper div and surface a "no RF distance" placeholder in their
+    # place. Toggles are pure ``style.display`` swaps so callbacks
+    # inside each section don't have to know about visibility.
+
+    @callback(
+        Output("diagnostics-rf-sections", "style"),
+        Output("diagnostics-no-rf-placeholder", "style"),
+        Input("diagnostics-distmat-select", "value"),
+    )
+    def toggle_diagnostics_rf_sections(selected_matrix):
+        if selected_matrix:
+            return {}, {"display": "none"}
+        return {"display": "none"}, {"textAlign": "center"}
 
     @callback(
         Output("lnl-trace-plot", "children"),
@@ -1426,6 +1468,7 @@ def register_diagnostics_callbacks():
     @callback(
         Output("clade-freq-tanglegram", "figure"),
         Output("clade-freq-tanglegram-pair-store", "data"),
+        Output("clade-freq-tanglegram-title", "children"),
         Input("clade-freq-click-store", "data"),
         State("clade-freq-mcc-select-1", "value"),
         State("clade-freq-mcc-select-2", "value"),
@@ -1453,26 +1496,26 @@ def register_diagnostics_callbacks():
         the per-distmat canonical-keys cache.
         """
         if not click_data or not uid1 or not uid2:
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         # ── Resolve the click via _split_resolution ───────────────────────
         # Yields ``(src, column_j, split_key)`` where ``split_key`` is the
         # tuple of leaf indices that make up the rooted clade.
         split_id = click_data.get("split_id")
         if split_id is None:
-            return no_update, no_update
+            return no_update, no_update, no_update
         resolved = _split_resolution.get(int(split_id))
         if resolved is None:
             # Click store survived a Compare-button reset and we no
             # longer know which split this is. Drop the request
             # quietly; the next Compare repopulates _split_resolution.
-            return no_update, no_update
+            return no_update, no_update, no_update
         src, column_j, split_key = resolved
 
         try:
             canonical = state.get_canonical_keys(src)
         except (KeyError, FileNotFoundError):
-            return no_update, no_update
+            return no_update, no_update, no_update
         leaf_names = canonical["leaf_names"]
 
         # Single highlight (same on both trees): MCC1 and MCC2 are
@@ -1494,28 +1537,30 @@ def register_diagnostics_callbacks():
         layout = _get_tanglegram_layout(uid1, uid2)
         if layout is None:
             # MCC NEXUS bytes evicted from cache; user must recompute.
-            return no_update, no_update
+            return no_update, no_update, no_update
 
         tips1 = layout["tips1"]
         tips2 = layout["tips2"]
         right_start = layout["right_start"]
 
-        # Group labels for the title annotation.
-        entry1 = state.get_mcc_registry_entry(uid1)
-        entry2 = state.get_mcc_registry_entry(uid2)
+        # Group labels for the sticky title above the graph.
         label1 = entry1["name"] if entry1 else "Group 1"
         label2 = entry2["name"] if entry2 else "Group 2"
 
-        # ── Build the three dynamic traces (highlight + connectors) ───────
+        # ── Build the three dynamic traces + the sticky title ────────────
         hl_left  = _highlight_overlay_trace(tips1, highlight)
         hl_right = _highlight_overlay_trace(tips2, highlight)
         connectors = _connector_overlay_trace(tips1, tips2, highlight)
-        title = _tanglegram_title(label1, label2, highlight,
-                                  in_1=in_1, in_2=in_2)
+        title_children = _tanglegram_title_children(
+            label1, label2, highlight, in_1=in_1, in_2=in_2,
+        )
 
         same_pair = current_pair == [uid1, uid2]
         if same_pair:
             # ── Patch-only update — never re-sends the static skeleton ───
+            # The title lives outside the figure in its own div, so we
+            # update it via the separate Output rather than patching
+            # any layout.annotations.
             patch = Patch()
             for idx, trace in (
                 (_TANGLEGRAM_HIGHLIGHT_LEFT,  hl_left),
@@ -1525,13 +1570,11 @@ def register_diagnostics_callbacks():
                 patch["data"][idx]["x"] = trace["x"]
                 patch["data"][idx]["y"] = trace["y"]
                 patch["data"][idx]["text"] = trace["text"]
-            patch["layout"]["annotations"][0]["text"] = title
-            return patch, no_update
+            return patch, no_update, title_children
 
         # ── First time this pair is rendered — build the full figure ─────
         traces = list(layout["skeleton_traces"]) + [hl_left, hl_right, connectors]
-        px_per_tip = px_per_tip or 1
-        height = max(300, int(layout["max_y"] * px_per_tip) + 60)
+        height = _tanglegram_height(px_per_tip, layout["max_y"])
 
         fig = go.Figure(data=[
             t if isinstance(t, go.Scatter) else go.Scatter(**t)
@@ -1540,7 +1583,10 @@ def register_diagnostics_callbacks():
         fig.update_layout(
             template="simple_white",
             height=height,
-            margin=dict(l=10, r=10, t=60, b=10),
+            # Tight top margin now that the title is rendered in a
+            # sticky div above the graph instead of as an in-figure
+            # annotation.
+            margin=dict(l=10, r=10, t=10, b=10),
             # Content lives in [0, right_start + 1.0] (left tree
             # 0–1, gap 1–1.3, right tree 1.3–2.3). Use a tiny equal
             # padding on both sides so the two trees stay centred
@@ -1550,17 +1596,8 @@ def register_diagnostics_callbacks():
                        range=[-0.05, right_start + 1.05]),
             yaxis=dict(visible=False),
             hovermode="closest",
-            annotations=[
-                dict(
-                    x=0.5, y=1.02, xref="paper", yref="paper",
-                    text=title,
-                    showarrow=False,
-                    font=dict(size=18),
-                    xanchor="center",
-                ),
-            ],
         )
-        return fig, [uid1, uid2]
+        return fig, [uid1, uid2], title_children
 
     @callback(
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
@@ -1584,8 +1621,9 @@ def register_diagnostics_callbacks():
         layout = _get_tanglegram_layout(uid1, uid2)
         if layout is None:
             return no_update
-        px_per_tip = px_per_tip or 1
         patch = Patch()
-        patch["layout"]["height"] = max(300, int(layout["max_y"] * px_per_tip) + 60)
+        patch["layout"]["height"] = _tanglegram_height(
+            px_per_tip, layout["max_y"]
+        )
         return patch
 

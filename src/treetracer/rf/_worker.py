@@ -76,6 +76,6 @@ def compute_mds_worker(matrix_path, n_components):
     t0 = time.time()
     from .mds import compute_mds
     distance_matrix = np.load(matrix_path).astype(float)
-    embedding = compute_mds(distance_matrix, n_components=n_components, algorithm="pcoa")
+    embedding = compute_mds(distance_matrix, n_components=n_components, algorithm="pcoa_fast")
     elapsed = time.time() - t0
     return embedding.tolist(), elapsed

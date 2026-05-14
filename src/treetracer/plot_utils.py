@@ -256,7 +256,7 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
         ),
         legend=dict(
             orientation="h",
-            yanchor="top", y=-0.15,
+            yanchor="bottom", y=1.02,
             xanchor="center", x=0.5,
             bgcolor="rgba(0,0,0,0)",
             font=dict(size=14),
@@ -264,7 +264,9 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
         ),
         legend_itemwidth=40,
         uirevision="constant",
-        margin=dict(l=2, r=20, t=25, b=10),
+        # ``t=50`` gives the horizontal legend (anchored just above the
+        # plot area at y=1.02) room to render without clipping.
+        margin=dict(l=2, r=20, t=50, b=10),
     )
 
     for xcol, ycol, row, col in panels_2d:
@@ -432,7 +434,7 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         yaxis3=dict(matches='y2'),
         legend=dict(
             orientation="h",
-            yanchor="top", y=-0.15,
+            yanchor="bottom", y=1.02,
             xanchor="center", x=0.5,
             bgcolor="rgba(0,0,0,0)",
             font=dict(size=14),
@@ -440,7 +442,9 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         ),
         legend_itemwidth=40,
         uirevision="treespace",
-        margin=dict(l=2, r=20, t=25, b=10),
+        # ``t=50`` gives the horizontal legend (anchored just above the
+        # plot area at y=1.02) room to render without clipping.
+        margin=dict(l=2, r=20, t=50, b=10),
     )
 
     for xcol, ycol, row, col in panels_2d:

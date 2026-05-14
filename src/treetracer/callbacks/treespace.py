@@ -296,7 +296,6 @@ def register_treespace_callbacks():
         Output("treespace-info", "children"),
         Output("treespace-controls-paper", "style"),
         Output("graph", "figure", allow_duplicate=True),
-        Output("plot-button", "children", allow_duplicate=True),
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("treespace-export-trees", "disabled", allow_duplicate=True),
         Output("treespace-view-mcc", "disabled", allow_duplicate=True),
@@ -315,7 +314,6 @@ def register_treespace_callbacks():
             html.Div(),
             {"display": "none"},
             placeholder_fig("No MDS result selected. Compute an MDS in the Compute tab."),
-            "Plot",
             [],
             True,
             True,
@@ -361,6 +359,10 @@ def register_treespace_callbacks():
                       variant="light", color="teal", size="sm"),
         ], gap="xs")
 
+        # ``no_update`` for the graph figure: the new dim values + slider
+        # range fire the auto-update callback below, which renders the
+        # real multiplot. Holding the previous figure until that lands
+        # keeps the panel from flickering through a placeholder.
         return (
             plot_config,
             dim_options, mdscols[0],
@@ -369,25 +371,26 @@ def register_treespace_callbacks():
             MIN_TREENUM, MAX_TREENUM, [MIN_TREENUM, MAX_TREENUM], marks,
             info,
             {"display": "flex"},
-            placeholder_fig("Click 'Plot' to visualize data"),
-            "Plot",
+            no_update,
             [],
             True,
             True,
             html.Div(),
         )
 
-    # Plot button — explicit user trigger so dropdown / slider changes don't
-    # auto-rebuild the (heavy) multiplot.
+    # Auto-rebuild: any change to the dim selectors, the treenum range,
+    # or the lines toggle re-renders the multiplot. Matches the always-
+    # live UX of the within-run tab. When ``configure_for_selected_result``
+    # populates the dim defaults + slider range, Dash coalesces all
+    # changed Inputs into a single firing of this callback, so a fresh
+    # result switch costs one rebuild — not five.
     @callback(
         Output("graph", "figure", allow_duplicate=True),
-        Output("plot-button", "children", allow_duplicate=True),
-        Input("plot-button", "n_clicks"),
-        State("dim-x-select", "value"),
-        State("dim-y-select", "value"),
-        State("dim-z-select", "value"),
-        State("treenum-slider", "value"),
-        State("show-lines-checkbox", "checked"),
+        Input("dim-x-select", "value"),
+        Input("dim-y-select", "value"),
+        Input("dim-z-select", "value"),
+        Input("treenum-slider", "value"),
+        Input("show-lines-checkbox", "checked"),
         State("graph", "figure"),
         State("plot-config-store", "data"),
         State("treespace-dragmode", "value"),
@@ -397,12 +400,12 @@ def register_treespace_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def update_graph_on_button_click(n_clicks, dim_x, dim_y, dim_z, treenum_range,
-                                     show_lines, current_fig, plot_config, dragmode,
-                                     selected, mcc_registry, selected_key,
-                                     mds_results):
-        if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
-            return no_update, no_update
+    def auto_update_graph(dim_x, dim_y, dim_z, treenum_range,
+                          show_lines, current_fig, plot_config, dragmode,
+                          selected, mcc_registry, selected_key,
+                          mds_results):
+        if not plot_config or not all([dim_x, dim_y, dim_z]) or not treenum_range:
+            return no_update
 
         combined_df = pd.DataFrame(plot_config["combined_data"])
 
@@ -459,7 +462,7 @@ def register_treespace_callbacks():
                 MCC_OVERLAY_OFFSETS,
             )
 
-        return fig, "Update Plot"
+        return fig
 
     # ------ click / box / lasso → selection store ------
     @callback(

@@ -480,8 +480,10 @@ def _add_treespace_panel():
                 ], style={"width": "420px", "alignSelf": "center"}),
                 dmc.Checkbox(label="Lines", id="show-lines-checkbox",
                              checked=True, size="xs"),
-                dmc.Button("Plot", id="plot-button",
-                           variant="filled", color="blue", size="xs"),
+                # No "Plot" button — the multiplot auto-rebuilds on
+                # any dim/slider/lines change via ``auto_update_graph``
+                # in callbacks/treespace.py. Matches the within-run tab's
+                # always-live UX.
                 dmc.Divider(orientation="vertical",
                             style={"height": "24px", "alignSelf": "center"}),
                 # Selection tools

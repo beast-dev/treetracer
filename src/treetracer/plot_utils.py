@@ -110,9 +110,16 @@ def _add_overlay_bundle(fig, panels_2d, *, kind):
         ),
         row=1, col=1,
     )
+    # ``Scattergl`` overlays so they live on the SAME WebGL canvas as
+    # the data traces. With both on one canvas, trace insertion order
+    # determines draw order — and since this bundle is appended AFTER
+    # all data + selection bundles, the MCC ring lands on top of
+    # everything. Trying ``zorder`` on a Scatter overlay didn't work:
+    # Plotly's WebGL canvas paints above the SVG layer in subplots, so
+    # the SVG ring was hidden behind data. (Scattergl rejects zorder.)
     for xcol, ycol, row, col in panels_2d:
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=[], y=[],
                 mode="markers",
                 marker=dict(
@@ -218,10 +225,15 @@ def add_trace_multiplot(fig, df, x, y, z, GROUPS, COLOR_DICT, show_lines=True):
             row=1, col=1,
         )
 
-        # Three 2D projections
+        # Three 2D projections. ``Scattergl`` (WebGL) handles thousands
+        # of points per group without freezing the browser; SVG starts
+        # to feel sluggish around ~2k. The data traces share their
+        # ``legendgroup`` with the invisible legend driver above, so
+        # toggling the legend hides both the WebGL data and the
+        # (separate, SVG) overlay rings tied to that group.
         for xcol, ycol, row, col in panels_2d:
             fig.add_trace(
-                go.Scatter(
+                go.Scattergl(
                     x=group_data[xcol], y=group_data[ycol],
                     mode=mode,
                     name=gr,
@@ -331,13 +343,15 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         )
 
     # 3a. 2D continuous lines per group, drawn underneath the markers.
+    # WebGL-backed ``Scattergl`` so 8k-tree trajectories don't choke
+    # the SVG renderer.
     if show_lines:
         for gr in GROUPS:
             group_data = df[df["group"] == gr]
             color = COLOR_DICT[gr]
             for xcol, ycol, row, col in panels_2d:
                 fig.add_trace(
-                    go.Scatter(
+                    go.Scattergl(
                         x=group_data[xcol], y=group_data[ycol],
                         mode="lines",
                         line=dict(color=color, width=1),
@@ -357,6 +371,10 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
             all_chunks.append((chunk_idx, gr, chunk_df))
     all_chunks.sort(key=lambda t: t[0])
 
+    # WebGL marker traces. ``marker.line`` (the thin grey outline) is
+    # silently ignored by Scattergl on most Plotly versions, so the
+    # outline drops away and points read as solid disks — acceptable
+    # trade-off for handling thousands of trees per group without lag.
     for _chunk_idx, gr, chunk_df in all_chunks:
         color = COLOR_DICT[gr]
         tree_short = chunk_df["tree"].str.split("/").str[-1].str.strip()
@@ -365,13 +383,10 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
         hover = f"{gr}<br>Tree #%{{customdata[0]}}: %{{customdata[1]}}<extra></extra>"
         for xcol, ycol, row, col in panels_2d:
             fig.add_trace(
-                go.Scatter(
+                go.Scattergl(
                     x=chunk_df[xcol], y=chunk_df[ycol],
                     mode="markers",
-                    marker=dict(
-                        color=color,
-                        line=dict(width=0.5, color="rgba(0,0,0,0.5)"),
-                    ),
+                    marker=dict(color=color),
                     opacity=0.9,
                     legendgroup=gr,
                     showlegend=False,

@@ -380,10 +380,13 @@ def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
 
     value_col = 'rf_distance'
 
+    # Per-group trace + KDE density. ``Scattergl`` so an 8k-tree run
+    # doesn't churn out an SVG path with 8k points; ``fill='tozerox'``
+    # is supported on Scattergl so the density polygon still renders.
     for group in all_groups:
         gdf = trace_df[trace_df['group'] == group]
         vals = gdf[value_col].values.astype(float)
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=gdf['treenum'], y=vals,
             mode='lines', name=group,
             line=dict(color=color_map[group], width=1),
@@ -401,7 +404,7 @@ def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
             kde = gaussian_kde(kde_vals)
             y_grid = np.linspace(kde_vals.min(), kde_vals.max(), 200)
             density = kde(y_grid)
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=density, y=y_grid, mode='lines',
                 line=dict(color=color_map[group], width=1),
                 fill='tozerox', opacity=0.3,
@@ -624,10 +627,13 @@ def register_diagnostics_callbacks():
             column_widths=[0.8, 0.2],
             horizontal_spacing=0.02,
         )
+        # Per-group line + KDE on Scattergl so long traces don't drag
+        # the SVG layer. The post-burnin rebuild below uses the same
+        # treatment.
         for group in groups:
             gdf = trace_df[trace_df['group'] == group]
             vals = gdf['value'].values
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=gdf['treenum'],
                 y=vals,
                 mode='lines',
@@ -639,7 +645,7 @@ def register_diagnostics_callbacks():
                 kde = gaussian_kde(vals)
                 y_grid = np.linspace(vals.min(), vals.max(), 200)
                 density = kde(y_grid)
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=density, y=y_grid,
                     mode='lines',
                     line=dict(color=color_map[group], width=1),
@@ -663,7 +669,7 @@ def register_diagnostics_callbacks():
                     gdf = trace_df[trace_df['group'] == group]
                     vals = gdf['value'].values
                     # Trace line: show all data (full range)
-                    fig.add_trace(go.Scatter(
+                    fig.add_trace(go.Scattergl(
                         x=gdf['treenum'], y=vals,
                         mode='lines', name=group,
                         line=dict(color=color_map[group], width=1),
@@ -675,7 +681,7 @@ def register_diagnostics_callbacks():
                         kde = gaussian_kde(post_vals)
                         y_grid = np.linspace(post_vals.min(), post_vals.max(), 200)
                         density = kde(y_grid)
-                        fig.add_trace(go.Scatter(
+                        fig.add_trace(go.Scattergl(
                             x=density, y=y_grid, mode='lines',
                             line=dict(color=color_map[group], width=1),
                             fill='tozerox', opacity=0.3,

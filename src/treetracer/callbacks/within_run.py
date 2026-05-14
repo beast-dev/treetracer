@@ -167,12 +167,19 @@ def _selection_overlay_trace(xs, ys, customdata):
     arrays are valid — they leave the trace present-but-invisible so the
     Patch in ``update_selection_overlay`` always has a stable target.
 
-    Explicit ``selected`` / ``unselected`` styles pin opacity to 1 in both
-    states. Without them, a fresh box-select stamps ``selectedpoints`` on
-    this trace and Plotly fades any overlay circles that fall outside the
-    new box (default unselected opacity ≈ 0.2).
+    Uses ``Scattergl`` so the overlay lives on the SAME WebGL canvas as
+    the data traces. Within one canvas, trace insertion order wins;
+    overlays are added after data, so they always draw on top. Earlier
+    we tried SVG ``Scatter`` + ``zorder`` instead, but Plotly's WebGL
+    canvas was rendering ABOVE the SVG layer in subplots and the data
+    obscured the ring (Scattergl also rejects ``zorder``).
+
+    Explicit ``selected`` / ``unselected`` styles pin opacity to 1 in
+    both states. Without them, a fresh box-select stamps
+    ``selectedpoints`` on this trace and Plotly fades overlay circles
+    outside the new box (default unselected opacity ≈ 0.2).
     """
-    return go.Scatter(
+    return go.Scattergl(
         x=xs, y=ys,
         mode="markers",
         marker=dict(
@@ -190,9 +197,12 @@ def _selection_overlay_trace(xs, ys, customdata):
 
 def _mcc_overlay_trace(xs, ys, customdata):
     """Neon-green hollow ring used as the registered-MCC overlay. Same
-    shape as the selection overlay so the patch callbacks address it the
-    same way; just different colour, line width, and hovertemplate."""
-    return go.Scatter(
+    shape and renderer as the selection overlay so the patch callbacks
+    address it the same way; just different colour, line width, and
+    hovertemplate. Added to the figure AFTER the selection overlay, so
+    within the shared WebGL canvas the MCC ring draws on top of both
+    the data points and the (also Scattergl) selection ring."""
+    return go.Scattergl(
         x=xs, y=ys,
         mode="markers",
         marker=dict(
@@ -300,8 +310,10 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
     ]
 
     for xcol, ycol, row, col, show_cb in panels:
-        # Out-of-range — always emitted, even when empty.
-        fig.add_trace(go.Scatter(
+        # Out-of-range — always emitted, even when empty. ``Scattergl``
+        # so an 8k-tree run renders in one WebGL frame instead of
+        # spawning a DOM node per marker.
+        fig.add_trace(go.Scattergl(
             x=df_out[xcol].tolist() if len(df_out) else [],
             y=df_out[ycol].tolist() if len(df_out) else [],
             mode="markers",
@@ -314,10 +326,12 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
             unselected=dict(marker=dict(opacity=0.4)),
         ), row=row, col=col)
 
-        # In-range — always emitted, even when empty.
+        # In-range — always emitted, even when empty. Same WebGL
+        # treatment; the gradient colourbar still renders correctly
+        # against a Scattergl trace.
         marker_dict = _in_range_marker(df_in, color_gradient, show_cb, colorscale)
 
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=df_in[xcol].tolist() if len(df_in) else [],
             y=df_in[ycol].tolist() if len(df_in) else [],
             mode=mode,

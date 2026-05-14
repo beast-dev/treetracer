@@ -50,6 +50,30 @@ def register_shell_callbacks():
             return style, new_state, navbar
         return no_update, no_update, no_update
 
+    # ------ AUTO-COLLAPSE SIDEBAR AFTER RF COMPLETES ------
+    # Once an RF distance matrix is registered (``distmat-store`` gains
+    # at least one entry), reclaim the sidebar's 300 px for the main
+    # panel — the user is done with uploads/compute and now needs room
+    # to read plots. No-op if the sidebar is already collapsed, or if
+    # ``distmat-store`` is empty (e.g. just after Clear Data).
+
+    @callback(
+        Output("navbar", "style", allow_duplicate=True),
+        Output("sidebar-visible", "data", allow_duplicate=True),
+        Output("appshell", "navbar", allow_duplicate=True),
+        Input("distmat-store", "data"),
+        State("sidebar-visible", "data"),
+        prevent_initial_call=True,
+    )
+    def auto_collapse_after_rf(distmat_data, is_visible):
+        if not distmat_data or not is_visible:
+            return no_update, no_update, no_update
+        return (
+            {"display": "none"},
+            False,
+            {"width": 0, "breakpoint": "sm", "collapsed": {"mobile": True}},
+        )
+
     # ------ ABOUT MODAL CALLBACK ------
 
     @callback(

@@ -1,41 +1,51 @@
 # TreeTracer
 
-Posterior tree space exploration in Bayesian phylogenetics.
-
-TreeTracer is a desktop application for visualizing and analyzing phylogenetic tree distributions from MCMC analyses (BEAST, MrBayes, etc.). It computes pairwise Robinson-Foulds distances, performs MDS/PCoA embedding, and provides interactive scatter plots for exploring between-run convergence and within-run chain trajectories.
-
-## Features
-
-- **Load NEXUS `.trees` files** directly — no preprocessing required
-- **RF distance computation** via compiled Rust extension (`rapidtrees`)
-- **MDS/PCoA embedding** 
-- **Between-run analysis**: 3D scatter + three 2D projections
-- **Within-run analysis**: linked 2D scatter with gradient coloring, sliding window animation, and point selection (click/box/lasso)
-- **Diagnostics**: log-likelihood traces, RF distance traces with burn-in, KDE density panels
-- **Export**: selected trees as NEXUS `.trees` files, plots as PDF
-- **Async computation**: RF and MDS run in background processes — UI stays responsive
-- **Multiple RF matrices**: compute and store multiple distance matrices, select which to use for MDS
-- **Native desktop window**: runs in a native window via pywebview (WebKit on macOS/Linux, Edge on Windows)
+A desktop app for exploring posterior tree distributions from
+[BEAST X](https://beast.community/) MCMC runs. Load `.trees` files
+directly, compute pairwise Robinson–Foulds distances with a fast Rust
+core, and visualise convergence interactively — between-run mixing in
+tree space, within-run trajectories, RF traces, pseudo-ESS, and
+Maximum Clade Credibility (MCC) tree summaries.
 
 ---
 
-## Quick Start
+## Install with `uv`
 
-### Option 1: Run from source (recommended for development)
+TreeTracer is distributed as a Python package and launched through
+[`uv`](https://docs.astral.sh/uv/) — a standalone tool that handles
+Python installation, dependency resolution, and virtual environments
+in one step. You don't need to set up Python yourself.
 
-#### 1. Install [`uv`](https://docs.astral.sh/uv/)
+### 1. Install `uv`
 
 ```bash
-# macOS (Homebrew)
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# macOS (Homebrew alternative)
 brew install uv
 
-# Linux/macOS (curl)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-#### 2. Install system dependencies (Linux only)
+Open a new shell so `uv` picks up its install path, then `uv --version`
+should print a version number.
 
-TreeTracer uses pywebview for its native desktop window. On Linux, this requires GTK WebKit system packages:
+### 2. Clone and launch
+
+#### macOS / Windows
+
+```bash
+git clone https://github.com/beast-dev/treetracer.git
+cd treetracer
+uv run treetracer
+```
+
+#### Linux
+
+`pywebview` needs the system GTK / WebKit libraries plus Python bindings
+that compile against them. Install the system headers first:
 
 ```bash
 # Ubuntu 24.04+
@@ -43,80 +53,58 @@ sudo apt install libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
     gir1.2-gtk-3.0 libgirepository-2.0-dev libcairo2-dev \
     pkg-config zenity
 
-# Ubuntu 22.04
+# Ubuntu 22.04 (older WebKit ABI)
 sudo apt install libwebkit2gtk-4.0-dev gir1.2-webkit2-4.0 \
     gir1.2-gtk-3.0 libgirepository-1.0-dev libcairo2-dev \
     pkg-config zenity
 ```
 
-#### 3. Clone and run
+Then clone and add the Python bindings into the project venv:
 
 ```bash
 git clone https://github.com/beast-dev/treetracer.git
 cd treetracer
-
-# macOS — just run directly:
-uv run treetracer
-
-# Linux — install PyGObject bindings, then run:
 uv add PyGObject pycairo
 uv run treetracer
 ```
 
-This opens TreeTracer in a native desktop window. `uv` handles Python installation and all pip dependencies automatically. On Linux, `PyGObject` and `pycairo` are compiled from source against the system GTK/GObject headers installed via `apt`.
+**No root / no apt?** Skip the system-headers step and use the Qt
+backend instead:
 
-**Alternative (Linux, no root):** If you can't install system packages, use the Qt backend instead:
 ```bash
 uv add qtpy pyqt6 pyqt6-webengine
 uv run treetracer
 ```
 
-### Option 2: Download pre-built app
-
-Download `TreeTracer.app` (macOS) from the releases page. Double-click to run — no Python or terminal required. First launch takes ~30-60s to set up the environment.
-
 ---
 
-## Packaging & Distribution
-
-TreeTracer can be packaged as a standalone desktop application (~3 MB) that end users double-click to run.
-
-### Quick build (macOS)
+## Updating
 
 ```bash
-# Prerequisites: Rust toolchain (cargo), uv
-
-# Step 1: Build the PyApp binary
-./packaging/build.sh
-
-# Step 2: Wrap in a macOS .app bundle
-./packaging/make_macos_app.sh
-
-# Step 3 (optional): Create a .dmg for distribution
-hdiutil create -volname TreeTracer \
-  -srcfolder packaging/dist/TreeTracer.app \
-  -ov -format UDZO \
-  packaging/dist/TreeTracer-0.1.0.dmg
+cd treetracer
+git pull
+uv run treetracer
 ```
 
-**Output:** `packaging/dist/TreeTracer.app` — a native macOS application with the TreeTracer icon, launchable from Finder.
-
-### How it works
-
-The build uses [PyApp](https://github.com/ofek/pyapp)
-
-1. `build.sh` builds a Python wheel and compiles a Rust binary that embeds it
-2. `make_macos_app.sh` wraps the binary in a `.app` bundle with icon and `Info.plist`
-3. On first launch, the binary downloads Python 3.13 via `uv`, creates an isolated venv, and installs all dependencies
-4. Subsequent launches are instant (cached environment)
+`uv` detects when `uv.lock` has changed and re-syncs automatically.
 
 ---
+
+## Removing
+
+```bash
+rm -rf treetracer/        # removes the project venv too
+uv cache clean            # optional — frees uv's package cache
+```
+
+---
+
+## Documentation
+
+For a tutorial on how to use TreeTracer, see the [BEAST X community website](https://beast.community/analysing_beast_output.html).
 
 ## TODO
 
-### Convergence Diagnostics
+- [ ] Fréchet correlation ESS
+- [ ] Standalone packaging
 
-- [ ] **ESS computation**
-- [ ] **Pseudo ESS** 
-- [ ] **ASDSF (Average Standard Deviation of Split Frequencies)** 
-- [ ] **Frechet correlation ESS** 

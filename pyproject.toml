@@ -9,7 +9,6 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "dash>=4.1.0",
-    "dash-iconify",
     "dash-mantine-components",
     "pandas",
     "rapidtrees==0.5.1",

@@ -23,7 +23,7 @@ color-gradient toggle) read the user's current zoom out of
 
 from dash import callback, clientside_callback, Input, Output, Patch, State, no_update, ctx, html
 import dash_mantine_components as dmc
-from dash_iconify import DashIconify
+from ..icons import icon
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
@@ -498,7 +498,7 @@ def register_within_run_callbacks():
             [],
             [1, n],
             True,
-            DashIconify(icon="tabler:player-play-filled", width=18),
+            icon("tabler:player-play-filled", size=18),
         )
 
     # ------ slider plumbing ------
@@ -560,12 +560,12 @@ def register_within_run_callbacks():
             w = int(window_size) if window_size else 100
             return (
                 False,
-                DashIconify(icon="tabler:player-pause-filled", width=18),
+                icon("tabler:player-pause-filled", size=18),
                 [slider_min, min(slider_min + w, slider_max)],
             )
         return (
             True,
-            DashIconify(icon="tabler:player-play-filled", width=18),
+            icon("tabler:player-play-filled", size=18),
             no_update,
         )
 
@@ -591,7 +591,7 @@ def register_within_run_callbacks():
             return (
                 [slider_min, min(slider_min + w, slider_max)],
                 True,
-                DashIconify(icon="tabler:player-play-filled", width=18),
+                icon("tabler:player-play-filled", size=18),
             )
         if new_end > slider_max:
             new_end = slider_max

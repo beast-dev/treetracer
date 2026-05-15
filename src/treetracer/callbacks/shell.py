@@ -15,18 +15,25 @@ def register_shell_callbacks():
 
     @callback(
         Output("mantine-provider", "forceColorScheme"),
-        Output("dark-mode-icon", "icon"),
+        Output("dark-mode-icon", "style"),
         Output("plotly-template-store", "data"),
         Input("dark-mode-toggle", "n_clicks"),
         State("mantine-provider", "forceColorScheme"),
+        State("dark-mode-icon", "style"),
         prevent_initial_call=True,
     )
-    def toggle_dark_mode(n_clicks, current_scheme):
+    def toggle_dark_mode(n_clicks, current_scheme, current_style):
         new_scheme = "light" if current_scheme == "dark" else "dark"
-        icon = "tabler:sun" if new_scheme == "dark" else "tabler:moon"
+        icon_name = "tabler:sun" if new_scheme == "dark" else "tabler:moon"
+        url = f"/assets/icons/{icon_name.replace(':', '-')}.svg"
+        new_style = {
+            **(current_style or {}),
+            "WebkitMaskImage": f"url({url})",
+            "maskImage": f"url({url})",
+        }
         template = _TEMPLATES[new_scheme]
         set_template(template)
-        return new_scheme, icon, template
+        return new_scheme, new_style, template
 
     # ------ SIDEBAR TOGGLE ------
 

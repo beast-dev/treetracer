@@ -1,7 +1,7 @@
 import dash_mantine_components as dmc
 from dash import dcc, html
-from dash_iconify import DashIconify
 from .theme import get_template
+from .icons import icon
 
 from .plot_utils import placeholder_fig
 
@@ -13,7 +13,7 @@ def add_header():
             [
                 dmc.Tooltip(
                     dmc.ActionIcon(
-                        DashIconify(icon="tabler:layout-sidebar-left-collapse", width=28),
+                        icon("tabler:layout-sidebar-left-collapse", size=28),
                         id="sidebar-toggle",
                         variant="subtle",
                         size="xl",
@@ -25,7 +25,7 @@ def add_header():
                 dmc.Space(style={"flex": 1}),
                 dmc.Tooltip(
                     dmc.ActionIcon(
-                        DashIconify(icon="tabler:info-circle", width=20),
+                        icon("tabler:info-circle", size=20),
                         id="about-modal-button",
                         variant="subtle",
                         size="lg",
@@ -34,7 +34,7 @@ def add_header():
                 ),
                 dmc.Tooltip(
                     dmc.ActionIcon(
-                        DashIconify(icon="tabler:terminal-2", width=20),
+                        icon("tabler:terminal-2", size=20),
                         id="log-toggle-button",
                         variant="subtle",
                         size="lg",
@@ -43,7 +43,7 @@ def add_header():
                 ),
                 dmc.Tooltip(
                     dmc.ActionIcon(
-                        DashIconify(icon="tabler:moon", width=20, id="dark-mode-icon"),
+                        icon("tabler:moon", size=20, id="dark-mode-icon"),
                         id="dark-mode-toggle",
                         variant="subtle",
                         size="lg",
@@ -560,11 +560,11 @@ def _add_treespace_panel():
                 dmc.Button("Export .trees", id="treespace-export-trees",
                            variant="filled", color="green", size="xs",
                            disabled=True,
-                           leftSection=DashIconify(icon="tabler:download", width=14)),
+                           leftSection=icon("tabler:download", size=14)),
                 dmc.Button("View MCC", id="treespace-view-mcc",
                            variant="filled", color="violet", size="xs",
                            disabled=True,
-                           leftSection=DashIconify(icon="tabler:tree", width=14)),
+                           leftSection=icon("tabler:tree", size=14)),
                 dmc.Button("Export PDF", id="treespace-export-pdf",
                            variant="light", size="xs"),
             ], align="center", gap="sm", wrap="nowrap",
@@ -676,7 +676,7 @@ def _add_within_run_panel():
                     styles={"input": {"height": "28px"}},
                 ),
                 dmc.ActionIcon(
-                    DashIconify(icon="tabler:player-play-filled", width=20),
+                    icon("tabler:player-play-filled", size=20),
                     id="within-run-play-button",
                     variant="filled", color="blue", size="md",
                 ),
@@ -704,11 +704,11 @@ def _add_within_run_panel():
                 dmc.Button("Export .trees", id="within-run-export-trees",
                            variant="filled", color="green", size="xs",
                            disabled=True,
-                           leftSection=DashIconify(icon="tabler:download", width=14)),
+                           leftSection=icon("tabler:download", size=14)),
                 dmc.Button("View MCC", id="within-run-view-mcc",
                            variant="filled", color="violet", size="xs",
                            disabled=True,
-                           leftSection=DashIconify(icon="tabler:tree", width=14)),
+                           leftSection=icon("tabler:tree", size=14)),
                 dmc.Button("Export PDF", id="within-run-export-pdf",
                            variant="light", size="xs"),
             ], align="center", gap="sm", wrap="nowrap",
@@ -799,7 +799,7 @@ def add_main_body():
                                 color="blue",
                                 size="sm",
                                 disabled=True,
-                                leftSection=DashIconify(icon="tabler:download", width=14),
+                                leftSection=icon("tabler:download", size=14),
                             ),
                         ], span=6),
                     ], gutter="lg"),
@@ -854,7 +854,7 @@ def add_main_body():
                                 color="blue",
                                 size="sm",
                                 disabled=True,
-                                leftSection=DashIconify(icon="tabler:download", width=14),
+                                leftSection=icon("tabler:download", size=14),
                             ),
                         ], span=6),
                     ], gutter="lg"),
@@ -895,7 +895,7 @@ def add_navbar():
                         dmc.Group([
                             dmc.Tooltip(
                                 dmc.ActionIcon(
-                                    DashIconify(icon="tabler:file-upload", width=18),
+                                    icon("tabler:file-upload", size=18),
                                     id="load-trees-button",
                                     variant="light",
                                     color="green",
@@ -905,7 +905,7 @@ def add_navbar():
                             ),
                             dmc.Tooltip(
                                 dmc.ActionIcon(
-                                    DashIconify(icon="tabler:trash", width=18),
+                                    icon("tabler:trash", size=18),
                                     id="clear-data-button",
                                     variant="light",
                                     color="orange",

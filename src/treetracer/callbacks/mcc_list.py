@@ -22,7 +22,7 @@ from dash import (
     no_update,
 )
 import dash_mantine_components as dmc
-from dash_iconify import DashIconify
+from ..icons import icon
 
 from .. import state
 
@@ -31,7 +31,7 @@ _VIEW_BTN = {"type": "mcc-row-view"}
 _DELETE_BTN = {"type": "mcc-row-delete"}
 
 
-def _row_action_button(*, kind, name, source, color, icon,
+def _row_action_button(*, kind, name, source, color, icon_name,
                        disabled=False, title=""):
     # ``source`` disambiguates buttons that share a ``name`` across
     # different MCC tables (e.g. the same Between-mode MCC appears in
@@ -40,7 +40,7 @@ def _row_action_button(*, kind, name, source, color, icon,
     # routes clicks to only one of them, leaving the other table's
     # buttons unresponsive.
     btn = dmc.ActionIcon(
-        DashIconify(icon=icon, width=14),
+        icon(icon_name, size=14),
         id={"type": kind, "name": name, "source": source},
         color=color,
         variant="subtle",
@@ -93,7 +93,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
                     name=name,
                     source=source,
                     color="violet",
-                    icon="tabler:tree",
+                    icon_name="tabler:tree",
                     disabled=not cached,
                     title=("View in PearTree" if cached
                            else "MCC was evicted; recompute to view"),
@@ -103,7 +103,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
                     name=name,
                     source=source,
                     color="red",
-                    icon="tabler:trash",
+                    icon_name="tabler:trash",
                     title="Remove from registry",
                 ),
             ], gap=4),

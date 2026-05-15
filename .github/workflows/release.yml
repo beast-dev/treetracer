@@ -15,6 +15,12 @@ concurrency:
     group: release-${{ github.ref }}
     cancel-in-progress: false   # never cancel an in-flight release build
 
+# Node 20 is deprecated on GitHub-hosted runners (forced to Node 24 from
+# 2026-06-02, removed 2026-09-16). This opts our existing actions into
+# Node 24 now. Drop once each action publishes a Node-24-native major.
+env:
+    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
     build:
         name: Build (${{ matrix.target }})
@@ -26,14 +32,23 @@ jobs:
                 include:
                     - os: macos-latest
                       target: macOS
+                      # Briefcase's default macOS format ``app`` produces the .dmg.
+                      format: ''
                       package-args: --adhoc-sign
                       artifact-glob: 'dist/*.dmg'
                     - os: windows-latest
                       target: windows
+                      # Default Windows format is ``app`` → .msi.
+                      format: ''
                       package-args: ''
                       artifact-glob: 'dist/*.msi'
                     - os: ubuntu-latest
                       target: linux
+                      # Briefcase's default Linux format is ``system`` (a .deb
+                      # tied to the host's system python — fails when the CI
+                      # Python doesn't match Ubuntu's). We want a portable
+                      # AppImage built in a manylinux docker container.
+                      format: AppImage
                       package-args: ''
                       artifact-glob: 'dist/*.AppImage'
 
@@ -52,9 +67,11 @@ jobs:
             - name: Sync packaging deps
               run: uv sync --locked --group package
 
-            # AppImage build needs GTK/WebKit dev headers on the host machine
-            # (Briefcase builds inside a manylinux container but copies
-            # PyGObject / pycairo wheels from the host's pip cache).
+            # Belt-and-braces. The AppImage compile happens inside a
+            # manylinux Docker container with its own GTK headers
+            # (from ``system_requires`` in pyproject.toml's appimage
+            # block), but having them on the host too lets ``briefcase
+            # dev`` work for local debugging without docker.
             - name: Install Linux system deps
               if: matrix.target == 'linux'
               run: |
@@ -68,13 +85,13 @@ jobs:
               run: uv run --no-sync python tools/check_briefcase_sync.py
 
             - name: Briefcase create
-              run: uv run --no-sync briefcase create ${{ matrix.target }} --no-input
+              run: uv run --no-sync briefcase create ${{ matrix.target }} ${{ matrix.format }} --no-input
 
             - name: Briefcase build
-              run: uv run --no-sync briefcase build ${{ matrix.target }} --no-input
+              run: uv run --no-sync briefcase build ${{ matrix.target }} ${{ matrix.format }} --no-input
 
             - name: Briefcase package
-              run: uv run --no-sync briefcase package ${{ matrix.target }} --no-input ${{ matrix.package-args }}
+              run: uv run --no-sync briefcase package ${{ matrix.target }} ${{ matrix.format }} --no-input ${{ matrix.package-args }}
 
             - uses: actions/upload-artifact@v4
               with:

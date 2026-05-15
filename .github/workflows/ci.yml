@@ -11,6 +11,12 @@ concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Node 20 is deprecated on GitHub-hosted runners (forced to Node 24 from
+# 2026-06-02, removed 2026-09-16). This opts our existing actions into
+# Node 24 now. Drop once each action publishes a Node-24-native major.
+env:
+    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
     test:
         name: Tests (${{ matrix.os }})

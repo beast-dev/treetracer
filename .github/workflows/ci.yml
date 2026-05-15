@@ -1,0 +1,59 @@
+name: CI
+
+on:
+    push:
+        branches: [master, main]
+    pull_request:
+        branches: [master, main]
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+    test:
+        name: Tests (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 10
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v5
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: '**/uv.lock'
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version-file: .python-version
+
+            - name: Sync dependencies (test group)
+              run: uv sync --locked --group test
+
+            - name: Run tests
+              run: uv run --no-sync pytest src/test/ -v
+
+    # Build the wheel + sdist to catch packaging-only regressions
+    # (e.g. an Asset getting accidentally excluded by hatch). Ubuntu
+    # is enough for this — wheels are pure-Python.
+    build:
+        name: Build wheel + sdist
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v5
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: '**/uv.lock'
+            - uses: actions/setup-python@v5
+              with:
+                  python-version-file: .python-version
+            - run: uv build

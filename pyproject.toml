@@ -76,7 +76,7 @@ package = [
 [tool.briefcase]
 project_name = "TreeTracer"
 bundle = "community.beast"
-version = "0.1.0"
+version = "0.9.PREVIEW"
 url = "https://github.com/beast-dev/treetracer"
 license = "GPL-3.0-or-later"
 author = "Sam Hong"

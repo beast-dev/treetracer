@@ -1296,7 +1296,7 @@ wheels = [
 
 [[package]]
 name = "treetracer"
-version = "0.1.0"
+version = "0.9rc0"
 source = { editable = "." }
 dependencies = [
     { name = "dash" },

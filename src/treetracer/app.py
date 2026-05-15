@@ -68,6 +68,15 @@ def main():
     browser_mode = "--browser" in sys.argv
 
     try:
+        from . import NUM_THREADS
+        from .logger import add_log
+        import os
+        cpu_total = os.cpu_count() or 0
+        add_log(
+            f"Compute threads capped at {NUM_THREADS} of {cpu_total} cores. "
+            f"Override via TREETRACER_NUM_THREADS=<n>."
+        )
+
         app = create_dash_app()
         register_callbacks(app)
         peartree_view.register_routes(app.server)

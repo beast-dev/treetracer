@@ -1,5 +1,10 @@
-"""Allow running as `python -m treetracer`."""
-from .app import main
-import sys
+"""Allow running as ``python -m treetracer``."""
+from __future__ import annotations
 
-sys.exit(main())
+
+if __name__ == "__main__":
+    import sys
+
+    from .app import main
+
+    sys.exit(main())

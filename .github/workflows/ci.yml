@@ -40,6 +40,35 @@ jobs:
             - name: Run tests
               run: uv run --no-sync pytest src/test/ -v
 
+    # Verify Briefcase config hasn't drifted from [project] and that the
+    # runtime dep set alone is enough to import treetracer (i.e. no test-
+    # only dep has accidentally been imported by production code).
+    config-checks:
+        name: Config sanity
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v5
+              with:
+                  enable-cache: true
+                  cache-dependency-glob: '**/uv.lock'
+            - uses: actions/setup-python@v5
+              with:
+                  python-version-file: .python-version
+
+            - name: Briefcase / project deps in sync
+              run: uv run --no-sync python tools/check_briefcase_sync.py
+
+            - name: Runtime deps alone are sufficient
+              # Install only [project].dependencies — no [dependency-groups].
+              # Then import the package's main module. If a runtime file
+              # imports anything from arviz / dendropy / briefcase / pytest,
+              # this fails here rather than at user install time.
+              run: |
+                  uv sync --locked --no-default-groups
+                  uv run --no-sync python -c "import treetracer; import treetracer.app; import treetracer.ui"
+
     # Build the wheel + sdist to catch packaging-only regressions
     # (e.g. an Asset getting accidentally excluded by hatch). Ubuntu
     # is enough for this — wheels are pure-Python.

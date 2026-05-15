@@ -1,7 +1,7 @@
 from dash import html, callback, Input, Output, State, no_update, ALL
 import dash_mantine_components as dmc
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
@@ -15,8 +15,18 @@ from ..state import (load_distmat, get_distmat_index, next_distmat_name,
 from ._helpers import _save_file_dialog, extract_group
 
 
-# Separate-process computation — has its own GIL, so the main process stays responsive.
-# The executor is created lazily to avoid spawning processes at import time.
+# Background-thread computation. ``rapidtrees`` (Rust) and scipy LAPACK
+# both release the GIL for the heavy compute, so the Dash main thread
+# stays responsive while RF / MDS work runs in a single worker thread.
+#
+# We used to use ``ProcessPoolExecutor`` here, but Briefcase macOS
+# bundles ship no standalone python binary — only a launcher stub at
+# ``Contents/MacOS/TreeTracer`` that ``multiprocessing.spawn`` would
+# invoke as the child interpreter. The stub ignores ``-c <spawn code>``
+# and re-launches the full app, so clicking "Compute RF Distances"
+# opened a new TreeTracer window per worker spawn. Switching to threads
+# fixes that without changing the responsiveness story (max_workers=1
+# anyway — we never exploited cross-process parallelism).
 _executor = None
 _rf_future = None      # concurrent.futures.Future for RF job
 _rf_meta = {}          # metadata needed by poll_completion to save RF result
@@ -28,9 +38,77 @@ def _get_executor():
     global _executor
     if _executor is None:
         import atexit
-        _executor = ProcessPoolExecutor(max_workers=1)
+        _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="treetracer-compute")
         atexit.register(_shutdown_executor)
     return _executor
+
+
+def _rf_pipeline(selected_files, save_path, rf_name):
+    """Full RF computation pipeline, executed entirely on the worker thread.
+
+    Mirrors ``handle_compute_mds``'s lightweight-dispatcher pattern. Earlier,
+    ``handle_compute_rf`` itself ran the DB fetch + newick prep on the Flask
+    request thread, holding the GIL for many seconds on big datasets and
+    blocking the UI between the click and the "Computing..." indicator
+    appearing. Moving it into the thread lets the click callback return in
+    ~10ms (just validation + submit).
+
+    Returns a dict that ``poll_completion`` consumes to call
+    ``register_distmat`` with the right file breakdown.
+    """
+    import time
+    from ..rf._worker import compute_rf
+
+    t0 = time.time()
+    tree_service = get_tree_service()
+
+    add_log(f"[{rf_name}] Fetching trees from {len(selected_files)} file(s)...")
+    sample = tree_service.get_trees_for_analysis(file_sources=selected_files)
+    sampled_trees = sample["trees"]
+
+    if len(sampled_trees) < 2:
+        raise RuntimeError("Not enough trees retrieved for RF computation.")
+
+    add_log(f"[{rf_name}] Retrieved {len(sampled_trees)} trees")
+
+    names = [t["name"] for t in sampled_trees]
+    newicks = tree_service.prepare_trees_for_rf_analysis(sampled_trees)
+
+    translate_maps = []
+    file_to_map_idx = {}
+    for fname in selected_files:
+        tmap = tree_service.db_manager.get_translate_map(fname)
+        if tmap is not None:
+            file_to_map_idx[fname] = len(translate_maps)
+            translate_maps.append(tmap)
+    map_indices = [
+        file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
+    ]
+
+    file_breakdown = {}
+    groups_per_file = {}  # file_source -> set of group_names
+    for t in sampled_trees:
+        fs = t["file_source"]
+        gn = t["group_name"]
+        file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
+        groups_per_file.setdefault(fs, set()).add(gn)
+    groups_per_file = {k: sorted(v) for k, v in groups_per_file.items()}
+
+    add_log(
+        f"[{rf_name}] Running rapidtrees on {len(names)} trees, "
+        f"{len(translate_maps)} translate map(s)..."
+    )
+    result_names, compute_elapsed = compute_rf(
+        names, newicks, translate_maps, map_indices, save_path,
+    )
+
+    return {
+        "result_names": list(result_names),
+        "compute_elapsed": compute_elapsed,
+        "total_elapsed": time.time() - t0,
+        "file_breakdown": file_breakdown,
+        "groups_per_file": groups_per_file,
+    }
 
 
 def _shutdown_executor():
@@ -170,83 +248,36 @@ def register_compute_callbacks():
                 id=notif_id(),
             ), no_update, no_update, no_update
 
-        # --- All taxa counts match — extract data then submit RF to subprocess ---
+        # --- Taxa validation passed — submit the pipeline to a worker thread ---
+        # The worker does the DB fetch + newick prep + RF compute. This
+        # callback returns the indicator in ~10ms, matching the MDS path.
         n_taxa = unique_counts.pop()
         add_log(f"Taxa validation passed: all {len(selected_files)} files have {n_taxa} taxa")
 
-        tree_service = get_tree_service()
-
-        # Data extraction (disk I/O, fast — runs in main process)
-        total_trees = sum(
+        # Expected counts from in-memory summaries (no disk hit).
+        expected_total = sum(
             stored_summaries[f].get("total_trees", 0) for f in selected_files
         )
-        add_log(f"Fetching all {total_trees} trees from {len(selected_files)} files...")
-
-        sample = tree_service.get_trees_for_analysis(file_sources=selected_files)
-        sampled_trees = sample["trees"]
-        add_log(f"Retrieved {len(sampled_trees)} trees for RF computation")
-
-        if len(sampled_trees) < 2:
-            msg = "Not enough trees retrieved for RF computation."
-            add_log(msg, "ERROR")
-            return dmc.Notification(
-                title="RF Error", message=msg, color="red",
-                action="show", autoClose=6000, id=notif_id(),
-            ), no_update, no_update, no_update
-
-        names = [t["name"] for t in sampled_trees]
-        newicks = tree_service.prepare_trees_for_rf_analysis(sampled_trees)
-
-        translate_maps = []
-        file_to_map_idx = {}
-        for fname in selected_files:
-            tmap = tree_service.db_manager.get_translate_map(fname)
-            if tmap is not None:
-                file_to_map_idx[fname] = len(translate_maps)
-                translate_maps.append(tmap)
-
-        map_indices = [
-            file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
-        ]
-
-        # Build file breakdown: {file_source: n_trees} and groups-per-file mapping
-        file_breakdown = {}
-        groups_per_file = {}  # file_source -> set of group_names
-        for t in sampled_trees:
-            fs = t["file_source"]
-            gn = t["group_name"]
-            file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
-            groups_per_file.setdefault(fs, set()).add(gn)
-        # Convert sets to lists for JSON serialization
-        groups_per_file = {k: sorted(v) for k, v in groups_per_file.items()}
+        expected_breakdown_str = ", ".join(
+            f"{f}: {stored_summaries[f].get('total_trees', 0)}"
+            for f in selected_files
+        )
 
         rf_name = next_distmat_name()
-        add_log(
-            f"Starting RF computation ({rf_name}) in background process: {len(names)} trees, "
-            f"{len(translate_maps)} translate map(s), {n_taxa} taxa"
-        )
-
-        # Store metadata for process_completion
         save_path = get_distmat_path(rf_name)
         _rf_meta["name"] = rf_name
-        _rf_meta["file_breakdown"] = file_breakdown
-        _rf_meta["groups_per_file"] = groups_per_file
         _rf_meta["save_path"] = save_path
 
-        # Submit RF computation — worker saves .npy directly, no matrix pickle transfer
-        from ..rf._worker import compute_rf
         global _rf_future
         _rf_future = _get_executor().submit(
-            compute_rf, names, newicks, translate_maps, map_indices, save_path,
+            _rf_pipeline, selected_files, save_path, rf_name,
         )
 
-        # Return immediately: show computing indicator, enable polling, disable button
-        breakdown_str = ", ".join(f"{f}: {n}" for f, n in file_breakdown.items())
         computing_indicator = dmc.Alert(
             title=f"Computing RF Distances ({rf_name})...",
             children=dmc.Text(
-                f"Computing {len(names)}x{len(names)} RF distance matrix in background. "
-                f"Files: {breakdown_str}",
+                f"Computing {expected_total}×{expected_total} RF distance matrix in background. "
+                f"Files: {expected_breakdown_str}",
                 size="sm",
             ),
             color="blue",
@@ -430,7 +461,7 @@ def register_compute_callbacks():
         # --- Process RF ---
         if rf_done:
             try:
-                result_names, elapsed = _rf_future.result()
+                pipeline = _rf_future.result()
             except Exception as e:
                 msg = f"RF computation failed: {e}"
                 add_log(msg, "ERROR")
@@ -442,14 +473,17 @@ def register_compute_callbacks():
             else:
                 _rf_future = None
                 rf_name = _rf_meta.get("name", "RF")
-                file_breakdown = _rf_meta.get("file_breakdown", {})
+                result_names = pipeline["result_names"]
+                file_breakdown = pipeline["file_breakdown"]
+                groups_per_file = pipeline["groups_per_file"]
+                elapsed = pipeline["total_elapsed"]
+                compute_elapsed = pipeline["compute_elapsed"]
                 # Matrix already saved to disk by the worker — just register it
-                groups_per_file = _rf_meta.get("groups_per_file", {})
                 register_distmat(rf_name, result_names, _rf_meta["save_path"],
                                  file_breakdown=file_breakdown,
                                  groups_per_file=groups_per_file)
                 add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
-                add_log(f"RF computation took {elapsed:.2f}s")
+                add_log(f"RF pipeline took {elapsed:.2f}s (rapidtrees compute {compute_elapsed:.2f}s)")
                 rf_out = [
                     dmc.Alert(title=f"RF Distance Matrix ({rf_name})",
                               children=dmc.Text(f"{len(result_names)} x {len(result_names)} trees", size="sm"),

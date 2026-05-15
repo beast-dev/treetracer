@@ -1,11 +1,13 @@
 [project]
 name = "treetracer"
-version = "0.1.0"
+version = "0.9rc1"
 description = "An app to visualize phylogenetic tree topology convergence"
 readme = "README.md"
 authors = [
     { email = "samuel.hong@kuleuven.be" }
 ]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "dash>=4.1.0",
@@ -44,6 +46,106 @@ test = [
     "pytest>=8",
     "arviz>=0.20",
     "dendropy>=5.0.8",
+]
+# Build the platform installers (DMG / MSI / AppImage). Install with:
+# ``uv sync --group package``. Briefcase drives the whole flow; we run
+# ``uv run briefcase ...`` so it sees the project's Python and our deps.
+package = [
+    "briefcase>=0.3.20",
+]
+
+# ---------------------------------------------------------------------------
+# Briefcase packaging
+# ---------------------------------------------------------------------------
+# Builds the desktop installers (.dmg / .msi / .AppImage) from this project.
+#
+# Maintainability rules:
+#   1. The ``requires`` list under ``[tool.briefcase.app.treetracer]`` MUST
+#      mirror ``[project].dependencies`` above. The two lists are checked
+#      for drift in CI by ``tools/check_briefcase_sync.py``.
+#   2. ``[tool.briefcase].version`` MUST mirror ``[project].version``. Same
+#      check covers it.
+#   3. Platform-specific deps go in ``[tool.briefcase.app.treetracer.<os>]``
+#      and are ADDED to (not overriding) the base ``requires``.
+#   4. To build locally:
+#        uv sync --group package
+#        uv run briefcase dev                  # quick smoke (no bundling)
+#        uv run briefcase package macOS --adhoc-sign   # full DMG
+# ---------------------------------------------------------------------------
+
+[tool.briefcase]
+project_name = "TreeTracer"
+bundle = "community.beast"
+version = "0.9rc1"
+url = "https://github.com/beast-dev/treetracer"
+license = "GPL-3.0-or-later"
+author = "Sam Hong"
+author_email = "samuelleandrohong@gmail.com"
+
+[tool.briefcase.app.treetracer]
+formal_name = "TreeTracer"
+description = "Posterior tree-space exploration for BEAST X output."
+long_description = "Load .trees files from BEAST X, compute pairwise Robinson–Foulds distances with rapidtrees, and explore the resulting tree-space interactively."
+icon = "packaging/icons/treetracer"
+sources = ["src/treetracer"]
+test_sources = ["src/test"]
+
+# Mirrors [project].dependencies, with one addition:
+# pywebview transitively depends on ``proxy-tools``, which is sdist-only
+# on PyPI (no wheel). Briefcase enforces ``--only-binary :all:``, so we
+# pre-build a wheel ourselves at ``packaging/wheels/`` and reference it
+# directly here so pip picks the local wheel before resolving pywebview.
+# Regenerate with: ``uv run pip wheel proxy-tools -w packaging/wheels --no-deps``.
+# The sync check tolerates this single extra path entry; see tools/check_briefcase_sync.py.
+requires = [
+    "packaging/wheels/proxy_tools-0.1.0-py3-none-any.whl",
+    "dash>=4.1.0",
+    "dash-mantine-components",
+    "pandas",
+    "rapidtrees==0.5.1",
+    "plotly",
+    "psutil>=7.0.0",
+    "numpy",
+    "scipy",
+    "kaleido",
+    "pywebview>=6.1",
+]
+
+# pywebview's environment markers do pull these in via pip on macOS,
+# but Briefcase resolves for a target platform explicitly — listing them
+# here makes the contract obvious and survives any future env-marker drift.
+[tool.briefcase.app.treetracer.macOS]
+universal_build = false   # arch-specific build; cross-compile via CI matrix
+# Bumped from the briefcase default (11.0) because scipy ≥1.17 only
+# ships ``macosx_12_0_arm64`` and ``macosx_14_0_arm64`` wheels. macOS 11
+# is end-of-life anyway (Apple dropped security updates in 2024).
+min_os_version = "12.0"
+requires = [
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-WebKit",
+]
+
+[tool.briefcase.app.treetracer.windows]
+requires = [
+    "pythonnet>=3.0",
+]
+
+# GTK system headers (libwebkit2gtk-*-dev, libgirepository-*-dev, etc.) are
+# needed on the BUILD machine; Briefcase's docker-based AppImage build
+# handles that. PyGObject + pycairo compile against them.
+[tool.briefcase.app.treetracer.linux]
+requires = [
+    "PyGObject",
+    "pycairo",
+]
+
+[tool.briefcase.app.treetracer.linux.appimage]
+manylinux = "manylinux_2_28"
+system_requires = [
+    "gobject-introspection-devel",
+    "cairo-gobject-devel",
+    "pkgconfig",
+    "webkit2gtk4.1-devel",
 ]
 
 [tool.pytest.ini_options]

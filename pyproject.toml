@@ -11,7 +11,6 @@ dependencies = [
     "dash>=4.1.0",
     "dash-iconify",
     "dash-mantine-components",
-    "dendropy>=5.0.8",
     "pandas",
     "rapidtrees==0.5.1",
     "plotly",
@@ -31,3 +30,31 @@ build-backend = "hatchling.build"
 
 [tool.setuptools.package-data]
 "treetracer" = ["assets/*"]
+
+# Exclude the CI test directory from the built wheel — it ships with
+# the 5 MB test fixture and shouldn't bloat the installed package.
+[tool.hatch.build.targets.wheel]
+packages = ["src/treetracer"]
+
+# Test-only dependencies. Install with: ``uv sync --group test``.
+# ``arviz`` and ``dendropy`` are reference implementations used to
+# cross-check TreeTracer's ESS / RF / MCC math; they are NOT imported
+# by anything under ``src/treetracer`` at runtime.
+[dependency-groups]
+test = [
+    "pytest>=8",
+    "arviz>=0.20",
+    "dendropy>=5.0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src/test"]
+markers = [
+    "integration: end-to-end with the 100-tree real-data fixture",
+]
+filterwarnings = [
+    # arviz / xarray emit a flurry of deprecation warnings on Python 3.13;
+    # they don't affect ESS numbers and are out of our control.
+    "ignore::DeprecationWarning:arviz",
+    "ignore::DeprecationWarning:xarray",
+]

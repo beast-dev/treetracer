@@ -13,7 +13,7 @@ import math
 
 import pytest
 
-from treetracer.newick_layout import (
+from treetracer.clade_freq.layout import (
     _parse_newick,
     _apply_translate,
     _assign_layout,

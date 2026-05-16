@@ -43,7 +43,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from . import state
+from .. import state
 
 
 # Module-level export expected by older tests / callers.

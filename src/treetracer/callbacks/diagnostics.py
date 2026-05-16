@@ -30,7 +30,7 @@ from ..clade_freq import compute_clade_frequencies
 # of tuples through the browser store on every click.
 _split_resolution: dict[int, tuple[str, int, tuple]] = {}
 
-from ..newick_layout import parse_nexus, build_tree_traces, _collect_nodes
+from ..clade_freq.layout import parse_nexus, build_tree_traces, _collect_nodes
 from ._helpers import _save_file_dialog
 
 

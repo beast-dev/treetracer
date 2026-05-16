@@ -1,0 +1,105 @@
+"""Left-hand navbar (sidebar): loaded-trees panel + all of the dcc.Stores
+and Intervals that act as the app's client-side state bus."""
+
+import dash_mantine_components as dmc
+from dash import dcc, html
+
+from ..icons import icon
+from ..theme import get_template
+
+
+def add_navbar():
+    return dmc.AppShellNavbar(
+        id="navbar",
+        children=[
+            dmc.Stack(
+                [
+                    dmc.Group([
+                        dmc.Text("Loaded Trees", fw=600, size="sm"),
+                        dmc.Group([
+                            dmc.Tooltip(
+                                dmc.ActionIcon(
+                                    icon("tabler:file-upload", size=18),
+                                    id="load-trees-button",
+                                    variant="light",
+                                    color="green",
+                                    size=40,
+                                ),
+                                label="Load Trees",
+                            ),
+                            dmc.Tooltip(
+                                dmc.ActionIcon(
+                                    icon("tabler:trash", size=18),
+                                    id="clear-data-button",
+                                    variant="light",
+                                    color="orange",
+                                    size=40,
+                                ),
+                                label="Clear Data",
+                            ),
+                        ], gap=4),
+                    ], justify="space-between"),
+                    dmc.Divider(),
+                    html.Div([
+                        dmc.LoadingOverlay(
+                            id="sidebar-loading-overlay",
+                            visible=False,
+                            overlayProps={"radius": "sm", "blur": 2},
+                        ),
+                        dmc.ScrollArea(
+                            html.Div(
+                                id="sidebar-trees-display",
+                                children=[
+                                    dmc.Text(
+                                        "No trees loaded. Click the upload button above to load a .trees file.",
+                                        c="dimmed",
+                                        size="sm",
+                                        style={"padding": "10px"},
+                                    ),
+                                ],
+                            ),
+                            style={"height": "calc(100vh - 160px)"},
+                            offsetScrollbars=True,
+                        ),
+                    ], style={"position": "relative"}),
+                    # dcc.Store components for state management
+                    dcc.Store(id="distmat-store", storage_type="memory"),
+                    dcc.Store(id="plot-config-store", storage_type="memory"),
+                    dcc.Store(id="tree-offset-store", storage_type="memory"),
+                    dcc.Store(id="mds-result-store", storage_type="memory"),
+                    dcc.Store(id="rf-trace-store", storage_type="memory"),
+                    dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
+                    # Persistent registry of computed MCC trees
+                    # (RF_001_Between_MCC_1 etc.) and a one-shot action
+                    # signal driven by the per-row View / Delete buttons
+                    # in the MCC list panels.
+                    dcc.Store(id="mcc-registry-store", storage_type="memory", data=[]),
+                    dcc.Store(id="mcc-registry-action-store", storage_type="memory"),
+                    # Current plotly template name (light/dark). Each
+                    # plot-rendering callback reads it via
+                    # ``theme.get_template()`` at fig build time; the
+                    # store is wired as a re-render trigger.
+                    dcc.Store(id="plotly-template-store", storage_type="memory", data=get_template()),
+                    # Clade frequency comparison — intermediate results and
+                    # scatter-click state, kept server-side-friendly.
+                    dcc.Store(id="clade-freq-data-store", storage_type="memory"),
+                    dcc.Store(id="clade-freq-click-store", storage_type="memory"),
+                    # Background computation polling
+                    dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
+                    # Log panel state
+                    dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
+                    dcc.Store(id="sidebar-visible", storage_type="memory", data=True),
+                    dcc.Interval(id="log-poll-interval", interval=2000, n_intervals=0),
+                    dmc.Alert(
+                        id="trees-validation-alert",
+                        title="",
+                        color="red",
+                        withCloseButton=True,
+                        style={"display": "none"},
+                    ),
+                ],
+                gap="xs",
+            ),
+        ],
+        p="md",
+    )

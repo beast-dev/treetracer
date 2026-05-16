@@ -2,8 +2,13 @@ name: Release
 
 # Triggered by tag push (e.g. ``git tag v0.1.0 && git push --tags``) or
 # manually via the Actions tab for dry runs. Each OS produces its own
-# installer artifact; on a tag push, all three are attached to the
+# installer artifact; on a tag push, all are attached to the
 # GitHub Release.
+#
+# Linux is intentionally not built here: Briefcase's AppImage path
+# warns "AppImages cannot use pre-compiled binary wheels", which is a
+# blocker for our scipy / numpy / rapidtrees stack. Linux users install
+# via ``uv tool install`` / source clone (see the README).
 
 on:
     push:
@@ -42,15 +47,6 @@ jobs:
                       format: ''
                       package-args: ''
                       artifact-glob: 'dist/*.msi'
-                    - os: ubuntu-latest
-                      target: linux
-                      # Briefcase's default Linux format is ``system`` (a .deb
-                      # tied to the host's system python — fails when the CI
-                      # Python doesn't match Ubuntu's). We want a portable
-                      # AppImage built in a manylinux docker container.
-                      format: AppImage
-                      package-args: ''
-                      artifact-glob: 'dist/*.AppImage'
 
         steps:
             - uses: actions/checkout@v4
@@ -66,20 +62,6 @@ jobs:
 
             - name: Sync packaging deps
               run: uv sync --locked --group package
-
-            # Belt-and-braces. The AppImage compile happens inside a
-            # manylinux Docker container with its own GTK headers
-            # (from ``system_requires`` in pyproject.toml's appimage
-            # block), but having them on the host too lets ``briefcase
-            # dev`` work for local debugging without docker.
-            - name: Install Linux system deps
-              if: matrix.target == 'linux'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y \
-                      libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 \
-                      gir1.2-gtk-3.0 libgirepository-2.0-dev libcairo2-dev \
-                      pkg-config
 
             - name: Briefcase config sanity
               run: uv run --no-sync python tools/check_briefcase_sync.py

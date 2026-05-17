@@ -15,18 +15,20 @@ from ..state import (load_distmat, get_distmat_index, next_distmat_name,
 from ._helpers import _save_file_dialog, extract_group
 
 
-# Background-thread computation. ``rapidtrees`` (Rust) and scipy LAPACK
-# both release the GIL for the heavy compute, so the Dash main thread
-# stays responsive while RF / MDS work runs in a single worker thread.
+# RF compute happens in a SUBPROCESS, not a thread. See
+# ``_spawn_subprocess_worker`` below for the rationale; tl;dr is that
+# ``rapidtrees`` holds the GIL during its iterator-consumption phase
+# for several seconds, which triggers macOS's main-thread watchdog
+# (the spinning beach ball) when we share a process with the GUI.
 #
-# We used to use ``ProcessPoolExecutor`` here, but Briefcase macOS
-# bundles ship no standalone python binary — only a launcher stub at
-# ``Contents/MacOS/TreeTracer`` that ``multiprocessing.spawn`` would
-# invoke as the child interpreter. The stub ignores ``-c <spawn code>``
-# and re-launches the full app, so clicking "Compute RF Distances"
-# opened a new TreeTracer window per worker spawn. Switching to threads
-# fixes that without changing the responsiveness story (max_workers=1
-# anyway — we never exploited cross-process parallelism).
+# The ``ThreadPoolExecutor`` is still here, but it just owns a
+# concurrent.futures.Future that's blocking on ``subprocess.Popen.wait``.
+# That wait releases the GIL the whole time, so the parent stays
+# perfectly responsive while the child does the work.
+#
+# MDS still runs in the same thread executor without a subprocess —
+# scipy's LAPACK calls release the GIL natively, so there's no beach
+# ball risk and the subprocess startup overhead isn't worth it.
 _executor = None
 _rf_future = None      # concurrent.futures.Future for RF job
 _rf_meta = {}          # metadata needed by poll_completion to save RF result
@@ -44,71 +46,73 @@ def _get_executor():
 
 
 def _rf_pipeline(selected_files, save_path, rf_name):
-    """Full RF computation pipeline, executed entirely on the worker thread.
+    """Parent-side preparation + persistent-worker dispatch for an RF compute.
 
-    Mirrors ``handle_compute_mds``'s lightweight-dispatcher pattern. Earlier,
-    ``handle_compute_rf`` itself ran the DB fetch + newick prep on the Flask
-    request thread, holding the GIL for many seconds on big datasets and
-    blocking the UI between the click and the "Computing..." indicator
-    appearing. Moving it into the thread lets the click callback return in
-    ~10ms (just validation + submit).
+    The parent does only what is cheap on the GIL-shared GUI process:
+    a vectorised pandas slice to pull the offset metadata for the
+    selected trees, plus a few small dict lookups. Then hands off to
+    ``compute_rf_worker_entry`` via the persistent worker subprocess
+    (see ``callbacks/persistent_worker.py``).
 
-    Returns a dict that ``poll_completion`` consumes to call
-    ``register_distmat`` with the right file breakdown.
+    Wall-clock cost in the parent: ~50 ms for 5000 trees, well below
+    the macOS beach-ball threshold.
     """
     import time
-    from ..rf._worker import compute_rf
+    from . import persistent_worker
 
     t0 = time.time()
     tree_service = get_tree_service()
+    db_manager = tree_service.db_manager
 
-    add_log(f"[{rf_name}] Fetching trees from {len(selected_files)} file(s)...")
-    sample = tree_service.get_trees_for_analysis(file_sources=selected_files)
-    sampled_trees = sample["trees"]
-
-    if len(sampled_trees) < 2:
+    add_log(f"[{rf_name}] Preparing tree descriptors for {len(selected_files)} file(s)...")
+    db_manager.flush()
+    df = db_manager._trees
+    mask = df["file_source"].isin(selected_files)
+    selected_df = df[mask]
+    if len(selected_df) < 2:
         raise RuntimeError("Not enough trees retrieved for RF computation.")
 
-    add_log(f"[{rf_name}] Retrieved {len(sampled_trees)} trees")
+    # Vectorised extraction — no Python-level row loop, no disk reads.
+    tree_descriptors = selected_df[[
+        "name", "newick_offset", "newick_length", "file_source", "group_name",
+    ]].to_dict("records")
+    # Pandas gives us int64/int32 numpy scalars; the worker side
+    # expects plain Python ints (cleaner pickle, no numpy dependency
+    # if we ever simplify the worker).
+    for d in tree_descriptors:
+        d["newick_offset"] = int(d["newick_offset"])
+        d["newick_length"] = int(d["newick_length"])
 
-    names = [t["name"] for t in sampled_trees]
-    newicks = tree_service.prepare_trees_for_rf_analysis(sampled_trees)
+    # File-path map for the worker's disk reads (paths registered by
+    # ``TreeManagerPandas.register_source_file`` at upload time).
+    source_file_paths = {
+        fs: db_manager._source_files[fs]
+        for fs in selected_files
+        if fs in db_manager._source_files
+    }
 
-    translate_maps = []
-    file_to_map_idx = {}
-    for fname in selected_files:
-        tmap = tree_service.db_manager.get_translate_map(fname)
-        if tmap is not None:
-            file_to_map_idx[fname] = len(translate_maps)
-            translate_maps.append(tmap)
-    map_indices = [
-        file_to_map_idx.get(t["file_source"], 0) for t in sampled_trees
-    ]
-
-    file_breakdown = {}
-    groups_per_file = {}  # file_source -> set of group_names
-    for t in sampled_trees:
-        fs = t["file_source"]
-        gn = t["group_name"]
-        file_breakdown[fs] = file_breakdown.get(fs, 0) + 1
-        groups_per_file.setdefault(fs, set()).add(gn)
-    groups_per_file = {k: sorted(v) for k, v in groups_per_file.items()}
+    # Translate maps keyed by file_source — keeps the worker's job
+    # purely descriptor-driven, no DB query needed on the other side.
+    translate_maps = {
+        fs: db_manager.get_translate_map(fs) for fs in selected_files
+    }
 
     add_log(
-        f"[{rf_name}] Running rapidtrees on {len(names)} trees, "
-        f"{len(translate_maps)} translate map(s)..."
-    )
-    result_names, compute_elapsed = compute_rf(
-        names, newicks, translate_maps, map_indices, save_path,
+        f"[{rf_name}] Dispatching to persistent worker "
+        f"({len(tree_descriptors)} trees, {len(source_file_paths)} source file(s))..."
     )
 
-    return {
-        "result_names": list(result_names),
-        "compute_elapsed": compute_elapsed,
-        "total_elapsed": time.time() - t0,
-        "file_breakdown": file_breakdown,
-        "groups_per_file": groups_per_file,
-    }
+    result = persistent_worker.submit_job(
+        "compute_rf",
+        tree_descriptors=tree_descriptors,
+        source_file_paths=source_file_paths,
+        translate_maps=translate_maps,
+        save_path=save_path,
+        rf_name=rf_name,
+    )
+    # Add parent-side total wall-time (includes IPC round-trip).
+    result["total_elapsed"] = time.time() - t0
+    return result
 
 
 def _shutdown_executor():

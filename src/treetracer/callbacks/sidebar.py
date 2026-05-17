@@ -476,6 +476,14 @@ def register_sidebar_callbacks():
     def clear_uploads(n_clicks):
         if n_clicks:
             add_log("Data cleared")
+            # Cancel any in-flight MCC compute — its descriptors point
+            # into the DB we're about to wipe, and we don't want the
+            # poll callback to write a result based on stale state.
+            try:
+                from . import mcc_compute
+                mcc_compute.reset()
+            except Exception:
+                pass
             # Clear all server-side distance matrices from disk
             clear_all_distmats()
             clear_all_mds_results()

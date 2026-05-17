@@ -70,12 +70,24 @@ def main():
     try:
         from . import NUM_THREADS
         from .logger import add_log
+        from .callbacks import persistent_worker
         import os
         cpu_total = os.cpu_count() or 0
         add_log(
             f"Compute threads capped at {NUM_THREADS} of {cpu_total} cores. "
             f"Override via TREETRACER_NUM_THREADS=<n>."
         )
+
+        # Spawn the persistent compute subprocess in a background thread.
+        # Popen returns ~immediately; the actual Python boot + heavy
+        # imports happen inside the subprocess in parallel with our own
+        # GUI assembly below. By the time the user clicks Compute RF or
+        # View MCC, the worker is sitting in its read loop ready to go.
+        threading.Thread(
+            target=persistent_worker.start,
+            name="treetracer-worker-bootstrap",
+            daemon=True,
+        ).start()
 
         app = create_dash_app()
         register_callbacks(app)

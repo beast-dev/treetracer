@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import state
-from .callbacks.treespace import (
+from .. import state
+from ._canonical_remap import (
     _build_canonical_remaps,
     _substitute_newick_labels,
 )

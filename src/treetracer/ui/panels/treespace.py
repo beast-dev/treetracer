@@ -12,6 +12,19 @@ from ...plot_utils import placeholder_fig
 def _add_treespace_panel():
     """Build the Between-run Analysis tab panel content."""
     return html.Div([
+        # MCC-compute loading overlay. Visible=True flipped on by
+        # ``view_mcc_tree`` (click handler), back to False by
+        # ``mcc_compute.poll_mcc_completion``. Position relative on the
+        # wrapping Div lets the overlay sit on top.
+        dmc.LoadingOverlay(
+            id="treespace-loading-overlay",
+            visible=False,
+            zIndex=1000,
+            overlayProps={"radius": "sm", "blur": 2},
+            loaderProps={"size": "lg", "type": "dots",
+                         "children": dmc.Text("Computing MCC tree…",
+                                              size="sm", c="dimmed", mt="sm")},
+        ),
         dmc.Stack([
             # Row 1: MDS-result selector + dim selectors + info + selection-info
             # badge (boxed). Same shape as the within-run panel.
@@ -135,4 +148,4 @@ def _add_treespace_panel():
                 config={"doubleClick": False},
             ),
         ], gap="xs"),
-    ], style={"padding": "10px"})
+    ], style={"padding": "10px", "position": "relative"})

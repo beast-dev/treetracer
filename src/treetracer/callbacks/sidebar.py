@@ -476,12 +476,13 @@ def register_sidebar_callbacks():
     def clear_uploads(n_clicks):
         if n_clicks:
             add_log("Data cleared")
-            # Cancel any in-flight MCC compute — its descriptors point
+            # Cancel any in-flight subprocess job — descriptors point
             # into the DB we're about to wipe, and we don't want the
-            # poll callback to write a result based on stale state.
+            # poll callbacks to write results based on stale state.
             try:
-                from . import mcc_compute
+                from . import mcc_compute, pseudo_ess_compute
                 mcc_compute.reset()
+                pseudo_ess_compute.reset()
             except Exception:
                 pass
             # Clear all server-side distance matrices from disk

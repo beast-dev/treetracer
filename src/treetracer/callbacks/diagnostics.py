@@ -995,6 +995,8 @@ def register_diagnostics_callbacks():
 
     @callback(
         Output("pseudo-ess-output", "children"),
+        Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("compute-pseudo-ess-button", "n_clicks"),
         State("diagnostics-distmat-select", "value"),
         State("ess-n-refs-input", "value"),
@@ -1004,33 +1006,34 @@ def register_diagnostics_callbacks():
         prevent_initial_call=True,
     )
     def compute_pseudo_ess_for_runs(n_clicks, selected_matrix, n_refs, burnin, checks, ids):
-        """Compute Pseudo-ESS per ticked run + an optional Combined row.
+        """Submit a Pseudo-ESS job to the persistent worker.
 
-        For each ticked run we slice the cached RF distance matrix to the
-        rows/cols of trees whose name has the ``"<run>/"`` prefix
-        (dropping the first ``burnin`` of those rows), then feed that
-        submatrix to :func:`treetracer.ess.compute_pseudo_ess`. Burn-in
-        is applied *per run* so chains of different lengths don't get
-        clipped against a global tree-index threshold. If more than one
-        run is ticked we also compute the same diagnostic on the union
-        of their (post-burn-in) tree indices — the "Combined" row.
+        Parent-side: validates input, bins trees per run, applies
+        per-chain burn-in, builds the list of slice descriptors the
+        worker needs. The actual eigendecomp-heavy ESS compute lives
+        in the worker subprocess — see ``ess._subprocess_worker``.
+
+        Returns immediately with a spinner in ``pseudo-ess-output``,
+        the compute button disabled, and the shared poll interval
+        enabled so ``poll_pseudo_ess_completion`` will pick up the
+        worker's response.
         """
+        from . import pseudo_ess_compute
+
         if not n_clicks or not selected_matrix:
-            return no_update
+            return no_update, no_update, no_update
 
         ticked = [i["index"] for i, c in zip(ids, checks) if c]
         if not ticked:
-            return dmc.Text(
-                "No runs selected.", c="dimmed", size="sm",
-            )
+            return (dmc.Text("No runs selected.", c="dimmed", size="sm"),
+                    no_update, no_update)
 
         try:
-            names, distmat = state.load_distmat(selected_matrix)
+            names, _distmat_unused = state.load_distmat(selected_matrix)
         except KeyError:
-            return dmc.Text(
-                f"Matrix {selected_matrix!r} is no longer available.",
-                c="red", size="sm",
-            )
+            return (dmc.Text(f"Matrix {selected_matrix!r} is no longer available.",
+                             c="red", size="sm"),
+                    no_update, no_update)
 
         # Bucket row indices by group prefix once (matrix-row order
         # matches MCMC iteration order within each chain).
@@ -1049,47 +1052,8 @@ def register_diagnostics_callbacks():
         except (ValueError, TypeError):
             burnin_int = 0
 
-        # Stoplight thresholds match the Lanfear paper's rough rule of
-        # thumb: <100 is unreliable, <200 is borderline, ≥200 is the
-        # "you can trust this" zone.
-        def _ess_cell(v):
-            if np.isnan(v):
-                return dmc.TableTd("—")
-            if v < 100:
-                color = "red"
-            elif v < 200:
-                color = "orange"
-            else:
-                color = "green"
-            return dmc.TableTd(
-                dmc.Text(f"{v:.1f}", c=color, fw=600, span=True)
-            )
-
-        def _row_for(label, indices, burnin_label):
-            sub = distmat[np.ix_(indices, indices)]
-            res = compute_pseudo_ess(sub, n_refs=n_refs_int, seed=0)
-            valid = res["ess_values"][~np.isnan(res["ess_values"])]
-            if valid.size:
-                mn = float(valid.min())
-                q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
-                mx = float(valid.max())
-            else:
-                mn = q1 = q2 = q3 = mx = float("nan")
-
-            return dmc.TableTr([
-                dmc.TableTd(label),
-                dmc.TableTd(str(len(indices))),
-                dmc.TableTd(burnin_label),
-                _ess_cell(mn),
-                _ess_cell(q1),
-                _ess_cell(q2),
-                _ess_cell(q3),
-                _ess_cell(mx),
-                dmc.TableTd(str(res["n_refs_used"])),
-            ])
-
-        rows = []
-        all_indices = []
+        requests = []
+        all_indices: list[int] = []
         skipped = []
         for grp in ticked:
             idx = group_to_indices.get(grp, [])
@@ -1098,47 +1062,48 @@ def register_diagnostics_callbacks():
             if len(idx) < 4:
                 skipped.append(grp)
                 continue
-            rows.append(_row_for(grp, idx, str(burnin_int)))
+            requests.append({
+                "label": grp,
+                "indices": idx,
+                "burnin_label": str(burnin_int),
+            })
             all_indices.extend(idx)
 
         if len(ticked) - len(skipped) > 1 and all_indices:
-            # Sort to preserve MCMC order across the union — important so
-            # the autocorrelation in each reference's RF trace is meaningful.
             combined_idx = sorted(set(all_indices))
-            # Per-run burn-in was already applied before union, so the
-            # Combined label reads "Nx<burnin>" to make clear it isn't a
-            # single global cut.
-            rows.append(_row_for(
-                "Combined", combined_idx,
-                f"{len(ticked) - len(skipped)}×{burnin_int}",
-            ))
+            requests.append({
+                "label": "Combined",
+                "indices": combined_idx,
+                "burnin_label": f"{len(ticked) - len(skipped)}×{burnin_int}",
+            })
 
-        if not rows:
-            msg = "Burn-in leaves fewer than 4 trees per run; nothing to compute."
-            return dmc.Text(msg, c="dimmed", size="sm")
+        if not requests:
+            return (dmc.Text(
+                "Burn-in leaves fewer than 4 trees per run; nothing to compute.",
+                c="dimmed", size="sm",
+            ), no_update, no_update)
 
-        return dmc.Table(
-            [
-                dmc.TableThead(
-                    dmc.TableTr([
-                        dmc.TableTh("Run"),
-                        dmc.TableTh("Trees"),
-                        dmc.TableTh("Burn-in"),
-                        dmc.TableTh("Min"),
-                        dmc.TableTh("Q1"),
-                        dmc.TableTh("Q2 (median)"),
-                        dmc.TableTh("Q3"),
-                        dmc.TableTh("Max"),
-                        dmc.TableTh("# refs"),
-                    ])
-                ),
-                dmc.TableTbody(rows),
-            ],
-            striped=True,
-            highlightOnHover=True,
-            withTableBorder=True,
-            withColumnBorders=True,
+        # Hand off to the subprocess. The poll callback in
+        # pseudo_ess_compute.py picks up the result and replaces the
+        # spinner with the result table.
+        pseudo_ess_compute.submit_pseudo_ess_job(
+            distmat_path=str(state.get_distmat_file_path(selected_matrix)),
+            names=list(names),
+            requests=requests,
+            n_refs=n_refs_int,
+            seed=0,
         )
+
+        spinner = dmc.Group([
+            dmc.Loader(size="sm", type="dots"),
+            dmc.Text(
+                f"Computing Pseudo-ESS for {len(requests)} row(s)…",
+                size="sm", c="dimmed",
+            ),
+        ], gap="sm")
+
+        # spinner, button disabled, poll interval enabled.
+        return spinner, True, False
 
 
     # ------ Hide the Clade Frequency panel when the MCC registry is

@@ -72,6 +72,16 @@ def _run_persistent_worker() -> int:
             elif job == "compute_mcc":
                 from .mcc._subprocess_worker import compute_mcc_worker_entry
                 result = compute_mcc_worker_entry(**kwargs)
+            elif job == "compute_pseudo_ess":
+                from .ess._subprocess_worker import compute_pseudo_ess_worker_entry
+                result = compute_pseudo_ess_worker_entry(**kwargs)
+            elif job == "compute_mds":
+                # MDS doesn't need a dedicated worker wrapper — the
+                # ``rf._worker.compute_mds_worker`` function is already
+                # subprocess-friendly (reads matrix from disk, returns
+                # plain Python lists). We just import and call it.
+                from .rf._worker import compute_mds_worker
+                result = compute_mds_worker(**kwargs)
             else:
                 raise RuntimeError(f"Unknown job: {job!r}")
             response = {"ok": True, "result": result}

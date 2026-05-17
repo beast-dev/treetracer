@@ -397,12 +397,18 @@ def register_compute_callbacks():
         _mds_meta["selected_distmat"] = selected_distmat
         _mds_meta["n_components"] = n_components
 
-        # Pass file path to subprocess — reads .npy directly, no pickle transfer
-        from ..rf._worker import compute_mds_worker
+        # Route through the persistent worker — same pattern as RF/MCC/
+        # Pseudo-ESS. Per-compute IPC overhead is ~100ms, dwarfed by the
+        # ARPACK eigsh on a 5k×5k matrix; the win is a single unified
+        # background-compute pattern and clean process isolation.
+        from . import persistent_worker
         matrix_path = get_distmat_file_path(selected_distmat)
         global _mds_future
         _mds_future = _get_executor().submit(
-            compute_mds_worker, matrix_path, n_components,
+            persistent_worker.submit_job,
+            "compute_mds",
+            matrix_path=str(matrix_path),
+            n_components=n_components,
         )
 
         computing_indicator = dmc.Alert(

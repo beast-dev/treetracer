@@ -125,9 +125,15 @@ def submit_mcc_job(
         "store_target": store_target,
     }
 
+    # Lift the rooting flag off the distmat registry. Defaults to True
+    # for pre-feature distmats; the worker decides based on this whether
+    # to midpoint-root the chosen MCC newick before display.
+    distmat_is_rooted = _state.get_distmat_is_rooted(source_distmat)
+
     add_log(
         f"[MCC/{mode}] Dispatching to persistent worker "
-        f"({len(matched_records)} trees, source {source_distmat})..."
+        f"({len(matched_records)} trees, source {source_distmat}, "
+        f"{'rooted' if distmat_is_rooted else 'unrooted+midpoint-root'} mode)..."
     )
     _mcc_future = _get_executor().submit(
         persistent_worker.submit_job,
@@ -139,6 +145,7 @@ def submit_mcc_job(
         translate_maps=translate_maps,
         source_file_paths=source_file_paths,
         source_preambles=source_preambles,
+        is_rooted=distmat_is_rooted,
     )
 
 

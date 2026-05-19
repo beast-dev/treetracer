@@ -126,8 +126,20 @@ def get_snapshots_path(name):
     return os.path.join(d, name.replace("/", "_") + "_snapshots.npz")
 
 
-def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None):
-    """Register a matrix that was already saved to disk by a subprocess worker."""
+def register_distmat(name, names, path, file_breakdown=None, groups_per_file=None,
+                     is_rooted=True):
+    """Register a matrix that was already saved to disk by a subprocess worker.
+
+    ``is_rooted`` reflects the rooting convention of the input ``.trees``
+    files (validated to be consistent at compute time). Downstream
+    features key off this:
+      * MCC: midpoint-roots the chosen tree when ``is_rooted=False``.
+      * RF dropdown UI: shows a "(rooted)" / "(unrooted)" suffix.
+      * Future ASDSF / clade-freq exports: use bipartition semantics
+        if ``is_rooted=False``.
+    Defaults to True to keep the call-site simple for legacy paths and
+    to match the pre-feature default.
+    """
     # Evict oldest if at capacity
     if len(_distmat_index) >= _MAX_DISTMATS and name not in _distmat_index:
         oldest = next(iter(_distmat_index))
@@ -143,6 +155,7 @@ def register_distmat(name, names, path, file_breakdown=None, groups_per_file=Non
         "path": path,
         "file_breakdown": file_breakdown or {},
         "groups_per_file": groups_per_file or {},
+        "is_rooted": bool(is_rooted),
     }
 
 
@@ -180,6 +193,7 @@ def get_distmat_index():
             "n_trees": len(v["names"]),
             "file_breakdown": v.get("file_breakdown", {}),
             "groups_per_file": v.get("groups_per_file", {}),
+            "is_rooted": v.get("is_rooted", True),
         }
         for k, v in _distmat_index.items()
     }
@@ -192,6 +206,12 @@ def has_distmat(name):
 def get_distmat_file_path(name):
     """Return the .npy file path for a stored matrix."""
     return _distmat_index[name]["path"]
+
+
+def get_distmat_is_rooted(name):
+    """Return the rooting convention recorded for a stored matrix.
+    Defaults to True for pre-feature distmats that don't carry the flag."""
+    return _distmat_index.get(name, {}).get("is_rooted", True)
 
 
 def get_distmat_names(name):

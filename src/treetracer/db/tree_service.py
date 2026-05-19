@@ -324,10 +324,15 @@ class TreeService:
                 .size()
                 .to_dict()
             )
+        # Rooting convention detected by the parser; ``None`` when the
+        # parser hasn't recorded one (older DBs). Callers default ``None``
+        # → ``True`` to preserve pre-feature behaviour.
+        is_rooted = self.db_manager.get_source_rooted(file_source)
         return {
             "total_trees": len(file_rows),
             "groups": list(trees_per_group.keys()),
             "trees_per_group": trees_per_group,
+            "is_rooted": True if is_rooted is None else bool(is_rooted),
         }
     
 

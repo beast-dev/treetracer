@@ -32,6 +32,7 @@ def compute_rf_worker_entry(
     translate_maps: Dict[str, Dict[str, str]],
     save_path: str,
     rf_name: str,
+    is_rooted: bool = True,
 ) -> Dict[str, Any]:
     """Run the full RF pipeline inside a subprocess.
 
@@ -49,6 +50,15 @@ def compute_rf_worker_entry(
             (a corresponding ``_snapshots.npz`` is written by its side).
         rf_name: human-readable label (only used in return value for
             the caller's bookkeeping).
+        is_rooted: whether the input trees are rooted. Passes through
+            to ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``'s
+            ``rooted=`` arg:
+              * True  → presence-matrix columns are rooted clades
+                (subtree-from-root identity).
+              * False → presence-matrix columns are bipartitions
+                (split-induced unordered pairs of taxon sets).
+            Defaults to True for backward compatibility with the
+            previous always-rooted behaviour.
 
     Returns a dict consumed by ``poll_completion`` in callbacks/compute.py.
     """
@@ -106,6 +116,7 @@ def compute_rf_worker_entry(
     from ._worker import compute_rf
     result_names, compute_elapsed = compute_rf(
         names, newicks, map_list, map_indices, save_path,
+        is_rooted=is_rooted,
     )
 
     return {

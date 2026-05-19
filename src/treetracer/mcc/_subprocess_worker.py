@@ -24,6 +24,7 @@ def compute_mcc_worker_entry(
     translate_maps: Dict[str, Dict[str, str]],
     source_file_paths: Dict[str, str],
     source_preambles: Dict[str, bytes],
+    is_rooted: bool = True,
 ) -> Dict[str, Any]:
     """Compute the MCC tree for a selection and assemble its NEXUS bytes.
 
@@ -101,6 +102,14 @@ def compute_mcc_worker_entry(
         fh.seek(int(mcc_record["line_offset"]))
         line = fh.read(int(mcc_record["line_length"])).decode("utf-8")
 
+    # If the source distmat was computed in unrooted mode, the chosen
+    # tree's newick has an arbitrary root inherited from whatever the
+    # MCMC writer chose. Midpoint-root it so PearTree displays a
+    # sensible rooting and the tanglegram code (which assumes rooted
+    # trees) sees a consistent root across MCMCs from the same posterior.
+    if not is_rooted:
+        line = _midpoint_root_tree_line(line)
+
     line = _substitute_newick_labels(
         line, remaps.get(mcc_record["file_source"], {}),
     )
@@ -124,3 +133,61 @@ def compute_mcc_worker_entry(
         "cols_in_mcc": cols_in_mcc,
         "missing_taxa": set(),
     }
+
+
+def _midpoint_root_tree_line(line: str) -> str:
+    """Take a NEXUS ``tree NAME [&…] = [&U] (…);`` line, midpoint-root
+    the newick body, and emit ``tree NAME [&…] = [&R] (…);``.
+
+    Preserves the tree name + any pre-``=`` annotations. Drops the
+    ``[&U]`` flag (the tree is rooted now) and emits ``[&R]`` instead.
+    """
+    from ._midpoint import midpoint_root_newick
+
+    # Split at the FIRST `=` to separate the name+meta header from the
+    # newick body. BEAST inline annotations on the left side use `=`
+    # inside their brackets (e.g. ``[&lnP=…]``), so we have to find
+    # the `=` that ISN'T inside brackets. The DB stores tree lines with
+    # the convention ``<name> = <body>`` separated by space-equals-space,
+    # so look for that first.
+    eq_idx = line.find(" = ")
+    if eq_idx < 0:
+        # Fall back: find first `=` not inside `[...]`.
+        depth = 0
+        for i, ch in enumerate(line):
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+            elif ch == "=" and depth == 0:
+                eq_idx = i
+                break
+        if eq_idx < 0:
+            return line  # malformed; return unchanged
+        header = line[:eq_idx].rstrip()
+        body = line[eq_idx + 1:].lstrip()
+    else:
+        header = line[:eq_idx]
+        body = line[eq_idx + 3:].lstrip()
+
+    # Strip a leading ``[&R]`` / ``[&U]`` flag from the body. We'll
+    # emit ``[&R]`` ourselves on the way out.
+    if body.startswith("[&R]"):
+        body = body[4:].lstrip()
+    elif body.startswith("[&U]"):
+        body = body[4:].lstrip()
+
+    # Strip a trailing newline if present so emit doesn't double up.
+    trailing_newline = body.endswith("\n")
+    body_stripped = body.rstrip("\n").rstrip()
+
+    try:
+        rooted_body = midpoint_root_newick(body_stripped)
+    except Exception:
+        # If midpoint rooting fails for any reason, fall through with
+        # the original body — better to display an arbitrarily-rooted
+        # tree than to bail on the whole MCC compute.
+        rooted_body = body_stripped
+
+    suffix = "\n" if trailing_newline else ""
+    return f"{header} = [&R] {rooted_body}{suffix}"

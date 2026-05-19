@@ -8,7 +8,8 @@ back across the process boundary.
 """
 
 
-def compute_rf(names, newicks, translate_maps, map_indices, save_path):
+def compute_rf(names, newicks, translate_maps, map_indices, save_path,
+               is_rooted=True):
     """Compute pairwise RF distances + the per-tree split presence matrix in
     a single rapidtrees call, and persist both to disk.
 
@@ -19,14 +20,23 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path):
     taxa this is roughly 5–10× faster than the legacy bitset path because
     the inner loop's working set fits in L1.
 
+    ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
+      * True  → every internal-node descendant set is one clade. Honest
+        about MCMC rooting variability — a bipartition rooted differently
+        in different samples appears as two distinct rooted clades.
+      * False → bipartition mode: each split divides taxa into two
+        unordered sets, regardless of which side the (arbitrary) newick
+        root is on. Correct mode for MrBayes/RevBayes unrooted output.
+    Caller validates that the input ``.trees`` files all share rooting;
+    see ``callbacks/compute.py:handle_compute_rf``.
+
     Two files are written:
 
     - ``save_path``:                        uint16 ``.npy`` n×n RF matrix.
     - ``<save_path stem>_snapshots.npz``:   ``presence`` (uint8, n_trees ×
-                                            n_bipartitions) plus
+                                            n_clades-or-bipartitions) plus
                                             ``leaf_names`` (alphabetical
-                                            taxon list defining the bit
-                                            width of each bipartition).
+                                            taxon list).
 
     The presence matrix isn't free to compute, but it's the sufficient
     statistic for every topology-based convergence diagnostic
@@ -44,18 +54,10 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path):
 
     t0 = time.time()
     from .rf import rf_distance_with_snapshots_from_newick_iter
-    # ``rooted=True``: every internal-node descendant set is treated as
-    # its own clade. This makes the Clade Frequency Comparison scatter
-    # honest about MCMC rooting variability — a bipartition rooted
-    # differently in different samples appears as two distinct rooted
-    # clades with their own posterior frequencies, instead of one
-    # column with ambiguous orientation (the "flipped" tanglegram
-    # state we used to surface). Verified against DendroPy's
-    # rooted-clade symmetric difference on real BEAST trees (all 1225
-    # pairs match exactly).
     result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
         rf_distance_with_snapshots_from_newick_iter(
-            names, iter(newicks), translate_maps, map_indices, rooted=True,
+            names, iter(newicks), translate_maps, map_indices,
+            rooted=is_rooted,
         )
     )
     # rf_matrix is uint32 from Rust; downcast to uint16 for disk storage

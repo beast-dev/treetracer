@@ -84,6 +84,7 @@ def register_sidebar_callbacks():
                     "trees_per_group": summary["trees_per_group"],
                     "path": file_path,
                     "burnin": 0,
+                    "is_rooted": summary["is_rooted"],
                 }
                 loaded_count += 1
                 add_log(f"Loaded {filename}: {result['trees_loaded']} trees")
@@ -208,12 +209,23 @@ def register_sidebar_callbacks():
                 ], gap="xs"),
             ], gap="xs")
 
+            # Rooting badge — defaults to "rooted" for pre-feature
+            # summaries that don't carry the flag.
+            is_rooted = summary.get("is_rooted", True)
+            rooting_badge = dmc.Badge(
+                "rooted" if is_rooted else "unrooted",
+                size="sm",
+                variant="light",
+                color="blue" if is_rooted else "violet",
+            )
+
             items.append(
                 dmc.AccordionItem(
                     [
                         dmc.AccordionControl(
                             dmc.Group([
                                 dmc.Text(filename, size="sm", fw=500, style={"flex": 1}),
+                                rooting_badge,
                                 dmc.Badge(str(total_trees), size="sm", variant="light"),
                             ], gap="xs"),
                         ),

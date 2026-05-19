@@ -873,7 +873,10 @@ def register_diagnostics_callbacks():
             return [], None, ""
         options = [
             {"value": k,
-             "label": f"{k} ({v.get('n_trees', '?')} trees)"}
+             "label": (
+                 f"{k} ({v.get('n_trees', '?')} trees, "
+                 f"{'rooted' if v.get('is_rooted', True) else 'unrooted'})"
+             )}
             for k, v in distmat_data.items()
         ]
         # Keep the user's pick if it's still around; otherwise default to

@@ -38,6 +38,10 @@ class TreeManagerPandas:
         self._pending_rows = []       # buffer for batch append
         self._source_preambles = {}   # file_source -> bytes (everything before first tree line)
         self._source_translate = {}   # file_source -> dict {number_str: taxon_name}
+        # Per-file rooting convention, detected at parse time from
+        # ``[&R]`` / ``[&U]`` NEXUS flags. Defaults to True for files
+        # with no flag (BEAST convention; preserves pre-feature behaviour).
+        self._source_rooted = {}      # file_source -> bool
 
     # ------------------------------------------------------------------
     # Source file registration & newick I/O
@@ -252,6 +256,26 @@ class TreeManagerPandas:
         """Get the stored Translate mapping for a file source."""
         return self._source_translate.get(file_source)
 
+    def set_source_rooted(self, file_source: str, rooted: bool) -> None:
+        """Record the rooting convention for a loaded file.
+
+        Detected at parse time by ``process_nexus_trees_streaming``
+        based on the ``[&R]`` / ``[&U]`` NEXUS flags on the tree lines.
+        Used downstream to:
+            * pick ``rapidtrees(rooted=...)`` mode for RF computation,
+            * validate that an RF compute doesn't mix rooting conventions
+              across multiple selected files,
+            * decide whether to midpoint-root the MCC tree before display.
+        """
+        self._source_rooted[file_source] = bool(rooted)
+
+    def get_source_rooted(self, file_source: str) -> Optional[bool]:
+        """Return the file's rooting convention, or ``None`` if the
+        parser never set one (e.g. older databases, before this
+        feature). Callers should default to ``True`` when ``None`` —
+        preserves pre-unrooted-RF behaviour for rooting-less files."""
+        return self._source_rooted.get(file_source)
+
     # ------------------------------------------------------------------
     # Downsample
     # ------------------------------------------------------------------
@@ -314,6 +338,7 @@ class TreeManagerPandas:
                 del self._source_handles[file_source]
             self._source_preambles.pop(file_source, None)
             self._source_translate.pop(file_source, None)
+            self._source_rooted.pop(file_source, None)
         else:
             self._trees = self._trees.iloc[0:0]
             self._current_max_id = 0
@@ -323,6 +348,7 @@ class TreeManagerPandas:
             self._source_handles.clear()
             self._source_preambles.clear()
             self._source_translate.clear()
+            self._source_rooted.clear()
 
     def __del__(self):
         """Close all open file handles on garbage collection."""

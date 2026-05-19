@@ -45,7 +45,7 @@ def _get_executor():
     return _executor
 
 
-def _rf_pipeline(selected_files, save_path, rf_name):
+def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     """Parent-side preparation + persistent-worker dispatch for an RF compute.
 
     The parent does only what is cheap on the GIL-shared GUI process:
@@ -56,6 +56,12 @@ def _rf_pipeline(selected_files, save_path, rf_name):
 
     Wall-clock cost in the parent: ~50 ms for 5000 trees, well below
     the macOS beach-ball threshold.
+
+    ``is_rooted`` is the consensus rooting convention of the selected
+    files (caller validates that they all agree). The worker forwards
+    this to ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``
+    so the presence matrix's columns are rooted clades (True) or
+    bipartitions (False).
     """
     import time
     from . import persistent_worker
@@ -99,7 +105,8 @@ def _rf_pipeline(selected_files, save_path, rf_name):
 
     add_log(
         f"[{rf_name}] Dispatching to persistent worker "
-        f"({len(tree_descriptors)} trees, {len(source_file_paths)} source file(s))..."
+        f"({len(tree_descriptors)} trees, {len(source_file_paths)} source file(s), "
+        f"{'rooted' if is_rooted else 'unrooted'} mode)..."
     )
 
     result = persistent_worker.submit_job(
@@ -109,9 +116,11 @@ def _rf_pipeline(selected_files, save_path, rf_name):
         translate_maps=translate_maps,
         save_path=save_path,
         rf_name=rf_name,
+        is_rooted=is_rooted,
     )
     # Add parent-side total wall-time (includes IPC round-trip).
     result["total_elapsed"] = time.time() - t0
+    result["is_rooted"] = is_rooted
     return result
 
 
@@ -252,11 +261,40 @@ def register_compute_callbacks():
                 id=notif_id(),
             ), no_update, no_update, no_update
 
+        # --- Rooting consistency check ---
+        # RF over rooted clades and RF over bipartitions are different
+        # quantities; comparing them across a mixed selection is
+        # mathematically meaningless. Reject before submission.
+        rooting_per_file = {
+            fname: bool(stored_summaries.get(fname, {}).get("is_rooted", True))
+            for fname in selected_files
+        }
+        unique_rootings = set(rooting_per_file.values())
+        if len(unique_rootings) > 1:
+            rooted_files = [f for f, r in rooting_per_file.items() if r]
+            unrooted_files = [f for f, r in rooting_per_file.items() if not r]
+            msg = (
+                "Selected files mix rooted and unrooted trees. RF distances "
+                "across rooting conventions are not comparable. "
+                f"Rooted: {', '.join(rooted_files)}. "
+                f"Unrooted: {', '.join(unrooted_files)}."
+            )
+            add_log(f"Rooting mismatch — aborting RF computation: {msg}", "ERROR")
+            return dmc.Notification(
+                title="Rooting Mismatch",
+                message=msg,
+                color="red", action="show", autoClose=8000, id=notif_id(),
+            ), no_update, no_update, no_update
+        selected_is_rooted = unique_rootings.pop()
+
         # --- Taxa validation passed — submit the pipeline to a worker thread ---
         # The worker does the DB fetch + newick prep + RF compute. This
         # callback returns the indicator in ~10ms, matching the MDS path.
         n_taxa = unique_counts.pop()
-        add_log(f"Taxa validation passed: all {len(selected_files)} files have {n_taxa} taxa")
+        add_log(
+            f"Validation passed: all {len(selected_files)} files have {n_taxa} taxa, "
+            f"{'rooted' if selected_is_rooted else 'unrooted'} mode."
+        )
 
         # Expected counts from in-memory summaries (no disk hit).
         expected_total = sum(
@@ -271,10 +309,11 @@ def register_compute_callbacks():
         save_path = get_distmat_path(rf_name)
         _rf_meta["name"] = rf_name
         _rf_meta["save_path"] = save_path
+        _rf_meta["is_rooted"] = selected_is_rooted
 
         global _rf_future
         _rf_future = _get_executor().submit(
-            _rf_pipeline, selected_files, save_path, rf_name,
+            _rf_pipeline, selected_files, save_path, rf_name, selected_is_rooted,
         )
 
         computing_indicator = dmc.Alert(
@@ -303,7 +342,9 @@ def register_compute_callbacks():
         if not distmat_data:
             return [], None, "0", "gray", True
         options = [
-            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
+            {"value": k, "label":
+                f"{k} — {v['n_trees']} trees "
+                f"({'rooted' if v.get('is_rooted', True) else 'unrooted'})"}
             for k, v in distmat_data.items()
         ]
         last_key = list(distmat_data.keys())[-1]
@@ -343,7 +384,9 @@ def register_compute_callbacks():
         if not distmat_data:
             return True, dmc.Text("No distance matrix computed yet.", c="dimmed", style={"padding": "20px"}), [], None
         options = [
-            {"value": k, "label": f"{k} — {v['n_trees']} trees"}
+            {"value": k, "label":
+                f"{k} — {v['n_trees']} trees "
+                f"({'rooted' if v.get('is_rooted', True) else 'unrooted'})"}
             for k, v in distmat_data.items()
         ]
         last_key = list(distmat_data.keys())[-1]
@@ -488,10 +531,13 @@ def register_compute_callbacks():
                 groups_per_file = pipeline["groups_per_file"]
                 elapsed = pipeline["total_elapsed"]
                 compute_elapsed = pipeline["compute_elapsed"]
+                is_rooted = pipeline.get("is_rooted",
+                                          _rf_meta.get("is_rooted", True))
                 # Matrix already saved to disk by the worker — just register it
                 register_distmat(rf_name, result_names, _rf_meta["save_path"],
                                  file_breakdown=file_breakdown,
-                                 groups_per_file=groups_per_file)
+                                 groups_per_file=groups_per_file,
+                                 is_rooted=is_rooted)
                 add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
                 add_log(f"RF pipeline took {elapsed:.2f}s (rapidtrees compute {compute_elapsed:.2f}s)")
                 rf_out = [

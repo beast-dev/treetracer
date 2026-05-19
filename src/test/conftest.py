@@ -21,6 +21,12 @@ import pytest
 HERE = Path(__file__).resolve().parent
 TREES_PATH = HERE / "test.trees"
 
+# Unrooted-RF CI fixture — real BEAST X empirical-tree-sampling output
+# with no ``[&R]`` / ``[&U]`` flag, exercising the NEXUS-default
+# unrooted code path. ~11 MB; committed to the repo so the unrooted
+# cross-check against DendroPy runs in CI alongside the rooted check.
+UNROOTED_TREES_PATH = HERE / "test_unrooted.trees"
+
 
 def _parse_nexus_minimal(path: Path, n_trees: int | None = None):
     """Extract (translate_map, names, newicks) from a BEAST .trees file.
@@ -174,3 +180,59 @@ def rooted_clade_set(tree):
             continue
         out.add(frozenset(l.taxon.label for l in node.leaf_iter()))
     return out
+
+
+# ─── Unrooted-RF fixtures (only available when testdata/ has the file) ──
+
+@pytest.fixture(scope="session")
+def unrooted_trees_path() -> Path:
+    """Absolute path to the unrooted CI fixture (BEAST X empirical-tree
+    sample, no ``[&R]`` / ``[&U]`` flag)."""
+    if not UNROOTED_TREES_PATH.exists():
+        pytest.skip(f"missing test fixture: {UNROOTED_TREES_PATH}")
+    return UNROOTED_TREES_PATH
+
+
+@pytest.fixture(scope="session")
+def parsed_50_unrooted(unrooted_trees_path):
+    """First 50 trees from the unrooted fixture. The parser doesn't
+    need any tweaking — ``_parse_nexus_minimal`` already strips a
+    leading ``[&R]`` if present (no-op when absent for unrooted) and
+    returns raw newick bodies."""
+    return _parse_nexus_minimal(unrooted_trees_path, n_trees=50)
+
+
+@pytest.fixture(scope="session")
+def rapidtrees_50_unrooted(parsed_50_unrooted):
+    """``rapidtrees(rooted=False)`` output on the first 50 unrooted
+    trees — bipartition columns, not rooted-clade columns."""
+    from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
+    tmap, names, newicks = parsed_50_unrooted
+    result_names, rf_matrix, presence, leaf_names, n_bip, _bip_bits = (
+        rf_distance_with_snapshots_from_newick_iter(
+            names, iter(newicks), [tmap], [0] * len(names), rooted=False,
+        )
+    )
+    return list(result_names), rf_matrix, presence, leaf_names, n_bip
+
+
+@pytest.fixture(scope="session")
+def dendropy_trees_50_unrooted(unrooted_trees_path):
+    """First 50 unrooted fixture trees parsed by DendroPy, sharing one
+    TaxonNamespace. ``is_rooted=False`` set explicitly so DendroPy's
+    ``symmetric_difference`` (which is unrooted-by-default but reads
+    ``is_rooted`` from the tree object) does the right thing on
+    BEAST-style files where the implicit ``[&R]`` has been stripped."""
+    dendropy = pytest.importorskip("dendropy")
+    taxa = dendropy.TaxonNamespace()
+    trees = []
+    for tree, _ in zip(
+        dendropy.Tree.yield_from_files(
+            files=[str(unrooted_trees_path)], schema="nexus",
+            taxon_namespace=taxa, preserve_underscores=True,
+        ),
+        range(50),
+    ):
+        tree.is_rooted = False
+        trees.append(tree)
+    return dendropy.TreeList(trees, taxon_namespace=taxa)

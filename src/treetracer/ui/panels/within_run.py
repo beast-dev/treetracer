@@ -11,6 +11,18 @@ from ...plot_utils import placeholder_fig
 def _add_within_run_panel():
     """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
+        # MCC-compute loading overlay — see treespace panel for the
+        # full pattern. Toggled by ``view_mcc_tree`` (on) and
+        # ``mcc_compute.poll_mcc_completion`` (off).
+        dmc.LoadingOverlay(
+            id="within-run-loading-overlay",
+            visible=False,
+            zIndex=1000,
+            overlayProps={"radius": "sm", "blur": 2},
+            loaderProps={"size": "lg", "type": "dots",
+                         "children": dmc.Text("Computing MCC tree…",
+                                              size="sm", c="dimmed", mt="sm")},
+        ),
         dmc.Stack([
             # Row 1: Result + Run selectors + axis selectors + info (boxed)
             dmc.Paper(
@@ -147,4 +159,4 @@ def _add_within_run_panel():
                 config={"doubleClick": False},
             ),
         ], gap="xs"),
-    ], style={"padding": "10px"})
+    ], style={"padding": "10px", "position": "relative"})

@@ -772,17 +772,14 @@ def register_within_run_callbacks():
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show", autoClose=4000, id=notif_id())
 
-    # ------ View MCC tree in a peartree window ------
-    # Same selection plumbing as export_selected_trees, but instead of
-    # writing a NEXUS file we hand the matched DataFrame to
-    # ``mcc.assemble_mcc_nexus`` and stash the bytes in the in-memory
-    # MCC cache. The view-mcc store gets {"uuid", "name"}, which a
-    # clientside callback below picks up to open /peartree/<uuid> in a
-    # new browser window.
+    # ------ View MCC tree — thin submit handler ------
+    # Mirrors the Between-run shape — see callbacks/mcc_compute.py for
+    # the shared dispatch + polling code, and callbacks/treespace.py
+    # for the parallel implementation.
     @callback(
-        Output("within-run-view-mcc-store", "data"),
-        Output("mcc-registry-store", "data", allow_duplicate=True),
-        Output("within-run-selected-trees-store", "data", allow_duplicate=True),
+        Output("within-run-loading-overlay", "visible", allow_duplicate=True),
+        Output("within-run-view-mcc", "disabled", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("within-run-view-mcc", "n_clicks"),
         State("within-run-selected-trees-store", "data"),
@@ -792,20 +789,27 @@ def register_within_run_callbacks():
         prevent_initial_call=True,
     )
     def view_mcc_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
-        from ..logger import add_log, notif_id
-        from .. import state as _state
+        from ..logger import notif_id
+        from ..db.tree_service import get_tree_service
+        from . import mcc_compute
+
         if not n_clicks or not selected_treenums:
             return no_update, no_update, no_update, no_update
+
+        def _err(msg, autoclose=5000):
+            return (False, False, no_update, dmc.Notification(
+                title="MCC Error", message=msg,
+                color="red", action="show", autoClose=autoclose,
+                id=notif_id(),
+            ))
+
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not selected_run:
             return no_update, no_update, no_update, no_update
 
         source_distmat = (mds_result.get("metadata") or {}).get("source_distmat")
         if not source_distmat:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="No RF/snapshot data is associated with this MDS result.",
-                color="red", action="show", autoClose=5000, id=notif_id())
+            return _err("No RF/snapshot data is associated with this MDS result.")
 
         df_run, _ = _filter_to_run(mds_result, selected_run)
         if df_run is None:
@@ -813,89 +817,44 @@ def register_within_run_callbacks():
         sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error", message="No matching trees found.",
-                color="red", action="show", autoClose=4000, id=notif_id())
-
-        from ..db.tree_service import get_tree_service
-        from ..mcc import assemble_mcc_nexus, extract_log_posterior
+            return _err("No matching trees found.", autoclose=4000)
 
         tree_service = get_tree_service()
         tree_service.db_manager.flush()
         all_trees = tree_service.db_manager._trees
         matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
         if len(matched) == 0:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="Selected trees not found in database. They may have been cleared.",
-                color="red", action="show", autoClose=4000, id=notif_id())
-
-        try:
-            (nexus_bytes, mcc_row, log_clade_cred, counts,
-             cols_in_mcc, missing_taxa) = assemble_mcc_nexus(
-                matched, tree_service.db_manager, source_distmat,
+            return _err(
+                "Selected trees not found in database. They may have been cleared.",
+                autoclose=4000,
             )
-        except Exception as e:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error", message=str(e),
-                color="red", action="show", autoClose=6000, id=notif_id())
 
-        if missing_taxa:
-            sample = ", ".join(sorted(missing_taxa)[:5])
-            more = "…" if len(missing_taxa) > 5 else ""
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message=(
-                    f"Cannot align translate tables: taxa [{sample}{more}] "
-                    "are present in some selected runs but not in the "
-                    "canonical Translate block."
-                ),
-                color="red", action="show", autoClose=8000, id=notif_id())
+        matched_records = matched[[
+            "name", "file_source", "line_offset", "line_length", "metadata",
+        ]].to_dict("records")
+        for rec in matched_records:
+            rec["line_offset"] = int(rec["line_offset"])
+            rec["line_length"] = int(rec["line_length"])
 
-        mcc_tree_name = mcc_row["name"]
-        uid = _state.cache_mcc_tree(nexus_bytes)
+        # Within-run mode: the MCC always lives inside ``selected_run``
+        # so the (group, treenum) lookup is the run itself + this df's
+        # treenum.
+        mcc_coord_by_tree_name = {
+            row["tree"]: (selected_run, int(row["treenum"]))
+            for _, row in df_run.iterrows()
+        }
 
-        # Look up the MCC's treenum in this run's dataframe so the green
-        # ring lands on the right point.
-        mcc_in_df = df_run[df_run["tree"] == mcc_tree_name]
-        mcc_treenum = (int(mcc_in_df.iloc[0]["treenum"])
-                       if not mcc_in_df.empty else None)
-
-        entry = _state.register_mcc(
+        mcc_compute.submit_mcc_job(
+            matched_records=matched_records,
             source_distmat=source_distmat,
             mode="Within",
-            run=selected_run,
-            uuid=uid,
-            mcc_tree={
-                "group": selected_run,
-                "treenum": mcc_treenum,
-                "tree_name": mcc_tree_name,
-            },
             selection=[[selected_run, int(t)] for t in selected_treenums],
-            log_clade_credibility=(None if log_clade_cred is None
-                                   else float(log_clade_cred)),
-            mcc_log_posterior=extract_log_posterior(mcc_row),
-            tree_names=tree_names,
-            counts=counts,
-            cols_in_mcc=cols_in_mcc,
+            run=selected_run,
+            mcc_coord_by_tree_name=mcc_coord_by_tree_name,
+            store_target="within-run-view-mcc-store",
         )
-        registered_name = entry["name"]
-        add_log(
-            f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) "
-            f"as {uid}; registered as {registered_name}"
-        )
-        notification = dmc.Notification(
-            title="MCC Tree Ready",
-            message=(
-                f"MCC tree {registered_name} (from {len(matched)} selected) "
-                "— opening in PearTree…"
-            ),
-            color="green", action="show", autoClose=4000, id=notif_id())
-        # Clear the red selection ring once the MCC is registered.
-        return ({"uuid": uid, "name": registered_name},
-                _state.get_mcc_registry(),
-                [],
-                notification)
+
+        return True, True, False, no_update
 
     # Clientside: in pywebview desktop mode call the Python-side JS API
     # to spawn a sibling native window; in ``--browser`` mode fall back

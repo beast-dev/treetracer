@@ -140,6 +140,18 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
     batch_data = []
     total_inserted = 0
     trees_in_current_transaction = 0
+    # Per-file rooting accumulator. We inspect each tree's leading
+    # ``[&R]`` / ``[&U]`` flag (BEAST/MrBayes/RevBayes convention)
+    # and finalise one value per file at the end of the loop:
+    #   - Any tree has ``[&R]`` (and none have ``[&U]``)  → rooted
+    #   - Any tree has ``[&U]`` (and none have ``[&R]``)  → unrooted
+    #   - Mixed ``[&R]`` and ``[&U]`` flags within a file → rooted + warn
+    #   - No tree had any flag at all                     → UNROOTED + warn
+    #     (NEXUS standard's default; BEAST/MrBayes both write ``[&R]``
+    #      explicitly when they mean rooted, so a totally flag-less
+    #      file is much more likely RevBayes/empirical-tree-sample
+    #      output where the topology is treated as unrooted.)
+    file_rooted_counts = {True: 0, False: 0, None: 0}
     preamble_captured = False
     preamble_bytes = b''
 
@@ -191,6 +203,26 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
             newick_start_in_stripped = eq_pos + 3
             newick_bytes = stripped[newick_start_in_stripped:]
             newick_length = len(newick_bytes)
+
+            # Detect rooting from the newick's leading bytes. BEAST and
+            # MrBayes/RevBayes both place ``[&R]`` / ``[&U]`` immediately
+            # after the ``=``. The metadata in ``parse_tree_line_metadata``
+            # above only catches flags on the LEFT side of ``=`` (rare).
+            _peek = newick_bytes.lstrip()
+            if _peek.startswith(b'[&R]'):
+                tree_rooted = True
+            elif _peek.startswith(b'[&U]'):
+                tree_rooted = False
+            else:
+                # Fall back to whatever (if anything) the left-side
+                # metadata parser inferred.
+                tree_rooted = metadata_dict.get('rooted')
+            if tree_rooted is True:
+                file_rooted_counts[True] += 1
+            elif tree_rooted is False:
+                file_rooted_counts[False] += 1
+            else:
+                file_rooted_counts[None] += 1
 
             # Fallback: if no Translate block, extract taxa from first tree
             if tree_count == 0 and not translate_map:
@@ -258,5 +290,43 @@ def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,
 
     total_time = time.time() - start_time
     add_log(f"Streaming complete: {total_inserted} trees in {total_time:.2f}s")
+
+    # Finalise the file's rooting convention. See ``file_rooted_counts``
+    # initialisation above for the decision table.
+    n_rooted = file_rooted_counts[True]
+    n_unrooted = file_rooted_counts[False]
+    n_unknown = file_rooted_counts[None]
+    if n_rooted and n_unrooted:
+        # Within-file inconsistency. Pick rooted (BEAST convention)
+        # but flag loudly so the user can investigate.
+        add_log(
+            f"WARNING: {file_source!r} mixes rooted ({n_rooted}) and unrooted "
+            f"({n_unrooted}) trees. Treating the file as rooted.", "WARNING",
+        )
+        file_rooted = True
+    elif n_rooted and not n_unrooted:
+        # Any explicit [&R] → rooted, even if some trees lack the flag.
+        file_rooted = True
+    elif n_unrooted and not n_rooted:
+        # Any explicit [&U] → unrooted.
+        file_rooted = False
+    else:
+        # No tree had any flag at all. NEXUS standard says "default to
+        # unrooted"; BEAST writes [&R] when it means rooted, so a
+        # flag-less file is more likely an unrooted RevBayes /
+        # empirical-tree-sampling output.
+        add_log(
+            f"WARNING: {file_source!r} has no [&R] or [&U] flag on any tree. "
+            "Treating as UNROOTED per NEXUS default. Add `[&R]` to the tree "
+            "lines if these trees are meant to be rooted.", "WARNING",
+        )
+        file_rooted = False
+    if hasattr(db_manager, 'set_source_rooted'):
+        db_manager.set_source_rooted(file_source, file_rooted)
+    add_log(
+        f"Detected rooting for {file_source!r}: "
+        f"{'rooted' if file_rooted else 'unrooted'} "
+        f"(flags: {n_rooted}R / {n_unrooted}U / {n_unknown} none)"
+    )
 
     return total_inserted

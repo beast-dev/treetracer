@@ -13,46 +13,14 @@ from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
     retheme_figure,
 )
+from ..mcc._canonical_remap import (
+    _substitute_newick_labels,
+    _build_canonical_remaps,
+)
 
-
-# Matches an integer taxon label that sits at a label position in newick —
-# right after `(` or `,`. Branch lengths come after `:` and aren't matched.
-_NEWICK_LABEL_RE = re.compile(r'(?<=[(,])(\d+)')
 
 # Matches the `tree NAME` token at the start of a NEXUS tree line.
 _TREE_NAME_RE = re.compile(r'^(\s*tree\s+)([^\s=]+)', re.IGNORECASE)
-
-# Used to stash NEXUS metadata blocks (e.g. ``[&rate=0.05]``) before
-# integer-label substitution so commas / digits inside them don't trip the
-# label regex. The placeholders use a NUL marker that won't appear in real
-# NEXUS content.
-_METADATA_BLOCK_RE = re.compile(r'\[[^\]]*\]')
-
-
-def _substitute_newick_labels(newick, mapping):
-    """Substitute integer taxon labels in a newick using ``mapping`` (a dict
-    of int-label-string → replacement-string). Labels not in the mapping
-    pass through unchanged.
-
-    NEXUS metadata blocks ``[...]`` are stashed first so any digits or
-    commas inside them aren't treated as labels.
-    """
-    if not mapping:
-        return newick
-    blocks = []
-
-    def _stash(match):
-        blocks.append(match.group(0))
-        return f'\x00{len(blocks) - 1}\x00'
-
-    stripped = _METADATA_BLOCK_RE.sub(_stash, newick)
-    transformed = _NEWICK_LABEL_RE.sub(
-        lambda m: mapping.get(m.group(1), m.group(1)),
-        stripped,
-    )
-    return re.sub(r'\x00(\d+)\x00',
-                  lambda m: blocks[int(m.group(1))],
-                  transformed)
 
 
 def _sanitize_tree_name_token(text):
@@ -71,38 +39,6 @@ def _rewrite_tree_line(line, new_name, label_remap):
         count=1,
     )
     return _substitute_newick_labels(renamed, label_remap)
-
-
-def _build_canonical_remaps(file_sources, get_translate_map, canonical_source):
-    """Build per-source ``int_label → canonical_int_label`` remaps.
-
-    Returns ``(remaps, missing_taxa)``:
-        remaps[source]      = dict (empty for sources whose translate already
-                              matches the canonical mapping).
-        missing_taxa        = set of taxa names present in some non-canonical
-                              source but absent from the canonical translate
-                              (caller should surface this as an export error).
-    """
-    canonical_translate = get_translate_map(canonical_source) or {}
-    canonical_taxon_to_int = {taxon: int_label
-                              for int_label, taxon in canonical_translate.items()}
-    remaps = {}
-    missing_taxa = set()
-    for source in file_sources:
-        if source == canonical_source:
-            remaps[source] = {}
-            continue
-        src_translate = get_translate_map(source) or {}
-        remap = {}
-        for src_int, taxon in src_translate.items():
-            canonical_int = canonical_taxon_to_int.get(taxon)
-            if canonical_int is None:
-                missing_taxa.add(taxon)
-                continue
-            if canonical_int != src_int:
-                remap[src_int] = canonical_int
-        remaps[source] = remap
-    return remaps, missing_taxa
 
 
 # Trace-layout invariants set by ``add_trace_multiplot_interleaved``:
@@ -818,16 +754,17 @@ def register_treespace_callbacks():
                                 color="green", action="show",
                                 autoClose=4000, id=notif_id())
 
-    # ------ View MCC tree in a peartree window ------
-    # Same selection-filter plumbing as ``export_selected_trees``, but
-    # instead of writing a NEXUS file we hand the assembled bytes to
-    # ``state.cache_mcc_tree`` and emit ``{"uuid", "name"}`` into the
-    # view-mcc store. A clientside callback below picks up that store and
-    # opens ``/peartree/<uuid>`` in a new browser window.
+    # ------ View MCC tree — thin submit handler ------
+    # Validates input, builds the matched-record list + MCC-coord
+    # lookup, then hands off to the persistent worker via
+    # ``mcc_compute.submit_mcc_job``. Completion is handled by
+    # ``mcc_compute.poll_mcc_completion`` which fans the result back to
+    # this tab's view-mcc-store, dismisses the loading overlay, and
+    # re-enables the button.
     @callback(
-        Output("treespace-view-mcc-store", "data"),
-        Output("mcc-registry-store", "data", allow_duplicate=True),
-        Output("treespace-selected-trees-store", "data", allow_duplicate=True),
+        Output("treespace-loading-overlay", "visible", allow_duplicate=True),
+        Output("treespace-view-mcc", "disabled", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("treespace-view-mcc", "n_clicks"),
         State("treespace-selected-trees-store", "data"),
@@ -840,23 +777,24 @@ def register_treespace_callbacks():
                       selected_key, results):
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
-        from ..mcc import assemble_mcc_nexus, extract_log_posterior
-        from .. import state as _state
+        from . import mcc_compute
+
         if not n_clicks or not selected_pairs or not plot_config:
             return no_update, no_update, no_update, no_update
 
+        def _err(msg, autoclose=5000):
+            return (False, False, no_update, dmc.Notification(
+                title="MCC Error", message=msg,
+                color="red", action="show", autoClose=autoclose,
+                id=notif_id(),
+            ))
+
         results = results or {}
         if not selected_key or selected_key not in results:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="No MDS result is currently selected.",
-                color="red", action="show", autoClose=5000, id=notif_id())
+            return _err("No MDS result is currently selected.")
         source_distmat = (results[selected_key] or {}).get("source_distmat")
         if not source_distmat:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="No RF/snapshot data is associated with this MDS result.",
-                color="red", action="show", autoClose=5000, id=notif_id())
+            return _err("No RF/snapshot data is associated with this MDS result.")
 
         combined_df = pd.DataFrame(plot_config["combined_data"])
         selected_set = {(g, int(t)) for g, t in selected_pairs}
@@ -865,92 +803,46 @@ def register_treespace_callbacks():
         sel_df = combined_df[mask]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="No matching trees found.",
-                color="red", action="show", autoClose=4000, id=notif_id())
+            return _err("No matching trees found.", autoclose=4000)
 
         tree_service = get_tree_service()
         tree_service.db_manager.flush()
         all_trees = tree_service.db_manager._trees
         matched = all_trees[all_trees["name"].isin(tree_names)].sort_values("id")
         if len(matched) == 0:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message="Selected trees not found in database. They may have been cleared.",
-                color="red", action="show", autoClose=4000, id=notif_id())
-
-        try:
-            (nexus_bytes, mcc_row, log_clade_cred, counts,
-             cols_in_mcc, missing_taxa) = assemble_mcc_nexus(
-                matched, tree_service.db_manager, source_distmat,
+            return _err(
+                "Selected trees not found in database. They may have been cleared.",
+                autoclose=4000,
             )
-        except Exception as e:
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error", message=str(e),
-                color="red", action="show", autoClose=6000, id=notif_id())
 
-        if missing_taxa:
-            sample = ", ".join(sorted(missing_taxa)[:5])
-            more = "…" if len(missing_taxa) > 5 else ""
-            canonical_source = matched["file_source"].iloc[0]
-            return no_update, no_update, no_update, dmc.Notification(
-                title="MCC Error",
-                message=(
-                    f"Cannot align translate tables: taxa [{sample}{more}] "
-                    f"are present in some selected runs but not in "
-                    f"{canonical_source}'s Translate block."
-                ),
-                color="red", action="show", autoClose=8000, id=notif_id())
+        # Plain-dict records the persistent worker can pickle.
+        matched_records = matched[[
+            "name", "file_source", "line_offset", "line_length", "metadata",
+        ]].to_dict("records")
+        for rec in matched_records:
+            rec["line_offset"] = int(rec["line_offset"])
+            rec["line_length"] = int(rec["line_length"])
 
-        mcc_tree_name = mcc_row["name"]
-        uid = _state.cache_mcc_tree(nexus_bytes)
+        # (group, treenum) per tree-name so the poll callback can put the
+        # green ring on the MCC's dot.
+        mcc_coord_by_tree_name = {
+            row["tree"]: (row["group"], int(row["treenum"]))
+            for _, row in combined_df.iterrows()
+        }
 
-        # Look up the MCC's coordinates in the active MDS so the green
-        # ring lands on the right point.
-        mcc_row_in_mds = combined_df[combined_df["tree"] == mcc_tree_name]
-        if mcc_row_in_mds.empty:
-            mcc_group, mcc_treenum = None, None
-        else:
-            r0 = mcc_row_in_mds.iloc[0]
-            mcc_group = r0["group"]
-            mcc_treenum = int(r0["treenum"])
-
-        entry = _state.register_mcc(
+        mcc_compute.submit_mcc_job(
+            matched_records=matched_records,
             source_distmat=source_distmat,
             mode="Between",
-            run=None,
-            uuid=uid,
-            mcc_tree={
-                "group": mcc_group,
-                "treenum": mcc_treenum,
-                "tree_name": mcc_tree_name,
-            },
             selection=[[g, int(t)] for g, t in selected_pairs],
-            log_clade_credibility=(None if log_clade_cred is None
-                                   else float(log_clade_cred)),
-            mcc_log_posterior=extract_log_posterior(mcc_row),
-            tree_names=tree_names,
-            counts=counts,
-            cols_in_mcc=cols_in_mcc,
+            run=None,
+            mcc_coord_by_tree_name=mcc_coord_by_tree_name,
+            store_target="treespace-view-mcc-store",
         )
-        registered_name = entry["name"]
-        add_log(
-            f"Cached MCC tree '{mcc_tree_name}' (from {len(matched)} selected) "
-            f"as {uid}; registered as {registered_name}"
-        )
-        notification = dmc.Notification(
-            title="MCC Tree Ready",
-            message=(
-                f"MCC tree {registered_name} (from {len(matched)} selected) "
-                "— opening in PearTree…"
-            ),
-            color="green", action="show", autoClose=4000, id=notif_id())
-        # Clear the red selection ring once the MCC has been computed.
-        return ({"uuid": uid, "name": registered_name},
-                _state.get_mcc_registry(),
-                [],
-                notification)
+
+        # Return: overlay on, button disabled, polling enabled, no
+        # notification yet (notification fires when compute finishes).
+        return True, True, False, no_update
 
     # Clientside: when the view-mcc store changes, open the peartree
     # viewer. In desktop pywebview mode we call the Python-side JS API

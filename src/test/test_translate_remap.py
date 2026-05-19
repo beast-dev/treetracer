@@ -13,7 +13,7 @@ MCC; silently relabelling would produce a topologically-wrong export.
 
 from __future__ import annotations
 
-from treetracer.callbacks.treespace import (
+from treetracer.mcc._canonical_remap import (
     _build_canonical_remaps,
     _substitute_newick_labels,
 )

@@ -69,7 +69,7 @@ def _open_file_dialog():
     if sys.platform == "darwin":
         cmd = [
             "osascript", "-e",
-            'set theFiles to (choose file of type {"trees"} '
+            'set theFiles to (choose file of type {"trees", "t"} '
             'with prompt "Select .trees file(s)" with multiple selections allowed)\n'
             'set output to ""\n'
             'repeat with f in theFiles\n'
@@ -81,7 +81,7 @@ def _open_file_dialog():
         cmd = [
             "zenity", "--file-selection", "--multiple", "--separator=\n",
             "--title=Select .trees file(s)",
-            "--file-filter=Trees files | *.trees",
+            "--file-filter=Trees files | *.trees *.t",
             "--file-filter=All files | *",
         ]
     else:
@@ -91,7 +91,7 @@ def _open_file_dialog():
             "root = tk.Tk(); root.withdraw(); "
             "paths = filedialog.askopenfilenames("
             "title='Select .trees file(s)', "
-            "filetypes=[('Trees files', '*.trees'), ('All files', '*.*')]); "
+            "filetypes=[('Trees files', ('*.trees', '*.t')), ('All files', '*.*')]); "
             "print('\\n'.join(paths)); "
             "root.destroy()",
         ]

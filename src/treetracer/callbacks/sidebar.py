@@ -48,9 +48,9 @@ def register_sidebar_callbacks():
         for file_path in file_paths:
             filename = os.path.basename(file_path)
 
-            if not file_path.endswith(".trees"):
-                errors.append(f"'{filename}' is not a .trees file")
-                add_log(f"Skipped {filename}: not a .trees file", "WARNING")
+            if not file_path.endswith((".trees", ".t")):
+                errors.append(f"'{filename}' is not a .trees or .t file")
+                add_log(f"Skipped {filename}: not a .trees or .t file", "WARNING")
                 continue
 
             # Deduplicate names

@@ -1,8 +1,8 @@
 """Clade Frequency Comparison panel — the scatter + tanglegram pair that
-sits inside the Diagnostics tab once two MCC trees are picked.
+sits inside the Clade Exploration tab once two MCC trees are picked.
 
 The controls (two MCC dropdowns, Compare button) live in the
-``diagnostics-mcc-paper`` block in the diagnostics panel; this module
+``clade-mcc-paper`` block in the Clade Exploration panel; this module
 defines only the output surface.
 """
 
@@ -14,7 +14,7 @@ def _add_clade_freq_panel():
     """Output paper for the Clade Frequency Comparison feature.
 
     The CONTROLS — two MCC-tree dropdowns and the Compare button —
-    live in ``diagnostics-mcc-paper`` (immediately under the MCC table
+    live in ``clade-mcc-paper`` (immediately under the MCC table
     they pull from). This paper is just the output surface: the
     scatter, the two sliders that re-shape it, and the tanglegram
     below.

@@ -6,7 +6,7 @@ from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..state import clear_all_distmats, clear_all_mds_results, clear_all_mcc_trees
 from ..plot_utils import placeholder_fig
-from .diagnostics import clear_clade_freq_caches, _tanglegram_placeholder_fig
+from .clade_explore import clear_clade_freq_caches, _tanglegram_placeholder_fig
 from ._helpers import _open_file_dialog
 
 

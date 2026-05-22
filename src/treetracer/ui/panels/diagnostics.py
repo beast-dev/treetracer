@@ -1,10 +1,11 @@
-"""Diagnostics tab panel: log-posterior trace, RF-trace, Pseudo-ESS, the
-per-matrix MCC registry table, and the Clade Frequency Comparison output."""
+"""Diagnostics tab panel: log-posterior trace, RF-to-reference trace,
+and Pseudo-ESS — the MCMC-convergence diagnostics.
+
+The MCC clade-frequency comparison that used to live here now has its
+own tab — see ui/panels/clade_explore.py."""
 
 import dash_mantine_components as dmc
 from dash import dcc, html
-
-from .clade_freq import _add_clade_freq_panel
 
 
 def _add_diagnostics_panel():
@@ -185,68 +186,5 @@ def _add_diagnostics_panel():
             ], p="md", withBorder=True, radius="sm"),
             ], gap="md"),
             ]),  # end ``diagnostics-rf-sections``
-
-            # Per-matrix MCC registry summary + Clade-Frequency
-            # comparison controls (two MCC dropdowns + Compare button).
-            # The dropdowns and button sit at the top of this paper,
-            # with the MCC table immediately below them, so picking
-            # and comparing happen in the same visual unit.
-            #
-            # Output (scatter + tanglegram) renders into the separate
-            # ``_add_clade_freq_panel`` below — those plots get heavy
-            # and benefit from owning the page width without the table
-            # crammed above them.
-            #
-            # Whole paper is hidden when no MCCs match the active
-            # matrix; driven by ``render_diagnostics_mcc_panel`` in
-            # callbacks/diagnostics.py.
-            dmc.Paper([
-                # Layout order: "MCC trees for <matrix>" title, then
-                # the Compare-clade dropdowns + button, then the
-                # registered-MCC table itself. Title and table are
-                # two separate slots so the dropdowns can sit between
-                # them without being re-rendered (and losing state)
-                # every time the registry updates.
-                html.Div(id="diagnostics-mcc-title"),
-                dmc.Space(h=10),
-                dmc.Group([
-                    dmc.Select(
-                        id="clade-freq-mcc-select-1",
-                        label="Group 1 (MCC tree)",
-                        placeholder="No MCC trees saved yet",
-                        data=[],
-                        value=None,
-                        disabled=True,
-                        w=280,
-                        size="sm",
-                    ),
-                    dmc.Select(
-                        id="clade-freq-mcc-select-2",
-                        label="Group 2 (MCC tree)",
-                        placeholder="No MCC trees saved yet",
-                        data=[],
-                        value=None,
-                        disabled=True,
-                        w=280,
-                        size="sm",
-                    ),
-                    dmc.Button(
-                        "Compare Clade Frequencies",
-                        id="clade-freq-compare-button",
-                        variant="filled",
-                        color="green",
-                        size="sm",
-                        disabled=True,
-                        style={"alignSelf": "flex-end"},
-                    ),
-                ], gap="md", align="flex-end"),
-                dmc.Space(h=10),
-                html.Div(id="diagnostics-mcc-list"),
-            ], p="md", withBorder=True, radius="sm",
-               id="diagnostics-mcc-paper",
-               style={"display": "none"}),
-
-            # Clade frequency comparison panel (local feature).
-            _add_clade_freq_panel(),
         ], gap="md"),
     ], style={"padding": "10px"})

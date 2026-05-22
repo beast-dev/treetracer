@@ -6,6 +6,7 @@ import dash_mantine_components as dmc
 from dash import dcc, html
 
 from ..icons import icon
+from .panels.clade_explore import _add_clade_explore_panel
 from .panels.diagnostics import _add_diagnostics_panel
 from .panels.treespace import _add_treespace_panel
 from .panels.within_run import _add_within_run_panel
@@ -43,6 +44,7 @@ def add_main_body():
                     dmc.TabsTab("Between-run Analysis", value="treespace"),
                     dmc.TabsTab("Within-run Analysis", value="within-run"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
+                    dmc.TabsTab("Clade Exploration", value="clade-explore"),
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
@@ -155,6 +157,7 @@ def add_main_body():
             dmc.TabsPanel(_add_treespace_panel(), value="treespace"),
             dmc.TabsPanel(_add_within_run_panel(), value="within-run"),
             dmc.TabsPanel(_add_diagnostics_panel(), value="diagnostics"),
+            dmc.TabsPanel(_add_clade_explore_panel(), value="clade-explore"),
         ],
         id="main-tabs",
         color="blue.2",

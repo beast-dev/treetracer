@@ -61,6 +61,73 @@ def _get_parsed_mcc(uid):
     return root
 
 
+def _compute_yspans(root):
+    """Map ``id(node)`` -> ``(y_lo, y_hi)``, the y-range of a node's
+    descendant tips.
+
+    The layout ranks tips by an in-order traversal, so every subtree's
+    tips form one unbroken y-band. That turns an MRCA lookup into an
+    O(depth) top-down descent — see ``_find_mrca``.
+    """
+    spans = {}
+
+    def walk(node):
+        if not node.children:
+            spans[id(node)] = (node.y, node.y)
+            return node.y, node.y
+        lo = hi = None
+        for child in node.children:
+            clo, chi = walk(child)
+            lo = clo if lo is None else min(lo, clo)
+            hi = chi if hi is None else max(hi, chi)
+        spans[id(node)] = (lo, hi)
+        return lo, hi
+
+    walk(root)
+    return spans
+
+
+def _find_mrca(root, spans, ymin, ymax):
+    """Deepest node whose descendant-tip y-band covers ``[ymin, ymax]``
+    — the MRCA of the tip set with that y-extent. Siblings have
+    disjoint bands, so at most one child can cover the range; when none
+    does, the set straddles this node's children and the node itself is
+    the MRCA."""
+    node = root
+    while node.children:
+        nxt = None
+        for child in node.children:
+            lo, hi = spans[id(child)]
+            if lo <= ymin and hi >= ymax:
+                nxt = child
+                break
+        if nxt is None:
+            break
+        node = nxt
+    return node
+
+
+def _subtree_branch_segments(mrca, x_offset, x_scale, x_flip):
+    """L-shaped branch segments (in plot coords) for the subtree rooted
+    at ``mrca`` — the same rectangular layout ``build_tree_traces``
+    draws, restricted to the subtree so it can be recoloured as an
+    overlay on top of the dimmed skeleton."""
+    def tx(x):
+        scaled = x * x_scale
+        return (x_offset - scaled) if x_flip else (x_offset + scaled)
+
+    xs, ys = [], []
+    for node in _collect_nodes(mrca):
+        for child in node.children:
+            xs += [tx(node.x), tx(child.x), None]
+            ys += [child.y, child.y, None]
+        if node.children:
+            child_ys = [c.y for c in node.children]
+            xs += [tx(node.x), tx(node.x), None]
+            ys += [min(child_ys), max(child_ys), None]
+    return xs, ys
+
+
 @functools.lru_cache(maxsize=32)
 def _get_tanglegram_layout(uid1, uid2):
     """Pre-computed layout values that don't depend on which clade is
@@ -74,7 +141,9 @@ def _get_tanglegram_layout(uid1, uid2):
                         lookups; plot_x is post-scale, post-flip
         max_y           tallest tip y across both trees, drives height
         skeleton_traces 4 static traces (left branches+all-tips,
-                        right branches+all-tips)
+                        right branches+all-tips); branches dimmed
+        yspan1, yspan2  id(node) -> (y_lo, y_hi) per tree, for O(depth)
+                        MRCA descent
     """
     root1 = _get_parsed_mcc(uid1)
     root2 = _get_parsed_mcc(uid2)
@@ -124,6 +193,13 @@ def _get_tanglegram_layout(uid1, uid2):
         max((n.y for n in nodes2 if n.is_tip), default=0),
     )
 
+    # Dim the branch skeleton (trace 0 = left, 2 = right) so the
+    # recoloured MRCA-subtree overlay drawn on top reads as the focus.
+    # Grey tip markers (1, 3) are left as-is.
+    skeleton = list(left_skeleton) + list(right_skeleton)
+    skeleton[0]["line"]["color"] = _SKELETON_DIM
+    skeleton[2]["line"]["color"] = _SKELETON_DIM
+
     return {
         "root1": root1,
         "root2": root2,
@@ -133,25 +209,37 @@ def _get_tanglegram_layout(uid1, uid2):
         "tips1": tips1,
         "tips2": tips2,
         "max_y": max_y,
-        "skeleton_traces": list(left_skeleton) + list(right_skeleton),
+        "skeleton_traces": skeleton,
+        "yspan1": _compute_yspans(root1),
+        "yspan2": _compute_yspans(root2),
     }
 
 
-# Dynamic-trace indices in the assembled tanglegram figure. The static
-# skeleton occupies the first 4 indices (2 per tree, lines + grey
-# markers); indices 4, 5, 6 are the dynamic overlays the click
-# callback patches.
+# Trace indices in the assembled tanglegram figure. Every branch trace
+# comes first, so the tip markers — drawn afterwards — sit on top of
+# the MRCA-subtree recolour instead of being hidden under it. The
+# skeleton (indices 0, 1, 3, 4) is static; the rest are dynamic
+# overlays the click callback patches.
 #
-#   0: left branches      (static)
-#   1: left grey tips     (static)
-#   2: right branches     (static)
-#   3: right grey tips    (static)
-#   4: left red highlight (dynamic)
-#   5: right red highlight(dynamic)
-#   6: red connectors     (dynamic)
-_TANGLEGRAM_HIGHLIGHT_LEFT  = 4
-_TANGLEGRAM_HIGHLIGHT_RIGHT = 5
-_TANGLEGRAM_CONNECTORS      = 6
+#   0: left branches         (static, dimmed)
+#   1: right branches        (static, dimmed)
+#   2: MRCA subtree branches (dynamic) — both trees, accent colour
+#   3: left grey tips        (static)
+#   4: right grey tips       (static)
+#   5: left red highlight    (dynamic)
+#   6: right red highlight   (dynamic)
+#   7: red connectors        (dynamic)
+#   8: MRCA node markers     (dynamic) — both trees
+_TANGLEGRAM_MRCA_SUBTREE    = 2
+_TANGLEGRAM_HIGHLIGHT_LEFT  = 5
+_TANGLEGRAM_HIGHLIGHT_RIGHT = 6
+_TANGLEGRAM_CONNECTORS      = 7
+_TANGLEGRAM_MRCA_MARKER     = 8
+
+# Colours for the MRCA emphasis overlay.
+_SKELETON_DIM = "#c8c8c8"   # branches outside the MRCA subtree
+_MRCA_ACCENT  = "#1c7ed6"   # branches inside the MRCA subtree
+_MRCA_MARKER  = "#1864ab"   # the MRCA node marker
 
 
 def _highlight_overlay_trace(tips_by_name, highlight):
@@ -201,6 +289,65 @@ def _connector_overlay_trace(tips1, tips2, highlight):
         hovertemplate="%{text}<extra></extra>",
         showlegend=False,
     )
+
+
+def _build_mrca_traces(highlight, layout):
+    """Build the two MRCA-emphasis overlay traces from the cached
+    layout and the highlighted tip set.
+
+    Returns ``(subtree_trace, marker_trace)``:
+
+    * ``subtree_trace`` — both trees' MRCA-subtree branches (the
+      smallest clade containing every highlighted tip) in one
+      accent-coloured ``lines`` trace, drawn over the dimmed skeleton.
+    * ``marker_trace`` — a diamond at each subtree's apex node,
+      hover-labelled with the clade size.
+
+    On the tree that lacks the clicked clade the apex sits well above
+    the scattered red tips and its subtree spans extra taxa — that gap
+    is the topological discordance, made visible.
+    """
+    sub_x, sub_y = [], []
+    marker_x, marker_y, marker_text = [], [], []
+    for root, spans, tips, x_offset, x_scale, x_flip in (
+        (layout["root1"], layout["yspan1"], layout["tips1"],
+         0.0, layout["scale1"], False),
+        (layout["root2"], layout["yspan2"], layout["tips2"],
+         layout["right_start"] + 1.0, layout["scale2"], True),
+    ):
+        ys = [tips[name][1] for name in highlight if name in tips]
+        if not ys:
+            continue
+        mrca = _find_mrca(root, spans, min(ys), max(ys))
+        seg_x, seg_y = _subtree_branch_segments(mrca, x_offset, x_scale, x_flip)
+        sub_x += seg_x
+        sub_y += seg_y
+        lo, hi = spans[id(mrca)]
+        n_tips = int(round(hi - lo)) + 1
+        scaled = mrca.x * x_scale
+        marker_x.append((x_offset - scaled) if x_flip else (x_offset + scaled))
+        marker_y.append(mrca.y)
+        marker_text.append(f"MRCA — {n_tips} tips")
+
+    subtree_trace = dict(
+        type="scatter",
+        x=sub_x, y=sub_y,
+        mode="lines",
+        line=dict(color=_MRCA_ACCENT, width=2),
+        hoverinfo="skip",
+        showlegend=False,
+    )
+    marker_trace = dict(
+        type="scatter",
+        x=marker_x, y=marker_y,
+        mode="markers",
+        marker=dict(symbol="diamond", size=10, color=_MRCA_MARKER,
+                    line=dict(color="white", width=1.5)),
+        text=marker_text,
+        hovertemplate="%{text}<extra></extra>",
+        showlegend=False,
+    )
+    return subtree_trace, marker_trace
 
 
 def _tanglegram_title_children(label1, label2, highlight,
@@ -789,13 +936,14 @@ def register_clade_explore_callbacks():
         Two render paths:
 
         * **First click on a new MCC pair** — build the full figure
-          (7 traces: static skeleton for both trees + dynamic overlays
-          for the highlight and connectors). Returns a fresh figure
-          dict and stamps the new pair into the tanglegram-pair-store.
+          (9 traces: static skeleton for both trees + dynamic overlays
+          for the MRCA subtree, the highlight, the connectors, and the
+          MRCA node markers). Returns a fresh figure dict and stamps
+          the new pair into the tanglegram-pair-store.
         * **Subsequent clicks on the same pair** — return a
-          ``dash.Patch`` that updates only the 3 dynamic traces and
-          the title annotation. The static skeleton (≈300 line
-          segments + 280 tip markers per tree) is never re-sent.
+          ``dash.Patch`` that updates only the 5 dynamic traces and
+          the title. The static skeleton (≈300 line segments + 280 tip
+          markers per tree) is never re-sent.
 
         The clicked split is identified by an integer ``split_id``;
         the actual tip names are resolved server-side via
@@ -854,10 +1002,11 @@ def register_clade_explore_callbacks():
         label1 = entry1["name"] if entry1 else "Group 1"
         label2 = entry2["name"] if entry2 else "Group 2"
 
-        # ── Build the three dynamic traces + the sticky title ────────────
+        # ── Build the dynamic overlay traces + the sticky title ──────────
         hl_left  = _highlight_overlay_trace(tips1, highlight)
         hl_right = _highlight_overlay_trace(tips2, highlight)
         connectors = _connector_overlay_trace(tips1, tips2, highlight)
+        mrca_subtree, mrca_marker = _build_mrca_traces(highlight, layout)
         title_children = _tanglegram_title_children(
             label1, label2, highlight, in_1=in_1, in_2=in_2,
         )
@@ -869,10 +1018,15 @@ def register_clade_explore_callbacks():
             # update it via the separate Output rather than patching
             # any layout.annotations.
             patch = Patch()
+            # The MRCA-subtree trace carries no per-point text
+            # (hoverinfo is skipped), so patch its geometry on its own.
+            patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["x"] = mrca_subtree["x"]
+            patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["y"] = mrca_subtree["y"]
             for idx, trace in (
                 (_TANGLEGRAM_HIGHLIGHT_LEFT,  hl_left),
                 (_TANGLEGRAM_HIGHLIGHT_RIGHT, hl_right),
                 (_TANGLEGRAM_CONNECTORS,      connectors),
+                (_TANGLEGRAM_MRCA_MARKER,     mrca_marker),
             ):
                 patch["data"][idx]["x"] = trace["x"]
                 patch["data"][idx]["y"] = trace["y"]
@@ -880,7 +1034,17 @@ def register_clade_explore_callbacks():
             return patch, no_update, title_children
 
         # ── First time this pair is rendered — build the full figure ─────
-        traces = list(layout["skeleton_traces"]) + [hl_left, hl_right, connectors]
+        # Trace order must match the _TANGLEGRAM_* index constants:
+        # every branch trace first (skeleton branches 0-1, MRCA subtree
+        # 2), then all tip markers (grey 3-4, red 5-6) so the dots draw
+        # over the branch colour, then connectors (7) and markers (8).
+        # skeleton_traces is [L branch, L tips, R branch, R tips].
+        skel = layout["skeleton_traces"]
+        traces = [
+            skel[0], skel[2], mrca_subtree,
+            skel[1], skel[3], hl_left, hl_right,
+            connectors, mrca_marker,
+        ]
         height = _tanglegram_height(px_per_tip, layout["max_y"])
 
         fig = go.Figure(data=[

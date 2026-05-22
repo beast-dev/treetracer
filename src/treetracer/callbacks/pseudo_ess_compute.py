@@ -30,10 +30,15 @@ _pseudo_ess_meta: Dict[str, Any] = {}
 
 
 def reset() -> None:
-    """Cancel any in-flight Pseudo-ESS future. Called by sidebar's
+    """Interrupt any in-flight Pseudo-ESS compute. Called by sidebar's
     Clear-Data callback so the worker isn't still processing against
-    a distmat that no longer exists."""
+    a distmat that no longer exists.
+
+    ``Future.cancel()`` only drops a not-yet-started future — it can't
+    stop a job already running in the worker. ``cancel_current_job()``
+    kills the worker, which actually interrupts the compute."""
     global _pseudo_ess_future, _pseudo_ess_meta
+    persistent_worker.cancel_current_job()
     if _pseudo_ess_future is not None:
         _pseudo_ess_future.cancel()
     _pseudo_ess_future = None
@@ -164,6 +169,18 @@ def register_pseudo_ess_compute_callbacks():
 
         try:
             result = future.result()
+        except persistent_worker.JobCancelled:
+            add_log("Pseudo-ESS computation cancelled by user.", "WARNING")
+            return (
+                dmc.Alert(
+                    title="Pseudo-ESS computation cancelled",
+                    children=dmc.Text("Stopped before completion.", size="sm"),
+                    color="gray", variant="light",
+                ),
+                False,        # re-enable button
+                True,         # disable poll interval
+                no_update,    # the cancel callback already notified
+            )
         except Exception as e:
             msg = f"Pseudo-ESS computation failed: {e}"
             add_log(msg, "ERROR")

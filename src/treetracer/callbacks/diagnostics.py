@@ -14,6 +14,7 @@ from ..ess import compute_pseudo_ess
 from .. import state
 from ..theme import get_template
 from ..clade_freq import compute_clade_frequencies
+from ..ui.widgets import stop_button
 
 
 # Server-side resolution table for the Clade Frequency scatter →
@@ -1103,6 +1104,7 @@ def register_diagnostics_callbacks():
                 f"Computing Pseudo-ESS for {len(requests)} row(s)…",
                 size="sm", c="dimmed",
             ),
+            stop_button("ess"),
         ], gap="sm")
 
         # spinner, button disabled, poll interval enabled.

@@ -336,6 +336,7 @@ class TreeManagerPandas:
             if file_source in self._source_handles:
                 self._source_handles[file_source].close()
                 del self._source_handles[file_source]
+            self._source_files.pop(file_source, None)
             self._source_preambles.pop(file_source, None)
             self._source_translate.pop(file_source, None)
             self._source_rooted.pop(file_source, None)

@@ -6,6 +6,7 @@ from dash import dcc, html
 
 from ...icons import icon
 from ...plot_utils import placeholder_fig
+from ..widgets import stop_button
 
 
 def _add_within_run_panel():
@@ -20,8 +21,11 @@ def _add_within_run_panel():
             zIndex=1000,
             overlayProps={"radius": "sm", "blur": 2},
             loaderProps={"size": "lg", "type": "dots",
-                         "children": dmc.Text("Computing MCC tree…",
-                                              size="sm", c="dimmed", mt="sm")},
+                         "children": dmc.Stack(
+                             [dmc.Text("Computing MCC tree…",
+                                       size="sm", c="dimmed"),
+                              stop_button("mcc-within")],
+                             align="center", gap="xs", mt="sm")},
         ),
         dmc.Stack([
             # Row 1: Result + Run selectors + axis selectors + info (boxed)

@@ -48,10 +48,15 @@ _mcc_meta: Dict[str, Any] = {}
 
 
 def reset() -> None:
-    """Cancel any in-flight MCC future. Called by the sidebar's
+    """Interrupt any in-flight MCC compute. Called by the sidebar's
     Clear-Data callback so the persistent worker isn't still
-    processing a stale request after the DB is wiped."""
+    processing a stale request after the DB is wiped.
+
+    ``Future.cancel()`` only drops a not-yet-started future — it can't
+    stop a job already running in the worker. ``cancel_current_job()``
+    kills the worker, which actually interrupts the compute."""
     global _mcc_future, _mcc_meta
+    persistent_worker.cancel_current_job()
     if _mcc_future is not None:
         _mcc_future.cancel()
     _mcc_future = None
@@ -208,6 +213,16 @@ def register_mcc_compute_callbacks():
 
         try:
             result = future.result()
+        except persistent_worker.JobCancelled:
+            # User Stop — dismiss the overlays + re-enable the buttons
+            # (already set above). The cancel callback showed the
+            # notification, so don't stack another one here.
+            add_log("MCC computation cancelled by user.", "WARNING")
+            return (out_treespace_store, out_within_store, out_registry,
+                    out_treespace_overlay, out_within_overlay,
+                    out_treespace_btn, out_within_btn,
+                    out_treespace_sel, out_within_sel,
+                    no_update, True)
         except Exception as e:
             msg = f"MCC computation failed: {e}"
             add_log(msg, "ERROR")

@@ -1,4 +1,4 @@
-from dash import html, callback, Input, Output, State, no_update, ALL
+from dash import html, callback, Input, Output, State, no_update, ALL, ctx
 import dash_mantine_components as dmc
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +12,9 @@ from ..state import (load_distmat, get_distmat_index, next_distmat_name,
                       get_distmat_groups_per_file,
                       store_mds_result, get_mds_results_index,
                       clear_all_mds_results)
+from ..ui.widgets import computing_banner
 from ._helpers import _save_file_dialog, extract_group
+from . import persistent_worker
 
 
 # RF compute happens in a SUBPROCESS, not a thread. See
@@ -132,6 +134,36 @@ def _shutdown_executor():
 
 
 def register_compute_callbacks():
+    # Stop button — interrupt whatever compute is currently running by
+    # killing the persistent worker (see
+    # ``persistent_worker.cancel_current_job``). One callback serves
+    # every banner's Stop button via the {"type": "compute-stop", ...}
+    # pattern-matching id. The kill makes the in-flight job's future
+    # raise JobCancelled; the per-compute poll callbacks below catch it
+    # and clear the banner ~one 100ms tick later.
+    @callback(
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input({"type": "compute-stop", "which": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def handle_compute_stop(_stop_clicks):
+        # Pattern-matching inputs fire both on real clicks and whenever
+        # a Stop button is added to / removed from the layout (the
+        # banners are dynamic). Only a real click carries a truthy
+        # n_clicks in the trigger; layout-change fires carry None.
+        if not any(t.get("value") for t in ctx.triggered):
+            return no_update
+        if persistent_worker.cancel_current_job():
+            add_log("Compute cancelled by user — worker subprocess killed.",
+                    "WARNING")
+            return dmc.Notification(
+                title="Stopping computation",
+                message="The running computation is being cancelled.",
+                color="yellow", action="show", autoClose=3000, id=notif_id(),
+            )
+        add_log("Stop clicked but no computation was running.", "WARNING")
+        return no_update
+
     # Callback to render the Compute tab RF table
     @callback(
         Output("compute-trees-table", "children"),
@@ -316,15 +348,13 @@ def register_compute_callbacks():
             _rf_pipeline, selected_files, save_path, rf_name, selected_is_rooted,
         )
 
-        computing_indicator = dmc.Alert(
+        computing_indicator = computing_banner(
             title=f"Computing RF Distances ({rf_name})...",
-            children=dmc.Text(
-                f"Computing {expected_total}×{expected_total} RF distance matrix in background. "
-                f"Files: {expected_breakdown_str}",
-                size="sm",
+            message=(
+                f"Computing {expected_total}×{expected_total} RF distance "
+                f"matrix in background. Files: {expected_breakdown_str}"
             ),
-            color="blue",
-            variant="light",
+            which="rf",
         )
         return no_update, computing_indicator, False, True
 
@@ -454,14 +484,13 @@ def register_compute_callbacks():
             n_components=n_components,
         )
 
-        computing_indicator = dmc.Alert(
+        computing_indicator = computing_banner(
             title="Computing MDS Embedding...",
-            children=dmc.Text(
-                f"Computing PCoA with {n_components} components for {n} trees in background.",
-                size="sm",
+            message=(
+                f"Computing PCoA with {n_components} components for "
+                f"{n} trees in background."
             ),
-            color="blue",
-            variant="light",
+            which="mds",
         )
         return computing_indicator, False, True
 
@@ -515,6 +544,17 @@ def register_compute_callbacks():
         if rf_done:
             try:
                 pipeline = _rf_future.result()
+            except persistent_worker.JobCancelled:
+                _rf_future = None
+                add_log("RF computation cancelled by user.", "WARNING")
+                rf_out = [
+                    dmc.Alert(
+                        title="RF computation cancelled",
+                        children=dmc.Text("Stopped before completion.", size="sm"),
+                        color="gray", variant="light",
+                    ),
+                    no_update, no_update, no_update, False,
+                ]
             except Exception as e:
                 msg = f"RF computation failed: {e}"
                 add_log(msg, "ERROR")
@@ -564,6 +604,18 @@ def register_compute_callbacks():
         if mds_done:
             try:
                 embedding_list, elapsed = _mds_future.result()
+            except persistent_worker.JobCancelled:
+                _mds_future = None
+                add_log("MDS computation cancelled by user.", "WARNING")
+                mds_out = [
+                    no_update,
+                    dmc.Alert(
+                        title="MDS computation cancelled",
+                        children=dmc.Text("Stopped before completion.", size="sm"),
+                        color="gray", variant="light",
+                    ),
+                    no_update, no_update, False,
+                ]
             except Exception as e:
                 msg = f"MDS computation failed: {e}"
                 add_log(msg, "ERROR")

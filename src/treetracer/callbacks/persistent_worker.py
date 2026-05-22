@@ -33,6 +33,16 @@ Wire protocol (parent ↔ worker):
 The wire is synchronous: every request gets exactly one response,
 in order. ``submit_job`` is serialised via ``_lock`` so concurrent
 callbacks don't corrupt the stream.
+
+Cancellation:
+
+The compute happens inside opaque native calls (``rapidtrees`` Rust,
+scipy LAPACK/ARPACK) with no Python checkpoint to poll a flag, and the
+worker isn't reading stdin while it computes — so the only way to
+interrupt a running job is to kill the worker process.
+``cancel_current_job`` does exactly that. The kill makes ``submit_job``'s
+blocking read return EOF; it then raises ``JobCancelled``. A fresh
+worker is spawned immediately so the next compute stays warm.
 """
 
 from __future__ import annotations
@@ -49,6 +59,20 @@ from typing import Any, Dict
 
 _worker_proc: subprocess.Popen | None = None
 _lock = threading.Lock()
+
+# Cancellation state. ``_current_job`` is the name of the job whose
+# response ``submit_job`` is currently blocked on (``None`` when the
+# worker is idle); ``_cancelled`` is set by ``cancel_current_job`` so
+# ``submit_job`` can tell a user Stop apart from a genuine crash.
+_current_job: str | None = None
+_cancelled: bool = False
+
+
+class JobCancelled(RuntimeError):
+    """Raised by ``submit_job`` when the worker was killed via
+    ``cancel_current_job()`` — lets the polling callbacks render a
+    user-requested Stop as a neutral "cancelled" state rather than a
+    red error."""
 
 
 def _worker_argv() -> list[str]:
@@ -69,6 +93,25 @@ def _worker_argv() -> list[str]:
     return [sys.executable, "-m", "treetracer"]
 
 
+def _spawn_worker() -> subprocess.Popen:
+    """Popen the worker subprocess in its persistent IPC configuration.
+
+    Worker errors are surfaced to the parent via the response protocol;
+    stderr is for catastrophic-failure debug only, captured so it
+    doesn't bleed onto the user's terminal in ``uv run`` mode.
+    """
+    env = os.environ.copy()
+    env["TREETRACER_WORKER_MODE"] = "persistent"
+    return subprocess.Popen(
+        _worker_argv(),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+
+
 def start() -> None:
     """Spawn the persistent worker subprocess if it isn't already
     running. Returns immediately — the subprocess boots in the
@@ -81,20 +124,7 @@ def start() -> None:
     with _lock:
         if _worker_proc is not None and _worker_proc.poll() is None:
             return  # already running
-        env = os.environ.copy()
-        env["TREETRACER_WORKER_MODE"] = "persistent"
-        _worker_proc = subprocess.Popen(
-            _worker_argv(),
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            # Worker errors are surfaced to the parent via the response
-            # protocol; stderr is for catastrophic-failure debug only,
-            # captured so it doesn't bleed onto the user's terminal in
-            # ``uv run`` mode.
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
+        _worker_proc = _spawn_worker()
 
 
 def shutdown() -> None:
@@ -121,6 +151,37 @@ def shutdown() -> None:
         _worker_proc = None
 
 
+def cancel_current_job() -> bool:
+    """Interrupt the compute currently running in the worker by killing
+    the worker subprocess. Returns ``True`` if a running job was killed,
+    ``False`` if the worker was idle or not running.
+
+    Safe to call from any thread. It deliberately does **not** acquire
+    ``_lock``: the thread that called ``submit_job`` holds that lock for
+    the whole job, so acquiring it here would block until the job
+    finished on its own — exactly what a Stop button must avoid. We only
+    read the ``_worker_proc`` reference (atomic) and signal it, both
+    thread-safe.
+
+    The kill makes ``submit_job``'s blocking read return EOF; that call
+    then raises ``JobCancelled`` and respawns a fresh worker.
+    """
+    global _cancelled
+    proc = _worker_proc  # atomic snapshot of the module global
+    if proc is None or proc.poll() is not None:
+        return False  # no live worker
+    if _current_job is None:
+        return False  # worker idle — nothing to interrupt
+    # Order matters: set the flag before the kill so submit_job sees it
+    # on the EOF the kill is about to cause.
+    _cancelled = True
+    try:
+        proc.kill()
+    except OSError:
+        pass  # already exited between the checks above and here
+    return True
+
+
 def _ensure_running() -> subprocess.Popen:
     """Return the worker proc, restarting it if it died. Holds ``_lock``
     around the check + restart so concurrent submitters can't race."""
@@ -139,16 +200,7 @@ def _ensure_running() -> subprocess.Popen:
                 f"restarting. stderr tail: "
                 f"{stderr_tail.decode('utf-8', errors='replace')[-500:]}\n"
             )
-        env = os.environ.copy()
-        env["TREETRACER_WORKER_MODE"] = "persistent"
-        _worker_proc = subprocess.Popen(
-            _worker_argv(),
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
+        _worker_proc = _spawn_worker()
     return _worker_proc
 
 
@@ -165,21 +217,44 @@ def submit_job(job_name: str, **kwargs: Any) -> Dict[str, Any]:
         **kwargs: forwarded to the worker function.
 
     Returns the worker function's return value (unpickled). Raises
-    ``RuntimeError`` if the worker reported an error or crashed.
+    ``JobCancelled`` if the user stopped the job via
+    ``cancel_current_job``, or ``RuntimeError`` if the worker reported
+    an error or crashed.
     """
+    global _worker_proc, _current_job, _cancelled
     with _lock:
+        _cancelled = False
         proc = _ensure_running()
         assert proc.stdin is not None and proc.stdout is not None
 
         request_bytes = pickle.dumps({"job": job_name, "kwargs": kwargs})
-        proc.stdin.write(struct.pack("<I", len(request_bytes)))
-        proc.stdin.write(request_bytes)
-        proc.stdin.flush()
+        # ``_current_job`` is the cancellation window: while it's set,
+        # cancel_current_job() may kill this worker.
+        _current_job = job_name
+        try:
+            proc.stdin.write(struct.pack("<I", len(request_bytes)))
+            proc.stdin.write(request_bytes)
+            proc.stdin.flush()
+            size_bytes = _read_exactly(proc.stdout, 4)
+        except OSError:
+            # Pipe broke mid-request — almost always because
+            # cancel_current_job() just killed the worker.
+            size_bytes = b""
+        finally:
+            _current_job = None
 
-        size_bytes = _read_exactly(proc.stdout, 4)
         if len(size_bytes) != 4:
-            # Worker died mid-job — surface stderr so we have something
-            # to debug with.
+            # Worker died mid-job.
+            if _cancelled:
+                # User Stop. Respawn now, while we still hold _lock, so
+                # the next compute doesn't pay interpreter-boot latency.
+                try:
+                    _worker_proc = _spawn_worker()
+                except Exception:  # noqa: BLE001 — _ensure_running retries
+                    _worker_proc = None
+                raise JobCancelled(f"{job_name} cancelled by user")
+            # Genuine crash — surface stderr so we have something to
+            # debug with.
             stderr_tail = b""
             try:
                 if proc.stderr:

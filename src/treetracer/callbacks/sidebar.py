@@ -144,23 +144,72 @@ def register_sidebar_callbacks():
                 style={"padding": "10px"},
             )
 
+        def _stat_row(label, value):
+            """One label/value row for a card's stat block — dimmed
+            label on the left, value right-aligned."""
+            return dmc.Group(
+                [
+                    dmc.Text(label, size="xs", c="dimmed"),
+                    dmc.Text(value, size="xs", fw=500),
+                ],
+                justify="space-between",
+                gap="xs",
+            )
+
         items = []
         for filename, summary in stored_summaries.items():
-            total_trees = summary["total_trees"]
-            n_taxa = summary.get("n_taxa", 0)
-            trees_per_group = summary["trees_per_group"]
+            total_trees = int(summary["total_trees"])
+            original_total = int(summary.get("original_total", total_trees))
+            n_taxa = int(summary.get("n_taxa", 0))
+            burnin_total = int(summary.get("burnin", 0))
+            is_rooted = summary.get("is_rooted", True)
 
-            group_lines = [
-                dmc.Text(f"{g}: {count}", size="xs", c="dimmed")
-                for g, count in trees_per_group.items()
-            ]
+            # Rooting badge — defaults to "rooted" for pre-feature
+            # summaries that don't carry the flag.
+            rooting_badge = dmc.Badge(
+                "rooted" if is_rooted else "unrooted",
+                size="sm",
+                variant="light",
+                color="blue" if is_rooted else "violet",
+            )
 
-            burnin_total = summary.get("burnin", 0)
+            # Tree count — folds in the original count once burn-in or
+            # downsampling has changed it.
+            if total_trees == original_total:
+                trees_label = f"{total_trees:,} trees"
+            else:
+                trees_label = f"{total_trees:,} of {original_total:,} trees"
+
+            # Header: the filename is the card's identity. It's clamped
+            # to 2 lines while the card is collapsed, and shown in full
+            # (wrapped, no truncation) once expanded — the un-clamp is
+            # done by ``.tt-card-filename`` in assets/treetracer.css,
+            # keyed off the accordion control's ``aria-expanded``. A
+            # quiet meta line (rooting + tree count) sits underneath.
+            header_content = dmc.Stack(
+                [
+                    dmc.Text(
+                        filename,
+                        size="sm",
+                        fw=600,
+                        className="tt-card-filename",
+                    ),
+                    dmc.Group(
+                        [
+                            rooting_badge,
+                            dmc.Text(trees_label, size="xs", c="dimmed"),
+                        ],
+                        gap="xs",
+                    ),
+                ],
+                gap=4,
+            )
+
+            # Body: a compact stat list, then the burn-in / downsample /
+            # reset controls.
             panel_content = dmc.Stack([
-                dmc.Text(f"Taxa: {n_taxa}", size="xs"),
-                dmc.Text(f"Burn-in dropped so far: {burnin_total}", size="xs", c="dimmed"),
-                dmc.Text("Groups:", size="xs", fw=500),
-                *group_lines,
+                _stat_row("Taxa", f"{n_taxa:,}"),
+                _stat_row("Burn-in dropped", f"{burnin_total:,}"),
                 dmc.Divider(my="xs"),
                 # Burn-in row — applied first; drops the first N trees by MCMC order.
                 dmc.Group([
@@ -176,7 +225,7 @@ def register_sidebar_callbacks():
                     dmc.Button(
                         "Apply Burn-in",
                         id={"type": "burnin-btn", "index": filename},
-                        variant="filled",
+                        variant="light",
                         color="grape",
                         size="compact-xs",
                     ),
@@ -195,7 +244,7 @@ def register_sidebar_callbacks():
                     dmc.Button(
                         "Downsample",
                         id={"type": "downsample-btn", "index": filename},
-                        variant="filled",
+                        variant="light",
                         color="orange",
                         size="compact-xs",
                     ),
@@ -209,25 +258,35 @@ def register_sidebar_callbacks():
                 ], gap="xs"),
             ], gap="xs")
 
-            # Rooting badge — defaults to "rooted" for pre-feature
-            # summaries that don't carry the flag.
-            is_rooted = summary.get("is_rooted", True)
-            rooting_badge = dmc.Badge(
-                "rooted" if is_rooted else "unrooted",
-                size="sm",
-                variant="light",
-                color="blue" if is_rooted else "violet",
-            )
-
             items.append(
                 dmc.AccordionItem(
                     [
-                        dmc.AccordionControl(
-                            dmc.Group([
-                                dmc.Text(filename, size="sm", fw=500, style={"flex": 1}),
-                                rooting_badge,
-                                dmc.Badge(str(total_trees), size="sm", variant="light"),
-                            ], gap="xs"),
+                        # Header row: a Remove (✕) button to the LEFT of
+                        # the accordion control, opposite the expand
+                        # chevron. The ✕ is a sibling of — not nested
+                        # inside — AccordionControl, so a click removes
+                        # the file without toggling the card.
+                        # ``minWidth: 0`` lets the control's flex column
+                        # shrink to the sidebar width.
+                        dmc.Group(
+                            [
+                                dmc.ActionIcon(
+                                    "✕",
+                                    id={"type": "remove-file-btn",
+                                        "index": filename},
+                                    variant="subtle",
+                                    color="gray",
+                                    size="md",
+                                    style={"flexShrink": 0},
+                                ),
+                                dmc.AccordionControl(
+                                    header_content,
+                                    style={"flex": 1, "minWidth": 0},
+                                ),
+                            ],
+                            gap="xs",
+                            wrap="nowrap",
+                            align="center",
                         ),
                         dmc.AccordionPanel(panel_content),
                     ],
@@ -438,6 +497,47 @@ def register_sidebar_callbacks():
             title="Trees Reset",
             message=f"Reloaded {summary['total_trees']} trees from {filename}.",
             color="orange",
+            action="show",
+            autoClose=4000,
+            id=notif_id(),
+        )
+        return stored_summaries, no_update, notification
+
+    # Callback to remove a single loaded file (its trees + sidebar card).
+    # Computed RF / MDS / MCC results are intentionally left intact —
+    # they're self-contained snapshots; "Clear Data" is the wipe-all path.
+    @callback(
+        Output("tree-offset-store", "data", allow_duplicate=True),
+        Output("sidebar-trees-display", "children", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Input({"type": "remove-file-btn", "index": ALL}, "n_clicks"),
+        State("tree-offset-store", "data"),
+        prevent_initial_call=True,
+    )
+    def remove_file(n_clicks_list, stored_summaries):
+        if not any(n_clicks_list):
+            return no_update, no_update, no_update
+
+        triggered_id = ctx.triggered_id
+        if not triggered_id:
+            return no_update, no_update, no_update
+
+        filename = triggered_id["index"]
+        stored_summaries = stored_summaries or {}
+        if filename not in stored_summaries:
+            return no_update, no_update, no_update
+
+        add_log(f"Removing {filename}...")
+
+        tree_service = get_tree_service()
+        tree_service.db_manager.clear_trees(file_source=filename)
+        del stored_summaries[filename]
+
+        add_log(f"Removed {filename}")
+        notification = dmc.Notification(
+            title="File Removed",
+            message=f"Removed {filename} from loaded trees.",
+            color="blue",
             action="show",
             autoClose=4000,
             id=notif_id(),

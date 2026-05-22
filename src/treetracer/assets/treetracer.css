@@ -1,0 +1,23 @@
+/* TreeTracer application styles.
+ *
+ * Dash auto-serves every .css file under assets/ and injects it into
+ * the app's <head>. */
+
+/* Loaded-tree card filename.
+ *
+ * Collapsed: clamped to 2 lines so a stack of cards stays compact.
+ * Expanded: shown in full — wrapped, no truncation. The accordion
+ * control carries aria-expanded="true" when its card is open, so the
+ * second rule un-clamps the name without any re-render. */
+.tt-card-filename {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+[aria-expanded="true"] .tt-card-filename {
+  display: block;
+  overflow: visible;
+}

@@ -64,16 +64,29 @@ def compute_rf_worker_entry(
     """
     t0 = time.time()
 
+    # Checkpoint logging into the shared worker log
+    # (``treetracer._worker_log``) so a hung RF compute can be
+    # diagnosed by reading one file — see that module's docstring.
+    from .._worker_log import log as wlog
+    wlog(
+        f"compute_rf_worker_entry: n_trees={len(tree_descriptors)}, "
+        f"n_source_files={len(source_file_paths)}, "
+        f"is_rooted={is_rooted}, save_path={save_path!r}"
+    )
+
     # ── Read newicks from the original .trees files ────────────────────
     # Mirrors ``TreeManagerPandas._read_newick`` exactly: open binary,
     # seek to offset, read N bytes, decode UTF-8. One handle per source
     # file kept open for the duration so we're not paying the open()
     # cost per tree.
+    wlog(f"opening {len(source_file_paths)} source .trees files")
     file_handles: Dict[str, Any] = {}
     try:
         for fs, path in source_file_paths.items():
+            wlog(f"  opening source file: {path!r}")
             file_handles[fs] = open(path, "rb")
 
+        wlog(f"reading {len(tree_descriptors)} newicks from disk")
         names: List[str] = []
         newicks: List[str] = []
         for desc in tree_descriptors:
@@ -82,6 +95,7 @@ def compute_rf_worker_entry(
             newick = fh.read(desc["newick_length"]).decode("utf-8")
             names.append(desc["name"])
             newicks.append(newick)
+        wlog(f"finished reading newicks; total bytes={sum(len(n) for n in newicks)}")
     finally:
         for fh in file_handles.values():
             try:
@@ -91,6 +105,7 @@ def compute_rf_worker_entry(
 
     # ── Convert per-source translate maps into the (list, indices) shape
     # rapidtrees expects ───────────────────────────────────────────────
+    wlog("building translate-map lookup tables")
     file_to_map_idx: Dict[str, int] = {}
     map_list: List[Dict[str, str]] = []
     for fname, tmap in translate_maps.items():
@@ -113,10 +128,20 @@ def compute_rf_worker_entry(
 
     # ── Run rapidtrees (this is the actual compute that we wanted to
     # isolate from the parent process's GIL) ───────────────────────────
+    wlog("importing rapidtrees wrapper (._worker.compute_rf)")
     from ._worker import compute_rf
+    wlog(
+        f"calling compute_rf: n_trees={len(names)}, "
+        f"n_translate_maps={len(map_list)}, is_rooted={is_rooted}"
+    )
+    compute_t0 = time.time()
     result_names, compute_elapsed = compute_rf(
         names, newicks, map_list, map_indices, save_path,
         is_rooted=is_rooted,
+    )
+    wlog(
+        f"compute_rf returned in {time.time() - compute_t0:.3f}s "
+        f"(rapidtrees-reported elapsed={compute_elapsed:.3f}s)"
     )
 
     return {

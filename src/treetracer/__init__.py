@@ -30,63 +30,129 @@ def _run_persistent_worker() -> int:
     """Read-dispatch-respond loop. Reached when this process was started
     by ``callbacks/persistent_worker.start()`` — see that module for
     the parent-side IPC client and the protocol description.
+
+    IPC happens over a localhost TCP socket whose port number was
+    handed to us via the ``TREETRACER_WORKER_PORT`` env var (the parent
+    listens, we connect). Stdio is NOT used — the Briefcase Windows
+    GUI stub silently rebinds the worker's CRT fd 1 during
+    ``Py_Initialize``, so any writes against it never reached the
+    parent's pipe and the GUI hung forever. Sockets sidestep CRT
+    stdio entirely.
+
+    Every transition point in this function emits a line to the
+    shared worker log (``treetracer._worker_log``) so a stuck worker
+    can be diagnosed post-mortem by reading one file.
     """
-    import io
     import pickle
+    import socket
     import struct
     import traceback
 
-    # ``sys.stdin.buffer`` / ``sys.stdout.buffer`` give us raw bytes
-    # streams. We deliberately do NOT touch sys.stdin/sys.stdout
-    # otherwise — the text wrappers buffer in ways that confuse
-    # length-prefixed binary framing.
-    stdin: io.BufferedReader = sys.stdin.buffer
-    stdout: io.BufferedWriter = sys.stdout.buffer
+    from ._worker_log import log as wlog, get_log_path
 
-    def _read_exactly(n: int) -> bytes:
+    wlog("entered _run_persistent_worker")
+    # Surface the log path on stderr too. The parent's stderr drainer
+    # captures it, so it shows up in the RuntimeError tail if the
+    # worker eventually dies. For a hang, the user opens the file
+    # directly.
+    try:
+        sys.stderr.write(f"treetracer worker log: {get_log_path()}\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 — defensive; sys.stderr can be None
+        pass
+
+    # ── Connect back to the parent ─────────────────────────────────
+    port_str = os.environ.get("TREETRACER_WORKER_PORT")
+    if not port_str:
+        wlog("FATAL: TREETRACER_WORKER_PORT not set in env")
+        try:
+            sys.stderr.write("worker: TREETRACER_WORKER_PORT missing\n")
+        except Exception:
+            pass
+        return 1
+    try:
+        port = int(port_str)
+    except ValueError:
+        wlog(f"FATAL: TREETRACER_WORKER_PORT={port_str!r} is not an int")
+        return 1
+
+    wlog(f"connecting to parent at 127.0.0.1:{port}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.connect(("127.0.0.1", port))
+    except OSError as e:
+        wlog(f"FATAL: connect failed: {type(e).__name__}: {e}")
+        return 1
+    wlog("connected; entering recv loop")
+
+    def _recv_exactly(n: int) -> bytes:
         data = b""
         while len(data) < n:
-            chunk = stdin.read(n - len(data))
+            chunk = sock.recv(n - len(data))
             if not chunk:
-                return b""  # EOF mid-frame → parent closed; exit loop
+                return b""  # EOF — parent closed; loop will return
             data += chunk
         return data
 
     while True:
-        size_bytes = _read_exactly(4)
+        wlog("waiting for next request header (4-byte size)")
+        size_bytes = _recv_exactly(4)
         if not size_bytes:
-            return 0  # clean shutdown
+            wlog("EOF on socket; clean shutdown")
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return 0
         (size,) = struct.unpack("<I", size_bytes)
-        request_bytes = _read_exactly(size)
+        wlog(f"got request header; body size={size}")
+        request_bytes = _recv_exactly(size)
         if len(request_bytes) != size:
-            sys.stderr.write("persistent worker: short read on request body\n")
+            wlog(f"FATAL: short recv on request body ({len(request_bytes)}/{size})")
+            sys.stderr.write("persistent worker: short recv on request body\n")
             return 1
         try:
             request = pickle.loads(request_bytes)
             job = request["job"]
             kwargs = request["kwargs"]
+            wlog(f"unpickled job={job!r}, kwarg keys={sorted(kwargs.keys())}")
 
             if job == "compute_rf":
+                wlog("importing compute_rf_worker_entry")
                 from .rf._subprocess_worker import compute_rf_worker_entry
+                wlog("calling compute_rf_worker_entry")
                 result = compute_rf_worker_entry(**kwargs)
+                wlog("compute_rf_worker_entry returned")
             elif job == "compute_mcc":
+                wlog("importing compute_mcc_worker_entry")
                 from .mcc._subprocess_worker import compute_mcc_worker_entry
+                wlog("calling compute_mcc_worker_entry")
                 result = compute_mcc_worker_entry(**kwargs)
+                wlog("compute_mcc_worker_entry returned")
             elif job == "compute_pseudo_ess":
+                wlog("importing compute_pseudo_ess_worker_entry")
                 from .ess._subprocess_worker import compute_pseudo_ess_worker_entry
+                wlog("calling compute_pseudo_ess_worker_entry")
                 result = compute_pseudo_ess_worker_entry(**kwargs)
+                wlog("compute_pseudo_ess_worker_entry returned")
             elif job == "compute_mds":
                 # MDS doesn't need a dedicated worker wrapper — the
                 # ``rf._worker.compute_mds_worker`` function is already
                 # subprocess-friendly (reads matrix from disk, returns
                 # plain Python lists). We just import and call it.
+                wlog("importing compute_mds_worker")
                 from .rf._worker import compute_mds_worker
+                wlog("calling compute_mds_worker")
                 result = compute_mds_worker(**kwargs)
+                wlog("compute_mds_worker returned")
             else:
+                wlog(f"FATAL: unknown job {job!r}")
                 raise RuntimeError(f"Unknown job: {job!r}")
             response = {"ok": True, "result": result}
+            wlog("job succeeded; serialising response")
         except BaseException as e:  # noqa: BLE001 — defensive: one bad
             # job must not crash the worker.
+            wlog(f"job raised: {type(e).__name__}: {e}")
             response = {
                 "ok": False,
                 "error": f"{type(e).__name__}: {e}",
@@ -94,9 +160,17 @@ def _run_persistent_worker() -> int:
             }
 
         response_bytes = pickle.dumps(response)
-        stdout.write(struct.pack("<I", len(response_bytes)))
-        stdout.write(response_bytes)
-        stdout.flush()
+        wlog(f"sending response; size={len(response_bytes)}")
+        # sendall loops internally on short sends — guaranteed to send
+        # all bytes or raise OSError. The length prefix lets the
+        # parent know exactly how many bytes to recv.
+        try:
+            sock.sendall(struct.pack("<I", len(response_bytes)))
+            sock.sendall(response_bytes)
+        except OSError as e:
+            wlog(f"FATAL: sendall failed: {type(e).__name__}: {e}")
+            return 1
+        wlog("response sent; loop back to next request")
 
 
 if _WORKER_MODE == "persistent":

@@ -69,6 +69,17 @@ jobs:
             - name: Briefcase create
               run: uv run --no-sync briefcase create ${{ matrix.target }} ${{ matrix.format }} --no-input
 
+            # Windows-only: inject a desktop-shortcut Component into the
+            # WXS that briefcase create generated. Briefcase's template
+            # produces a Start Menu shortcut but not a desktop one; this
+            # post-processing step adds it before briefcase build hands
+            # the WXS to WiX. See tools/inject_desktop_shortcut.py for
+            # the patcher's rationale (pattern-based text edit rather
+            # than XML parsing to avoid namespace-prefix headaches).
+            - name: Inject desktop shortcut into WXS
+              if: matrix.target == 'windows'
+              run: uv run --no-sync python tools/inject_desktop_shortcut.py
+
             - name: Briefcase build
               run: uv run --no-sync briefcase build ${{ matrix.target }} ${{ matrix.format }} --no-input
 

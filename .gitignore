@@ -200,3 +200,16 @@ src/.DS_Store
 /src/treetracer/db/old_tests
 *.trees
 docs/
+bench/
+
+# Briefcase
+.briefcase/
+logs/
+# Our packaging wheels are intentionally committed — they're the
+# workaround for sdist-only PyPI packages (e.g. proxy-tools).
+!packaging/wheels/
+!packaging/wheels/*.whl
+frechet_ess_notes.md
+frechet_ess_notes.pdf
+build.sh
+.gitattributes

@@ -844,36 +844,17 @@ def register_treespace_callbacks():
         # notification yet (notification fires when compute finishes).
         return True, True, False, no_update
 
-    # Clientside: when the view-mcc store changes, open the peartree
-    # viewer. In desktop pywebview mode we call the Python-side JS API
-    # (``window.pywebview.api.open_peartree``) which spawns a sibling
-    # native window — keeps the experience inside the desktop app and
-    # leaves both windows same-origin so future postMessage between them
-    # is unblocked. In ``--browser`` mode (or any context without
-    # pywebview), fall back to a normal ``window.open`` that opens a new
-    # browser tab.
-    clientside_callback(
-        """
-        function(payload) {
-            if (payload && payload.uuid) {
-                const name = payload.name || '';
-                if (window.pywebview && window.pywebview.api
-                    && window.pywebview.api.open_peartree) {
-                    window.pywebview.api.open_peartree(payload.uuid, name);
-                } else {
-                    const url = '/peartree/' + payload.uuid
-                              + '?name=' + encodeURIComponent(name);
-                    const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
-                    window.open(url, 'peartree-' + payload.uuid, features);
-                }
-            }
-            return window.dash_clientside.no_update;
-        }
-        """,
-        Output("treespace-view-mcc-store", "data", allow_duplicate=True),
-        Input("treespace-view-mcc-store", "data"),
-        prevent_initial_call=True,
-    )
+    # The per-tab clientside ``window.open`` that used to live here is
+    # gone — it was a duplicate of the one in within_run.py and the
+    # one in mcc_list.py. They all now route through
+    # ``mcc-peartree-open-store`` and the single clientside callback
+    # in ``callbacks/rename_mcc.py`` does the actual ``window.open``.
+    # The poll callback in ``mcc_compute.py`` still writes the freshly
+    # registered MCC's ``{uuid, name}`` to ``treespace-view-mcc-store``
+    # — it's now picked up by ``forward_compute_to_modal`` in
+    # ``rename_mcc.py``, which opens the rename modal (with
+    # ``after='view'``) so the user can confirm or edit the auto-name
+    # before peartree opens on Save.
 
     # ------ export PDF ------
     @callback(

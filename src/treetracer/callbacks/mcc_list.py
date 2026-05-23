@@ -29,6 +29,9 @@ from .. import state
 
 _VIEW_BTN = {"type": "mcc-row-view"}
 _DELETE_BTN = {"type": "mcc-row-delete"}
+# Rename pencil — clicks are handled in callbacks/rename_mcc.py
+# (``open_modal_from_pencil``), not by the View/Delete action store.
+_RENAME_BTN = {"type": "mcc-row-rename"}
 
 
 def _row_action_button(*, kind, name, source, color, icon_name,
@@ -88,6 +91,14 @@ def _entry_summary_row(entry, *, show_mode=False, source):
         dmc.TableTd(f"{n_sel}"),
         dmc.TableTd(
             dmc.Group([
+                _row_action_button(
+                    kind="mcc-row-rename",
+                    name=name,
+                    source=source,
+                    color="blue",
+                    icon_name="tabler:pencil",
+                    title="Rename",
+                ),
                 _row_action_button(
                     kind="mcc-row-view",
                     name=name,
@@ -248,28 +259,43 @@ def register_mcc_list_callbacks():
         state.delete_mcc(name)
         return state.get_mcc_registry()
 
-    # Clientside View action: open /peartree/<uuid> via the same
-    # pywebview / window.open dance the Between-run "View MCC" button
-    # already uses.
-    clientside_callback(
-        """
-        function(payload) {
-            if (payload && payload.action === 'view' && payload.uuid) {
-                const name = payload.name || '';
-                if (window.pywebview && window.pywebview.api
-                    && window.pywebview.api.open_peartree) {
-                    window.pywebview.api.open_peartree(payload.uuid, name);
-                } else {
-                    const url = '/peartree/' + payload.uuid
-                              + '?name=' + encodeURIComponent(name);
-                    const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
-                    window.open(url, 'peartree-' + payload.uuid, features);
-                }
-            }
-            return window.dash_clientside.no_update;
-        }
-        """,
-        Output("mcc-registry-action-store", "data", allow_duplicate=True),
+    # Server-side View dispatcher: if the entry has been renamed by
+    # the user (``name_user_set`` is True), open PearTree directly via
+    # the shared ``mcc-peartree-open-store`` sink. Otherwise open the
+    # rename modal first via ``mcc-rename-state``; the modal's Save
+    # handler chains the open after rename. Single clientside
+    # ``window.open`` lives in ``callbacks/rename_mcc.py``.
+    @callback(
+        Output("mcc-peartree-open-store", "data", allow_duplicate=True),
+        Output("mcc-rename-state", "data", allow_duplicate=True),
         Input("mcc-registry-action-store", "data"),
+        State("mcc-registry-store", "data"),
         prevent_initial_call=True,
     )
+    def dispatch_view_action(payload, registry):
+        if not payload or payload.get("action") != "view":
+            return no_update, no_update
+        uuid = payload.get("uuid")
+        if not uuid:
+            return no_update, no_update
+        entry = None
+        for e in registry or []:
+            if e.get("uuid") == uuid:
+                entry = e
+                break
+        if entry is None:
+            return no_update, no_update
+        if entry.get("name_user_set"):
+            # Direct open — name has been confirmed at least once.
+            return (
+                {"uuid": uuid, "name": entry.get("name", ""),
+                 "n": payload.get("n")},
+                no_update,
+            )
+        # First view: open rename modal with ``after='view'`` so Save
+        # chains the peartree open.
+        return (
+            no_update,
+            {"uuid": uuid, "name": entry.get("name", ""),
+             "after": "view", "n": payload.get("n")},
+        )

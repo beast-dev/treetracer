@@ -292,13 +292,17 @@ def register_mcc_compute_callbacks():
             f"Cached MCC tree '{mcc_tree_name}' (from {len(meta['tree_names'])} selected) "
             f"as {uid}; registered as {registered_name}"
         )
+        # The rename modal opens next (see ``forward_compute_to_modal``
+        # in ``callbacks/rename_mcc.py``); PearTree only opens once the
+        # user clicks Save in the modal. Don't promise "opening in
+        # PearTree" here — the modal title makes the next step obvious.
         notif = dmc.Notification(
             title="MCC Tree Ready",
             message=(
-                f"MCC tree {registered_name} (from {len(meta['tree_names'])} selected) "
-                "— opening in PearTree…"
+                f"MCC tree {registered_name} computed from "
+                f"{len(meta['tree_names'])} selected trees."
             ),
-            color="green", action="show", autoClose=4000, id=notif_id(),
+            color="green", action="show", autoClose=3000, id=notif_id(),
         )
 
         # Route the {uuid, name} payload to the originating tab's

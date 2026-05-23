@@ -856,32 +856,12 @@ def register_within_run_callbacks():
 
         return True, True, False, no_update
 
-    # Clientside: in pywebview desktop mode call the Python-side JS API
-    # to spawn a sibling native window; in ``--browser`` mode fall back
-    # to a regular ``window.open`` that opens a new browser tab. Same
-    # behaviour as the between-run tab.
-    clientside_callback(
-        """
-        function(payload) {
-            if (payload && payload.uuid) {
-                const name = payload.name || '';
-                if (window.pywebview && window.pywebview.api
-                    && window.pywebview.api.open_peartree) {
-                    window.pywebview.api.open_peartree(payload.uuid, name);
-                } else {
-                    const url = '/peartree/' + payload.uuid
-                              + '?name=' + encodeURIComponent(name);
-                    const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
-                    window.open(url, 'peartree-' + payload.uuid, features);
-                }
-            }
-            return window.dash_clientside.no_update;
-        }
-        """,
-        Output("within-run-view-mcc-store", "data", allow_duplicate=True),
-        Input("within-run-view-mcc-store", "data"),
-        prevent_initial_call=True,
-    )
+    # The per-tab clientside ``window.open`` that used to live here is
+    # gone; see the parallel note in ``treespace.py``. The
+    # ``within-run-view-mcc-store`` is now consumed by
+    # ``forward_compute_to_modal`` in ``callbacks/rename_mcc.py``,
+    # which opens the shared rename modal so the user can name the
+    # freshly computed MCC before PearTree opens.
 
     # ------ export PDF ------
     @callback(

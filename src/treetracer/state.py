@@ -485,10 +485,66 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
         # only paid once per Compare click.
         "cols_in_mcc": (sorted(cols_in_mcc)
                         if cols_in_mcc is not None else None),
+        # Flipped True by ``rename_mcc`` once the user has confirmed a
+        # name (even an unedited save counts — "I looked at it and this
+        # is fine"). Drives the View-flow rename modal in
+        # ``callbacks/rename_mcc.py``: as long as this is False, the
+        # first View click on the entry opens the rename prompt instead
+        # of going straight to PearTree.
+        "name_user_set": False,
         "created_at": time.time(),
     }
     _mcc_registry.append(entry)
     return entry
+
+
+def rename_mcc(name_or_uuid, new_name):
+    """Rename an MCC registry entry.
+
+    Returns ``(entry, error)``. On success ``entry`` is the mutated
+    registry dict and ``error`` is ``None``. On failure ``entry`` is
+    ``None`` and ``error`` is a short user-facing string suitable for
+    inline display in the rename modal or a Notification.
+
+    Lookup accepts either the current name OR the entry's uuid — the
+    uuid form lets callers that already hold a stable handle (e.g. the
+    pattern-matching button id) skip the name round-trip.
+
+    Validation:
+      * non-empty after stripping
+      * ≤ 80 characters
+      * unique across the registry (case-sensitive)
+
+    A no-op rename (same name) is allowed and still flips
+    ``name_user_set`` to True — the user explicitly accepted the
+    current name, so the View-flow modal stops prompting.
+    """
+    if new_name is None:
+        return None, "Name cannot be empty."
+    new_name = str(new_name).strip()
+    if not new_name:
+        return None, "Name cannot be empty."
+    if len(new_name) > 80:
+        return None, "Name is too long (max 80 characters)."
+
+    target = None
+    for e in _mcc_registry:
+        if e.get("name") == name_or_uuid or e.get("uuid") == name_or_uuid:
+            target = e
+            break
+    if target is None:
+        return None, "MCC entry not found (may have been cleared)."
+
+    if target["name"] != new_name:
+        for e in _mcc_registry:
+            if e is target:
+                continue
+            if e.get("name") == new_name:
+                return None, f"Name '{new_name}' is already in use."
+        target["name"] = new_name
+
+    target["name_user_set"] = True
+    return target, None
 
 
 def get_mcc_registry():

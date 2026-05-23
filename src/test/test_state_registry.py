@@ -166,3 +166,90 @@ def test_registry_entry_stores_tree_names_as_defensive_copy():
     names_in.append("selected/STATE_DRIFT")
     assert "selected/STATE_DRIFT" not in e["tree_names"]
     assert len(e["tree_names"]) == 2
+
+
+# ---- rename_mcc ------------------------------------------------------------
+
+def test_register_mcc_starts_with_name_user_set_false():
+    """The rename modal in callbacks/rename_mcc.py keys off this flag —
+    new entries must default to "name still auto-generated"."""
+    e = _entry()
+    assert e["name_user_set"] is False
+
+
+def test_rename_mcc_basic_by_name():
+    a = _entry()
+    entry, err = state.rename_mcc(a["name"], "custom_run3")
+    assert err is None
+    # In-place mutation — the entry's identity in the registry is stable.
+    assert entry is a
+    assert a["name"] == "custom_run3"
+    assert a["name_user_set"] is True
+
+
+def test_rename_mcc_by_uuid():
+    a = _entry()
+    entry, err = state.rename_mcc(a["uuid"], "via_uuid")
+    assert err is None
+    assert entry["name"] == "via_uuid"
+
+
+def test_rename_mcc_strips_whitespace():
+    a = _entry()
+    entry, err = state.rename_mcc(a["name"], "  trimmed  ")
+    assert err is None
+    assert entry["name"] == "trimmed"
+
+
+def test_rename_mcc_empty_rejected():
+    a = _entry()
+    for blank in ("", "   ", None):
+        entry, err = state.rename_mcc(a["name"], blank)
+        assert entry is None
+        assert "empty" in err.lower()
+    # Original name is untouched and flag stays False.
+    assert a["name"] == "RF_001_Between_MCC_1"
+    assert a["name_user_set"] is False
+
+
+def test_rename_mcc_too_long_rejected():
+    a = _entry()
+    entry, err = state.rename_mcc(a["name"], "x" * 81)
+    assert entry is None
+    assert "long" in err.lower()
+
+
+def test_rename_mcc_collision_rejected():
+    a = _entry()
+    b = _entry()
+    entry, err = state.rename_mcc(a["name"], b["name"])
+    assert entry is None
+    assert "already" in err.lower()
+    # Neither entry's name changed.
+    assert a["name"] == "RF_001_Between_MCC_1"
+    assert b["name"] == "RF_001_Between_MCC_2"
+
+
+def test_rename_mcc_noop_still_sets_flag():
+    """Even an unedited Save click should mark name_user_set so the
+    View-flow modal stops prompting — the user explicitly confirmed."""
+    a = _entry()
+    entry, err = state.rename_mcc(a["name"], a["name"])
+    assert err is None
+    assert entry["name_user_set"] is True
+
+
+def test_rename_mcc_unknown_id_returns_error():
+    _entry()
+    entry, err = state.rename_mcc("never_existed", "x")
+    assert entry is None
+    assert "not found" in err.lower()
+
+
+def test_rename_mcc_persists_across_delete_lookup():
+    """After rename, ``delete_mcc`` (which looks up by name) must still
+    find the entry using the new name."""
+    a = _entry()
+    state.rename_mcc(a["name"], "renamed")
+    assert state.delete_mcc("renamed") is True
+    assert state.get_mcc_registry() == []

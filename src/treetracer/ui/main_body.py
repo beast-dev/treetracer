@@ -10,6 +10,7 @@ from .panels.clade_explore import _add_clade_explore_panel
 from .panels.diagnostics import _add_diagnostics_panel
 from .panels.treespace import _add_treespace_panel
 from .panels.within_run import _add_within_run_panel
+from .rename_modal import _add_rename_modal
 
 
 def _add_about_modal():
@@ -170,4 +171,9 @@ def add_main_body():
         html.Div(id="notifications-container"),
         tabs,
         _add_about_modal(),
+        # Shared rename modal — opens on first View, on the pencil
+        # icon in MCC tables, and right after View MCC → compute
+        # completes. See ui/rename_modal.py for layout and
+        # callbacks/rename_mcc.py for the lifecycle.
+        _add_rename_modal(),
     ])

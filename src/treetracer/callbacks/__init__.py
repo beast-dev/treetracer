@@ -8,6 +8,7 @@ from .mcc_list import register_mcc_list_callbacks
 from .mcc_compute import register_mcc_compute_callbacks
 from .pseudo_ess_compute import register_pseudo_ess_compute_callbacks
 from .clade_explore import register_clade_explore_callbacks
+from .rename_mcc import register_rename_mcc_callbacks
 
 
 def register_callbacks(app):
@@ -21,3 +22,4 @@ def register_callbacks(app):
     register_mcc_compute_callbacks()
     register_pseudo_ess_compute_callbacks()
     register_clade_explore_callbacks()
+    register_rename_mcc_callbacks()

@@ -604,7 +604,15 @@ def register_diagnostics_callbacks():
         return False
 
     @callback(
-        Output("pseudo-ess-output", "children"),
+        # pseudo-ess-output.children + compute-pseudo-ess-button.disabled
+        # are both written from THIS click handler, from
+        # poll_pseudo_ess_completion (pseudo_ess_compute.py), and from
+        # the sidebar's Clear-data handler. Making the click handler
+        # ALSO use allow_duplicate=True means there's no "primary"
+        # for these Outputs — every writer is equal. This avoids the
+        # Dash 4.x output-dispatch quirk where a secondary write can
+        # be dropped if the primary hasn't fired in the same batch.
+        Output("pseudo-ess-output", "children", allow_duplicate=True),
         Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("compute-pseudo-ess-button", "n_clicks"),

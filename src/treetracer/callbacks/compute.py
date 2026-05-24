@@ -14,6 +14,7 @@ from ..state import (load_distmat, get_distmat_index, next_distmat_name,
                       clear_all_mds_results)
 from ..ui.widgets import computing_banner
 from ._helpers import _save_file_dialog, extract_group
+from .._worker_log import log as _wlog
 from . import persistent_worker
 
 
@@ -111,6 +112,7 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
         f"{'rooted' if is_rooted else 'unrooted'} mode)..."
     )
 
+    _wlog(f"[parent] _rf_pipeline: about to call persistent_worker.submit_job for {rf_name!r}")
     result = persistent_worker.submit_job(
         "compute_rf",
         tree_descriptors=tree_descriptors,
@@ -120,9 +122,11 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
         rf_name=rf_name,
         is_rooted=is_rooted,
     )
+    _wlog(f"[parent] _rf_pipeline: submit_job returned for {rf_name!r}; result keys={sorted(result.keys())}")
     # Add parent-side total wall-time (includes IPC round-trip).
     result["total_elapsed"] = time.time() - t0
     result["is_rooted"] = is_rooted
+    _wlog(f"[parent] _rf_pipeline: returning result; total_elapsed={result['total_elapsed']:.3f}s")
     return result
 
 
@@ -528,6 +532,20 @@ def register_compute_callbacks():
         rf_done = _rf_future is not None and _rf_future.done()
         mds_done = _mds_future is not None and _mds_future.done()
 
+        # Sample the poll loop sparingly — every 10 ticks (~1 s) we
+        # log a heartbeat with the futures' state. Useful for telling
+        # "poll not firing" apart from "poll firing but future never
+        # done" when diagnosing a hung compute. Once a job IS done
+        # we always log so we can see the dispatch flowing.
+        if rf_done or mds_done or (n_intervals or 0) % 10 == 0:
+            _wlog(
+                f"[parent] poll_completion tick={n_intervals}: "
+                f"rf_future={'set' if _rf_future else 'none'}/"
+                f"{'done' if rf_done else 'pending'}, "
+                f"mds_future={'set' if _mds_future else 'none'}/"
+                f"{'done' if mds_done else 'pending'}"
+            )
+
         if not rf_done and not mds_done:
             return (no_update,) * 15
 
@@ -542,8 +560,10 @@ def register_compute_callbacks():
 
         # --- Process RF ---
         if rf_done:
+            _wlog("[parent] poll_completion: rf_future done; calling .result()")
             try:
                 pipeline = _rf_future.result()
+                _wlog(f"[parent] poll_completion: .result() returned; keys={sorted(pipeline.keys())}")
             except persistent_worker.JobCancelled:
                 _rf_future = None
                 add_log("RF computation cancelled by user.", "WARNING")

@@ -52,25 +52,46 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
 
     import numpy as np
 
+    # Worker-log checkpoints for the rapidtrees path. Each major
+    # phase (rapidtrees DLL import, the compute itself, the two
+    # numpy.save calls) gets one log line — enough to pinpoint a
+    # hang to one of those phases without forcing us to instrument
+    # the Rust side. See treetracer._worker_log for the path /
+    # rationale.
+    try:
+        from .._worker_log import log as wlog
+    except Exception:  # noqa: BLE001
+        wlog = lambda _msg: None  # noqa: E731 — best-effort logging
+
     t0 = time.time()
+    wlog("compute_rf: importing rapidtrees binding (.rf.rf_distance_with_snapshots_from_newick_iter)")
     from .rf import rf_distance_with_snapshots_from_newick_iter
+    wlog(f"compute_rf: rapidtrees imported in {time.time() - t0:.3f}s; calling pairwise RF")
+    call_t0 = time.time()
     result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
         rf_distance_with_snapshots_from_newick_iter(
             names, iter(newicks), translate_maps, map_indices,
             rooted=is_rooted,
         )
     )
+    wlog(
+        f"compute_rf: rapidtrees returned in {time.time() - call_t0:.3f}s; "
+        f"rf_matrix.shape={rf_matrix.shape}, presence.shape={presence.shape}"
+    )
     # rf_matrix is uint32 from Rust; downcast to uint16 for disk storage
     # (RF distances are bounded by 2*(n_taxa-3), trivially fits).
+    wlog(f"compute_rf: saving uint16 distmat to {save_path!r}")
     np.save(save_path, rf_matrix.astype(np.uint16))
 
     # Save the presence matrix + leaf_names alongside, with a derived path
     # so a single registry entry implicitly knows where to find both.
     snap_path = Path(save_path).with_name(Path(save_path).stem + "_snapshots.npz")
+    wlog(f"compute_rf: saving snapshot .npz to {str(snap_path)!r}")
     np.savez(snap_path,
              presence=presence,
              leaf_names=np.array(leaf_names),
              bipartition_bits=bipartition_bits)
+    wlog("compute_rf: both files written; returning")
 
     elapsed = time.time() - t0
     return list(result_names), elapsed

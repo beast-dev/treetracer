@@ -230,11 +230,15 @@ def _get_tanglegram_layout(uid1, uid2):
 #   6: right red highlight   (dynamic)
 #   7: red connectors        (dynamic)
 #   8: MRCA node markers     (dynamic) — both trees
+#   9: complement tips       (dynamic) — green, both trees
+#  10: complement connectors (dynamic) — green
 _TANGLEGRAM_MRCA_SUBTREE    = 2
 _TANGLEGRAM_HIGHLIGHT_LEFT  = 5
 _TANGLEGRAM_HIGHLIGHT_RIGHT = 6
 _TANGLEGRAM_CONNECTORS      = 7
 _TANGLEGRAM_MRCA_MARKER     = 8
+_TANGLEGRAM_COMPLEMENT_TIPS = 9
+_TANGLEGRAM_COMPLEMENT_CONN = 10
 
 # Colours for the MRCA emphasis overlay.
 _SKELETON_DIM = "#c8c8c8"   # branches outside the MRCA subtree
@@ -290,30 +294,86 @@ def _connector_overlay_trace(tips1, tips2, highlight):
         showlegend=False,
     )
 
+def _complement_tips_trace(complement, tips1, tips2):
+    """Build the green-marker overlay trace for complementary tips on both trees.
+
+    Looks up each complement tip in both ``tips1`` and ``tips2``
+    independently so markers appear on both sides of the tanglegram,
+    even in the concordant tree where the complement set is empty but
+    the tips still exist as nodes. Returns a fully styled trace with
+    empty coordinates when ``complement`` is empty, so callers can use
+    it as the toggle-off placeholder too.
+    """
+    xs, ys, names = [], [], []
+    for name in complement:
+        for tree_tips in (tips1, tips2):
+            coord = tree_tips.get(name)
+            if coord is None:
+                continue
+            xs.append(coord[0])
+            ys.append(coord[1])
+            names.append(name)
+    return dict(
+        type="scatter",
+        x=xs, y=ys,
+        mode="markers",
+        marker=dict(color="#2f9e44", size=8),
+        text=names,
+        hovertemplate="%{text}<extra></extra>",
+        showlegend=False,
+    )
+
+
+def _complement_connector_trace(tips1, tips2, complement1, complement2):
+    """Build the green connector lines between complementary tips.
+
+    Draws a line for every tip name that appears in either complement
+    set and exists on both sides of the tanglegram.
+    """
+    all_complement = complement1 | complement2
+    xs, ys, names = [], [], []
+    for name in all_complement:
+        c1 = tips1.get(name)
+        c2 = tips2.get(name)
+        if c1 is None or c2 is None:
+            continue
+        xs += [c1[0], c2[0], None]
+        ys += [c1[1], c2[1], None]
+        names.append(name)
+    return dict(
+        type="scatter",
+        x=xs, y=ys,
+        mode="lines",
+        line=dict(color="rgba(47,158,68,0.7)", width=2),
+        text=[n for n in names for _ in range(3)],
+        hovertemplate="%{text}<extra></extra>",
+        showlegend=False,
+    )
 
 def _build_mrca_traces(highlight, layout):
     """Build the two MRCA-emphasis overlay traces from the cached
     layout and the highlighted tip set.
 
-    Returns ``(subtree_trace, marker_trace)``:
-
-    * ``subtree_trace`` — both trees' MRCA-subtree branches (the
-      smallest clade containing every highlighted tip) in one
-      accent-coloured ``lines`` trace, drawn over the dimmed skeleton.
-    * ``marker_trace`` — a diamond at each subtree's apex node,
-      hover-labelled with the clade size.
-
-    On the tree that lacks the clicked clade the apex sits well above
-    the scattered red tips and its subtree spans extra taxa — that gap
-    is the topological discordance, made visible.
+    Returns ``(subtree_trace, marker_trace, complement_per_tree)``
+    where ``complement_per_tree`` is a dict with keys ``"tips1"`` and
+    ``"tips2"``, each a set of tip names that are descendants of the
+    MRCA in that tree but are NOT in ``highlight``. These are the
+    "intruder" tips that make the clade non-monophyletic in the
+    discordant tree — empty set when the tree contains the clade
+    monophyletically.
     """
     sub_x, sub_y = [], []
     marker_x, marker_y, marker_text = [], [], []
-    for root, spans, tips, x_offset, x_scale, x_flip in (
-        (layout["root1"], layout["yspan1"], layout["tips1"],
-         0.0, layout["scale1"], False),
-        (layout["root2"], layout["yspan2"], layout["tips2"],
-         layout["right_start"] + 1.0, layout["scale2"], True),
+    complement_per_tree = {"tips1": set(), "tips2": set()}
+
+    for key, (root, spans, tips, x_offset, x_scale, x_flip) in zip(
+        ("tips1", "tips2"),
+        (
+            (layout["root1"], layout["yspan1"], layout["tips1"],
+             0.0, layout["scale1"], False),
+            (layout["root2"], layout["yspan2"], layout["tips2"],
+             layout["right_start"] + 1.0, layout["scale2"], True),
+        ),
     ):
         ys = [tips[name][1] for name in highlight if name in tips]
         if not ys:
@@ -328,6 +388,10 @@ def _build_mrca_traces(highlight, layout):
         marker_x.append((x_offset - scaled) if x_flip else (x_offset + scaled))
         marker_y.append(mrca.y)
         marker_text.append(f"MRCA — {n_tips} tips")
+
+        # Collect complement: all tips under this MRCA minus highlight
+        mrca_tips = {n.name for n in _collect_nodes(mrca) if n.is_tip}
+        complement_per_tree[key] = mrca_tips - highlight
 
     subtree_trace = dict(
         type="scatter",
@@ -347,7 +411,7 @@ def _build_mrca_traces(highlight, layout):
         hovertemplate="%{text}<extra></extra>",
         showlegend=False,
     )
-    return subtree_trace, marker_trace
+    return subtree_trace, marker_trace, complement_per_tree
 
 
 def _tanglegram_title_children(label1, label2, highlight,
@@ -928,22 +992,24 @@ def register_clade_explore_callbacks():
         State("clade-freq-mcc-select-2", "value"),
         State("tanglegram-yscale-slider", "value"),
         State("clade-freq-tanglegram-pair-store", "data"),
+        State("tanglegram-complement-toggle", "checked"),
         prevent_initial_call=True,
     )
-    def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair):
+    def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair, complement_on):
         """Draw a tanglegram of the two MCC trees when a clade dot is clicked.
 
         Two render paths:
 
         * **First click on a new MCC pair** — build the full figure
-          (9 traces: static skeleton for both trees + dynamic overlays
-          for the MRCA subtree, the highlight, the connectors, and the
-          MRCA node markers). Returns a fresh figure dict and stamps
-          the new pair into the tanglegram-pair-store.
+          (11 traces: static skeleton for both trees + dynamic overlays
+          for the MRCA subtree, the highlight, the connectors, the MRCA
+          node markers, and the green complement tips/connectors).
+          Returns a fresh figure dict and stamps the new pair into the
+          tanglegram-pair-store.
         * **Subsequent clicks on the same pair** — return a
-          ``dash.Patch`` that updates only the 5 dynamic traces and
-          the title. The static skeleton (≈300 line segments + 280 tip
-          markers per tree) is never re-sent.
+          ``dash.Patch`` that updates only the 7 dynamic traces'
+          x/y/text and the title. The static skeleton (≈300 line
+          segments + 280 tip markers per tree) is never re-sent.
 
         The clicked split is identified by an integer ``split_id``;
         the actual tip names are resolved server-side via
@@ -1006,20 +1072,36 @@ def register_clade_explore_callbacks():
         hl_left  = _highlight_overlay_trace(tips1, highlight)
         hl_right = _highlight_overlay_trace(tips2, highlight)
         connectors = _connector_overlay_trace(tips1, tips2, highlight)
-        mrca_subtree, mrca_marker = _build_mrca_traces(highlight, layout)
+        mrca_subtree, mrca_marker, complement_per_tree = _build_mrca_traces(highlight, layout)
+        complement1 = complement_per_tree["tips1"]
+        complement2 = complement_per_tree["tips2"]
         title_children = _tanglegram_title_children(
             label1, label2, highlight, in_1=in_1, in_2=in_2,
         )
 
+        # Build the green overlays fully styled in BOTH branches —
+        # empty data when the toggle is off — so the styling is baked
+        # into the figure once at first render and later patches only
+        # ever touch x/y/text. The grey tip base (traces 3/4) is never
+        # reduced: the green markers (size 8, opaque) sit on a higher
+        # trace index and fully occlude the grey tips (size 6) beneath,
+        # exactly like the red highlight overlay already does.
+        if complement_on:
+            comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
+            comp_conn = _complement_connector_trace(
+                tips1, tips2, complement1, complement2,
+            )
+        else:
+            comp_tips = _complement_tips_trace(set(), tips1, tips2)
+            comp_conn = _complement_connector_trace(tips1, tips2, set(), set())
+
         same_pair = current_pair == [uid1, uid2]
         if same_pair:
-            # ── Patch-only update — never re-sends the static skeleton ───
-            # The title lives outside the figure in its own div, so we
-            # update it via the separate Output rather than patching
-            # any layout.annotations.
+            # Patch only the dynamic overlays' geometry. The static
+            # skeleton (branches 0/1, grey tips 3/4) and the green
+            # overlays' styling are already in the figure, so the patch
+            # carries nothing but the x/y/text that actually changed.
             patch = Patch()
-            # The MRCA-subtree trace carries no per-point text
-            # (hoverinfo is skipped), so patch its geometry on its own.
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["x"] = mrca_subtree["x"]
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["y"] = mrca_subtree["y"]
             for idx, trace in (
@@ -1027,6 +1109,8 @@ def register_clade_explore_callbacks():
                 (_TANGLEGRAM_HIGHLIGHT_RIGHT, hl_right),
                 (_TANGLEGRAM_CONNECTORS,      connectors),
                 (_TANGLEGRAM_MRCA_MARKER,     mrca_marker),
+                (_TANGLEGRAM_COMPLEMENT_TIPS, comp_tips),
+                (_TANGLEGRAM_COMPLEMENT_CONN, comp_conn),
             ):
                 patch["data"][idx]["x"] = trace["x"]
                 patch["data"][idx]["y"] = trace["y"]
@@ -1035,18 +1119,20 @@ def register_clade_explore_callbacks():
 
         # ── First time this pair is rendered — build the full figure ─────
         # Trace order must match the _TANGLEGRAM_* index constants:
-        # every branch trace first (skeleton branches 0-1, MRCA subtree
-        # 2), then all tip markers (grey 3-4, red 5-6) so the dots draw
-        # over the branch colour, then connectors (7) and markers (8).
-        # skeleton_traces is [L branch, L tips, R branch, R tips].
+        # branches first (skeleton 0-1, MRCA subtree 2), then the tip
+        # markers (grey 3-4, red 5-6) so the dots draw over the branch
+        # colour, then connectors (7), MRCA markers (8), and finally the
+        # green complement overlays (9-10) on top. skel[1]/skel[3] are
+        # the full static grey-tip sets — the green markers simply draw
+        # over them. skeleton_traces is [L branch, L tips, R branch, R tips].
         skel = layout["skeleton_traces"]
         traces = [
             skel[0], skel[2], mrca_subtree,
             skel[1], skel[3], hl_left, hl_right,
             connectors, mrca_marker,
+            comp_tips, comp_conn,
         ]
         height = _tanglegram_height(px_per_tip, layout["max_y"])
-
         fig = go.Figure(data=[
             t if isinstance(t, go.Scatter) else go.Scatter(**t)
             for t in traces
@@ -1054,15 +1140,7 @@ def register_clade_explore_callbacks():
         fig.update_layout(
             template="simple_white",
             height=height,
-            # Tight top margin now that the title is rendered in a
-            # sticky div above the graph instead of as an in-figure
-            # annotation.
             margin=dict(l=10, r=10, t=10, b=10),
-            # Content lives in [0, right_start + 1.0] (left tree
-            # 0–1, gap 1–1.3, right tree 1.3–2.3). Use a tiny equal
-            # padding on both sides so the two trees stay centred
-            # in the panel — the previous ``-1.05`` left edge was
-            # asymmetric and shoved the tanglegram visibly right.
             xaxis=dict(visible=False,
                        range=[-0.05, right_start + 1.05]),
             yaxis=dict(visible=False),
@@ -1080,7 +1158,7 @@ def register_clade_explore_callbacks():
     def update_tanglegram_height(px_per_tip, uid1, uid2):
         """Slide-to-resize. The tanglegram's height scales with the
         number of tips × the slider value. Patches only
-        ``layout.height`` so the 7-trace figure doesn't get rebuilt
+        ``layout.height`` so the 11-trace figure doesn't get rebuilt
         on every slider drag tick.
 
         No-ops when no MCC pair is selected yet (slider has nothing
@@ -1096,4 +1174,73 @@ def register_clade_explore_callbacks():
         patch["layout"]["height"] = _tanglegram_height(
             px_per_tip, layout["max_y"]
         )
+        return patch
+
+    @callback(
+        Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
+        Input("tanglegram-complement-toggle", "checked"),
+        State("clade-freq-click-store", "data"),
+        State("clade-freq-mcc-select-1", "value"),
+        State("clade-freq-mcc-select-2", "value"),
+        prevent_initial_call=True,
+    )
+    def toggle_complement_highlights(checked, click_data, uid1, uid2):
+        """Show or hide the complementary-tip green overlay when the
+        toggle is flipped, without requiring a new scatter click.
+
+        Patches only the two green overlay traces (9/10); the grey tip
+        base (3/4) is left untouched because the green markers simply
+        draw on top of it. Hiding empties the green x/y/text; showing
+        resolves the last clicked split from ``_split_resolution`` and
+        rebuilds them. Their styling was baked in at first render, so
+        the patch never re-sends marker/line/mode.
+        """
+        # Need a rendered tanglegram — a prior click plus a live layout
+        # — to patch against; otherwise there are no green traces yet.
+        if not click_data or not uid1 or not uid2:
+            return no_update
+        layout = _get_tanglegram_layout(uid1, uid2)
+        if layout is None:
+            return no_update
+
+        patch = Patch()
+        if not checked:
+            for idx in (_TANGLEGRAM_COMPLEMENT_TIPS, _TANGLEGRAM_COMPLEMENT_CONN):
+                patch["data"][idx]["x"] = []
+                patch["data"][idx]["y"] = []
+                patch["data"][idx]["text"] = []
+            return patch
+
+        split_id = click_data.get("split_id")
+        if split_id is None:
+            return no_update
+        resolved = _split_resolution.get(int(split_id))
+        if resolved is None:
+            return no_update
+
+        src, _column_j, split_key = resolved
+        try:
+            canonical = state.get_canonical_keys(src)
+        except (KeyError, FileNotFoundError):
+            return no_update
+        leaf_names = canonical["leaf_names"]
+        highlight = {leaf_names[i] for i in split_key}
+
+        _, _, complement_per_tree = _build_mrca_traces(highlight, layout)
+        complement1 = complement_per_tree["tips1"]
+        complement2 = complement_per_tree["tips2"]
+
+        tips1 = layout["tips1"]
+        tips2 = layout["tips2"]
+
+        comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
+        comp_conn = _complement_connector_trace(tips1, tips2, complement1, complement2)
+
+        for idx, trace in (
+            (_TANGLEGRAM_COMPLEMENT_TIPS, comp_tips),
+            (_TANGLEGRAM_COMPLEMENT_CONN, comp_conn),
+        ):
+            patch["data"][idx]["x"] = trace["x"]
+            patch["data"][idx]["y"] = trace["y"]
+            patch["data"][idx]["text"] = trace["text"]
         return patch

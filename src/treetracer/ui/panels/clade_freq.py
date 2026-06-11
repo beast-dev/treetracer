@@ -123,47 +123,90 @@ def _add_clade_freq_panel():
                 style={"flex": "1"},
             ),
             dmc.Stack([
-                dmc.Text("Expand tree", size="md", fw=500, c="dimmed",
-                         style={"writingMode": "vertical-rl",
-                                "transform": "rotate(180deg)"}),
-                # dcc.Slider has a native vertical orientation; dmc
-                # currently does not, so we drop down to dcc here.
-                # ``verticalHeight`` is in px and is independent of
-                # the tanglegram's dynamic height — 240 keeps it
-                # reachable for short trees and not overwhelming for
-                # tall ones.
-                # ``reverse=True`` puts the slider's max at the BOTTOM
-                # so dragging the thumb downwards expands the tree —
-                # parallels how the tanglegram itself grows downward
-                # as its height increases.
-                dcc.Slider(
-                    id="tanglegram-yscale-slider",
-                    min=1, max=5, step=1, value=1,
-                    vertical=True,
-                    verticalHeight=240,
-                    reverse=True,
-                    marks={1: "", 3: "", 5: ""},
-                    tooltip={"placement": "left", "always_visible": False},
-                ),
-                dmc.Stack([
-                    dmc.Text("Show clade complement", size="xs", fw=500, c="dimmed",
+                # ── Expand-tree slider: label centred BESIDE the vertical
+                # track (horizontal Group), not stacked above it. The
+                # control sits in a fixed-width cell and the label uses
+                # the SAME font size as the complement label below; since
+                # vertical text has a constant horizontal width (= line
+                # height, independent of string length), equal cells +
+                # equal font size keep the two labels in one column. ──
+                dmc.Group([
+                    dmc.Box(
+                        # dcc.Slider has a native vertical orientation; dmc
+                        # currently does not, so we drop down to dcc here.
+                        # ``verticalHeight`` is in px and is independent of
+                        # the tanglegram's dynamic height — 240 keeps it
+                        # reachable for short trees and not overwhelming for
+                        # tall ones.
+                        # ``reverse=True`` puts the slider's max at the BOTTOM
+                        # so dragging the thumb downwards expands the tree —
+                        # parallels how the tanglegram itself grows downward
+                        # as its height increases.
+                        dcc.Slider(
+                            id="tanglegram-yscale-slider",
+                            min=1, max=5, step=1, value=1,
+                            vertical=True,
+                            verticalHeight=240,
+                            reverse=True,
+                            # Empty-LABEL marks (not an omitted/empty ``marks``,
+                            # which makes dcc auto-generate the numeric 1–5
+                            # labels). Two jobs: they hide the numbers, AND they
+                            # keep the slider element narrow so the rail centres
+                            # in its 40px cell — lining up with the centre-
+                            # rotated switch below. Omitting marks widens the
+                            # element with the number column and shoves the rail
+                            # left, breaking that alignment. Verified by headless
+                            # render.
+                            marks={1: "", 3: "", 5: ""},
+                            tooltip={"placement": "left", "always_visible": False},
+                        ),
+                        style={"width": 40, "display": "flex",
+                               "justifyContent": "center"},
+                    ),
+                    dmc.Text("Expand tree", size="md", fw=500, c="dimmed",
                              style={"writingMode": "vertical-rl",
                                     "transform": "rotate(180deg)"}),
-                    dmc.Tooltip(
-                        label="Highlight tips inside the MRCA that are not part of the selected clade",
-                        position="left",
-                        withArrow=True,
-                        children=dmc.Switch(
-                            id="tanglegram-complement-toggle",
-                            label="",
-                            checked=False,
-                            size="sm",
-                            color="green",
-                            onLabel="C",
-                            offLabel="C",
+                ], gap=4, align="center", wrap="nowrap"),
+                # ── Complement toggle: the Switch is rotated 90° so it
+                # runs vertically like the slider, with its label centred
+                # beside it. Same fixed-width control cell + same label
+                # font size as the slider above so the two vertical labels
+                # line up. The Box also reserves vertical space for the
+                # rotated switch (CSS transforms don't reflow layout, so
+                # without it the rotated track would clip/overlap). ──
+                dmc.Group([
+                    dmc.Box(
+                        dmc.Tooltip(
+                            label="Highlight tips inside the MRCA that are not part of the selected clade",
+                            position="left",
+                            withArrow=True,
+                            children=dmc.Switch(
+                                id="tanglegram-complement-toggle",
+                                label="",
+                                checked=False,
+                                size="sm",
+                                color="green",
+                                # The Switch's track sits ~10px right of the
+                                # element centre (the root reserves a label
+                                # slot), so once centred in its cell the pill
+                                # lands right of the slider's thumb. translateX
+                                # (applied after the rotate) nudges the pill
+                                # back onto the thumb's vertical axis. The 10px
+                                # is for size="sm"; measured via headless render
+                                # (thumb-centre == track-centre, Δ=0).
+                                style={"transform": "translateX(-10px) rotate(90deg)"},
+                            ),
                         ),
+                        # Box reserves room for the rotated track; width
+                        # stays 40 to keep the label aligned with the
+                        # slider's label above.
+                        style={"width": 40, "height": 48, "display": "flex",
+                               "alignItems": "center", "justifyContent": "center"},
                     ),
-                ], gap=4, align="center"),
+                    dmc.Text("Clade complement", size="md", fw=500, c="dimmed",
+                             style={"writingMode": "vertical-rl",
+                                    "transform": "rotate(180deg)"}),
+                ], gap=4, align="center", wrap="nowrap"),
             ], gap=6, align="center", pt=8),
         ], gap="md", align="flex-start", wrap="nowrap"),
         dcc.Store(id="clade-freq-tanglegram-pair-store"),

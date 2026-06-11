@@ -102,7 +102,7 @@ requires = [
     "dash>=4.1.0",
     "dash-mantine-components",
     "pandas",
-    "rapidtrees==0.5.1",
+    "rapidtrees==0.7.1",
     "plotly",
     "psutil>=7.0.0",
     "numpy",

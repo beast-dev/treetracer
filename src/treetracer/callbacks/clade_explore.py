@@ -230,6 +230,8 @@ def _get_tanglegram_layout(uid1, uid2):
 #   6: right red highlight   (dynamic)
 #   7: red connectors        (dynamic)
 #   8: MRCA node markers     (dynamic) — both trees
+#   9: complement tips       (dynamic) — green, both trees
+#  10: complement connectors (dynamic) — green
 _TANGLEGRAM_MRCA_SUBTREE    = 2
 _TANGLEGRAM_HIGHLIGHT_LEFT  = 5
 _TANGLEGRAM_HIGHLIGHT_RIGHT = 6
@@ -292,13 +294,15 @@ def _connector_overlay_trace(tips1, tips2, highlight):
         showlegend=False,
     )
 
-def _complement_tips_trace(tips_by_name, complement, tips1, tips2):
+def _complement_tips_trace(complement, tips1, tips2):
     """Build the green-marker overlay trace for complementary tips on both trees.
 
-    Looks up each complement tip in both tips1 and tips2 independently
-    so markers appear on both sides of the tanglegram, even in the
-    concordant tree where the complement set is empty but the tips
-    still exist as nodes.
+    Looks up each complement tip in both ``tips1`` and ``tips2``
+    independently so markers appear on both sides of the tanglegram,
+    even in the concordant tree where the complement set is empty but
+    the tips still exist as nodes. Returns a fully styled trace with
+    empty coordinates when ``complement`` is empty, so callers can use
+    it as the toggle-off placeholder too.
     """
     xs, ys, names = [], [], []
     for name in complement:
@@ -997,14 +1001,15 @@ def register_clade_explore_callbacks():
         Two render paths:
 
         * **First click on a new MCC pair** — build the full figure
-          (9 traces: static skeleton for both trees + dynamic overlays
-          for the MRCA subtree, the highlight, the connectors, and the
-          MRCA node markers). Returns a fresh figure dict and stamps
-          the new pair into the tanglegram-pair-store.
+          (11 traces: static skeleton for both trees + dynamic overlays
+          for the MRCA subtree, the highlight, the connectors, the MRCA
+          node markers, and the green complement tips/connectors).
+          Returns a fresh figure dict and stamps the new pair into the
+          tanglegram-pair-store.
         * **Subsequent clicks on the same pair** — return a
-          ``dash.Patch`` that updates only the 5 dynamic traces and
-          the title. The static skeleton (≈300 line segments + 280 tip
-          markers per tree) is never re-sent.
+          ``dash.Patch`` that updates only the 7 dynamic traces'
+          x/y/text and the title. The static skeleton (≈300 line
+          segments + 280 tip markers per tree) is never re-sent.
 
         The clicked split is identified by an integer ``split_id``;
         the actual tip names are resolved server-side via
@@ -1074,18 +1079,28 @@ def register_clade_explore_callbacks():
             label1, label2, highlight, in_1=in_1, in_2=in_2,
         )
 
+        # Build the green overlays fully styled in BOTH branches —
+        # empty data when the toggle is off — so the styling is baked
+        # into the figure once at first render and later patches only
+        # ever touch x/y/text. The grey tip base (traces 3/4) is never
+        # reduced: the green markers (size 8, opaque) sit on a higher
+        # trace index and fully occlude the grey tips (size 6) beneath,
+        # exactly like the red highlight overlay already does.
         if complement_on:
-            comp_tips = _complement_tips_trace(
-                {**tips1, **tips2}, complement1 | complement2,
-                tips1, tips2,
+            comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
+            comp_conn = _complement_connector_trace(
+                tips1, tips2, complement1, complement2,
             )
-            comp_conn = _complement_connector_trace(tips1, tips2, complement1, complement2)
         else:
-            comp_tips = dict(x=[], y=[], text=[], mode="markers", showlegend=False)
-            comp_conn = dict(x=[], y=[], text=[], mode="lines", showlegend=False)
+            comp_tips = _complement_tips_trace(set(), tips1, tips2)
+            comp_conn = _complement_connector_trace(tips1, tips2, set(), set())
 
         same_pair = current_pair == [uid1, uid2]
         if same_pair:
+            # Patch only the dynamic overlays' geometry. The static
+            # skeleton (branches 0/1, grey tips 3/4) and the green
+            # overlays' styling are already in the figure, so the patch
+            # carries nothing but the x/y/text that actually changed.
             patch = Patch()
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["x"] = mrca_subtree["x"]
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["y"] = mrca_subtree["y"]
@@ -1100,50 +1115,20 @@ def register_clade_explore_callbacks():
                 patch["data"][idx]["x"] = trace["x"]
                 patch["data"][idx]["y"] = trace["y"]
                 patch["data"][idx]["text"] = trace["text"]
-            patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["marker"] = dict(color="#2f9e44", size=8)
-            patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["line"] = dict(color="rgba(47,158,68,0.7)", width=2)
-            patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["mode"] = "markers"
-            patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["mode"] = "lines"
-            patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["hovertemplate"] = "%{text}<extra></extra>"
-            patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["hovertemplate"] = "%{text}<extra></extra>"
-            if complement_on and (complement1 or complement2):
-                grey_left  = {n: c for n, c in tips1.items() if n not in (complement1 | complement2)}
-                grey_right = {n: c for n, c in tips2.items() if n not in (complement1 | complement2)}
-            else:
-                grey_left  = tips1
-                grey_right = tips2
-            patch["data"][3]["x"]    = [c[0] for c in grey_left.values()]
-            patch["data"][3]["y"]    = [c[1] for c in grey_left.values()]
-            patch["data"][3]["text"] = list(grey_left.keys())
-            patch["data"][4]["x"]    = [c[0] for c in grey_right.values()]
-            patch["data"][4]["y"]    = [c[1] for c in grey_right.values()]
-            patch["data"][4]["text"] = list(grey_right.keys())
             return patch, no_update, title_children
 
         # ── First time this pair is rendered — build the full figure ─────
+        # Trace order must match the _TANGLEGRAM_* index constants:
+        # branches first (skeleton 0-1, MRCA subtree 2), then the tip
+        # markers (grey 3-4, red 5-6) so the dots draw over the branch
+        # colour, then connectors (7), MRCA markers (8), and finally the
+        # green complement overlays (9-10) on top. skel[1]/skel[3] are
+        # the full static grey-tip sets — the green markers simply draw
+        # over them. skeleton_traces is [L branch, L tips, R branch, R tips].
         skel = layout["skeleton_traces"]
-        if complement_on and (complement1 or complement2):
-            all_complement = complement1 | complement2
-            grey_left_x = [c[0] for n, c in tips1.items() if n not in all_complement]
-            grey_left_y = [c[1] for n, c in tips1.items() if n not in all_complement]
-            grey_left_t = [n    for n     in tips1         if n not in all_complement]
-            grey_right_x = [c[0] for n, c in tips2.items() if n not in all_complement]
-            grey_right_y = [c[1] for n, c in tips2.items() if n not in all_complement]
-            grey_right_t = [n    for n     in tips2         if n not in all_complement]
-        else:
-            grey_left_x  = [c[0] for c in tips1.values()]
-            grey_left_y  = [c[1] for c in tips1.values()]
-            grey_left_t  = list(tips1.keys())
-            grey_right_x = [c[0] for c in tips2.values()]
-            grey_right_y = [c[1] for c in tips2.values()]
-            grey_right_t = list(tips2.keys())
-        left_tips_trace  = {**skel[1],
-                            "x": grey_left_x,  "y": grey_left_y,  "text": grey_left_t}
-        right_tips_trace = {**skel[3],
-                            "x": grey_right_x, "y": grey_right_y, "text": grey_right_t}
         traces = [
             skel[0], skel[2], mrca_subtree,
-            left_tips_trace, right_tips_trace, hl_left, hl_right,
+            skel[1], skel[3], hl_left, hl_right,
             connectors, mrca_marker,
             comp_tips, comp_conn,
         ]
@@ -1173,7 +1158,7 @@ def register_clade_explore_callbacks():
     def update_tanglegram_height(px_per_tip, uid1, uid2):
         """Slide-to-resize. The tanglegram's height scales with the
         number of tips × the slider value. Patches only
-        ``layout.height`` so the 7-trace figure doesn't get rebuilt
+        ``layout.height`` so the 11-trace figure doesn't get rebuilt
         on every slider drag tick.
 
         No-ops when no MCC pair is selected yet (slider has nothing
@@ -1201,34 +1186,30 @@ def register_clade_explore_callbacks():
     )
     def toggle_complement_highlights(checked, click_data, uid1, uid2):
         """Show or hide the complementary-tip green overlay when the
-        toggle button is flipped, without requiring a new scatter click.
+        toggle is flipped, without requiring a new scatter click.
 
-        When ``checked`` is False, patches both complement traces to
-        empty so they vanish. When True, resolves the last clicked
-        split from ``_split_resolution`` and redraws them.
+        Patches only the two green overlay traces (9/10); the grey tip
+        base (3/4) is left untouched because the green markers simply
+        draw on top of it. Hiding empties the green x/y/text; showing
+        resolves the last clicked split from ``_split_resolution`` and
+        rebuilds them. Their styling was baked in at first render, so
+        the patch never re-sends marker/line/mode.
         """
-        patch = Patch()
-        empty = dict(x=[], y=[], text=[], showlegend=False)
-
-        if not checked:
-            patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS].update(empty)
-            patch["data"][_TANGLEGRAM_COMPLEMENT_CONN].update(empty)
-            # Restore full grey tip traces
-            layout = _get_tanglegram_layout(uid1, uid2)
-            if layout is not None:
-                tips1 = layout["tips1"]
-                tips2 = layout["tips2"]
-                patch["data"][3]["x"]    = [c[0] for c in tips1.values()]
-                patch["data"][3]["y"]    = [c[1] for c in tips1.values()]
-                patch["data"][3]["text"] = list(tips1.keys())
-                patch["data"][4]["x"]    = [c[0] for c in tips2.values()]
-                patch["data"][4]["y"]    = [c[1] for c in tips2.values()]
-                patch["data"][4]["text"] = list(tips2.keys())
-            return patch
-
-        # Need a prior click and a rendered tanglegram to work with.
+        # Need a rendered tanglegram — a prior click plus a live layout
+        # — to patch against; otherwise there are no green traces yet.
         if not click_data or not uid1 or not uid2:
             return no_update
+        layout = _get_tanglegram_layout(uid1, uid2)
+        if layout is None:
+            return no_update
+
+        patch = Patch()
+        if not checked:
+            for idx in (_TANGLEGRAM_COMPLEMENT_TIPS, _TANGLEGRAM_COMPLEMENT_CONN):
+                patch["data"][idx]["x"] = []
+                patch["data"][idx]["y"] = []
+                patch["data"][idx]["text"] = []
+            return patch
 
         split_id = click_data.get("split_id")
         if split_id is None:
@@ -1237,17 +1218,13 @@ def register_clade_explore_callbacks():
         if resolved is None:
             return no_update
 
-        src, column_j, split_key = resolved
+        src, _column_j, split_key = resolved
         try:
             canonical = state.get_canonical_keys(src)
         except (KeyError, FileNotFoundError):
             return no_update
         leaf_names = canonical["leaf_names"]
         highlight = {leaf_names[i] for i in split_key}
-
-        layout = _get_tanglegram_layout(uid1, uid2)
-        if layout is None:
-            return no_update
 
         _, _, complement_per_tree = _build_mrca_traces(highlight, layout)
         complement1 = complement_per_tree["tips1"]
@@ -1256,20 +1233,14 @@ def register_clade_explore_callbacks():
         tips1 = layout["tips1"]
         tips2 = layout["tips2"]
 
-        comp_tips = _complement_tips_trace(
-            {**tips1, **tips2}, complement1 | complement2,
-            tips1, tips2,
-        )
+        comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
         comp_conn = _complement_connector_trace(tips1, tips2, complement1, complement2)
 
-        patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["x"] = comp_tips["x"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["y"] = comp_tips["y"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["text"] = comp_tips["text"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["x"] = comp_conn["x"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["y"] = comp_conn["y"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["text"] = comp_conn["text"]
-        patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["marker"] = dict(color="#2f9e44", size=8)
-        patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["line"] = dict(color="rgba(47,158,68,0.7)", width=2)
-        patch["data"][_TANGLEGRAM_COMPLEMENT_TIPS]["mode"] = "markers"
-        patch["data"][_TANGLEGRAM_COMPLEMENT_CONN]["mode"] = "lines"
+        for idx, trace in (
+            (_TANGLEGRAM_COMPLEMENT_TIPS, comp_tips),
+            (_TANGLEGRAM_COMPLEMENT_CONN, comp_conn),
+        ):
+            patch["data"][idx]["x"] = trace["x"]
+            patch["data"][idx]["y"] = trace["y"]
+            patch["data"][idx]["text"] = trace["text"]
         return patch

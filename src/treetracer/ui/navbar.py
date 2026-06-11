@@ -86,6 +86,15 @@ def add_navbar():
                     dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
+                    # MCC computation polls on its OWN interval. Dash derives an
+                    # allow_duplicate output's disambiguation hash from the
+                    # callback's Input signature (dash/_utils.py), so sharing
+                    # ``compute-poll-interval`` between the RF/MDS poll and the
+                    # MCC poll makes them collide on the shared
+                    # ``compute-poll-interval.disabled`` /
+                    # ``notifications-container.children`` outputs. A dedicated
+                    # interval gives ``poll_mcc_completion`` a distinct Input.
+                    dcc.Interval(id="mcc-poll-interval", interval=100, disabled=True),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Store(id="sidebar-visible", storage_type="memory", data=True),

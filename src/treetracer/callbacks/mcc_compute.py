@@ -180,10 +180,18 @@ def register_mcc_compute_callbacks():
         # marker drops off the MDS view once the compute returns.
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
-        # Notification + the shared poll interval.
+        # Notification + the MCC-only poll interval. This callback polls
+        # ``mcc-poll-interval`` rather than the shared
+        # ``compute-poll-interval`` so it does NOT share an Input — and
+        # therefore an allow_duplicate disambiguation hash — with the
+        # RF/MDS ``poll_completion`` callback. Sharing the input made
+        # both callbacks emit the identical
+        # ``compute-poll-interval.disabled`` / ``notifications-container``
+        # tokens, which the dash-renderer rejects as duplicates. The hash
+        # is derived from the Input signature (see dash/_utils.py).
         Output("notifications-container", "children", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Input("compute-poll-interval", "n_intervals"),
+        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
+        Input("mcc-poll-interval", "n_intervals"),
         prevent_initial_call=True,
     )
     def poll_mcc_completion(_n):

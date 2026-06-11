@@ -779,7 +779,8 @@ def register_within_run_callbacks():
     @callback(
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-view-mcc", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        # MCC polling uses its own interval (see navbar.py).
+        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("within-run-view-mcc", "n_clicks"),
         State("within-run-selected-trees-store", "data"),

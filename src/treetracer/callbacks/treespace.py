@@ -764,7 +764,10 @@ def register_treespace_callbacks():
     @callback(
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("treespace-view-mcc", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        # MCC polling uses its own interval (see navbar.py) so this
+        # handler and poll_mcc_completion don't collide with the RF/MDS
+        # poll on a shared allow_duplicate output.
+        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Input("treespace-view-mcc", "n_clicks"),
         State("treespace-selected-trees-store", "data"),

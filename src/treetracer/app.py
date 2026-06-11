@@ -192,6 +192,11 @@ def main():
             window = webview.create_window(
                 "TreeTracer", "http://127.0.0.1:8050/",
                 width=1600, height=900,
+                # Floor the window size so the user can't shrink it to
+                # the point the navbar + plots get squeezed/distorted.
+                # The layout needs comfortably more than the navbar's
+                # 300px + the "sm" (768px) collapse breakpoint.
+                min_size=(1100, 720),
                 js_api=peartree_view.peartree_api,
             )
             # The api needs a handle on this window so it can re-focus

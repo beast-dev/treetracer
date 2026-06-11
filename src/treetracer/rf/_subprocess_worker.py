@@ -20,9 +20,11 @@ to ~50 ms of pandas slicing, well below the macOS beach-ball threshold.
 
 from __future__ import annotations
 
+import json
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def compute_rf_worker_entry(
@@ -33,6 +35,7 @@ def compute_rf_worker_entry(
     save_path: str,
     rf_name: str,
     is_rooted: bool = True,
+    progress_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the full RF pipeline inside a subprocess.
 
@@ -130,15 +133,79 @@ def compute_rf_worker_entry(
     # isolate from the parent process's GIL) ───────────────────────────
     wlog("importing rapidtrees wrapper (._worker.compute_rf)")
     from ._worker import compute_rf
+
+    # ── Progress reporting (optional) ──────────────────────────────────
+    # When ``progress_path`` is set, share a ``ProgressCounter`` with the
+    # rayon workers via the new rapidtrees 0.6 API, and run a daemon
+    # thread that mirrors the counter state into a small JSON sidecar
+    # file. The parent's Dash poll callback reads this file every ~100ms
+    # to drive a progress bar — no IPC changes needed.
+    counter = None
+    stop_event: Optional[threading.Event] = None
+    writer: Optional[threading.Thread] = None
+    if progress_path:
+        import rapidtrees
+        counter = rapidtrees.ProgressCounter()
+        stop_event = threading.Event()
+
+        def _writer_loop():
+            pp = Path(progress_path)
+            while not stop_event.is_set():
+                val = counter.value()
+                tot = counter.total()
+                frac = (val / tot) if tot > 0 else 0.0
+                # Once the pairwise loop hits 100%, rapidtrees is done
+                # but the worker still has to write the .npy + snapshot
+                # .npz to disk (the .npz can be 100MB+ for big
+                # bipartition matrices — measurably ~1 s for 4k trees).
+                # Flip the phase so the UI shows "Finalizing…" instead
+                # of leaving the bar sitting at a static 100%.
+                phase = "finalizing" if (tot > 0 and val >= tot) else "computing"
+                try:
+                    pp.write_text(json.dumps({
+                        "value": val,
+                        "total": tot,
+                        "fraction": min(max(frac, 0.0), 1.0),
+                        "phase": phase,
+                    }))
+                except OSError:
+                    # Transient disk hiccup — try again next tick.
+                    pass
+                # No early-break when fraction hits 1.0 — keep emitting
+                # the "finalizing" phase until the parent sets
+                # stop_event (which happens after compute_rf returns
+                # from its disk-save work).
+                if stop_event.wait(0.1):
+                    break
+
+        writer = threading.Thread(
+            target=_writer_loop, daemon=True, name="rf-progress-writer",
+        )
+        writer.start()
+        wlog(f"progress writer started for {progress_path!r}")
+
     wlog(
         f"calling compute_rf: n_trees={len(names)}, "
-        f"n_translate_maps={len(map_list)}, is_rooted={is_rooted}"
+        f"n_translate_maps={len(map_list)}, is_rooted={is_rooted}, "
+        f"progress={'on' if counter is not None else 'off'}"
     )
     compute_t0 = time.time()
-    result_names, compute_elapsed = compute_rf(
-        names, newicks, map_list, map_indices, save_path,
-        is_rooted=is_rooted,
-    )
+    try:
+        result_names, compute_elapsed = compute_rf(
+            names, newicks, map_list, map_indices, save_path,
+            is_rooted=is_rooted, progress=counter,
+        )
+    finally:
+        if stop_event is not None:
+            stop_event.set()
+        if writer is not None:
+            writer.join(timeout=1.0)
+        if progress_path:
+            try:
+                Path(progress_path).unlink()
+            except OSError:
+                pass
+            wlog("progress writer stopped, sidecar file removed")
     wlog(
         f"compute_rf returned in {time.time() - compute_t0:.3f}s "
         f"(rapidtrees-reported elapsed={compute_elapsed:.3f}s)"

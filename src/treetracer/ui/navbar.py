@@ -95,6 +95,12 @@ def add_navbar():
                     # ``notifications-container.children`` outputs. A dedicated
                     # interval gives ``poll_mcc_completion`` a distinct Input.
                     dcc.Interval(id="mcc-poll-interval", interval=100, disabled=True),
+                    # Path to the RF worker's sidecar progress file
+                    # (``<save_path>.progress``). Set by
+                    # ``handle_compute_rf`` when an RF compute starts;
+                    # consumed by ``update_rf_progress`` to drive the
+                    # progress bar inside the computing banner.
+                    dcc.Store(id="rf-progress-path", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Store(id="sidebar-visible", storage_type="memory", data=True),

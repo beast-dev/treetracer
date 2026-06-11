@@ -9,7 +9,8 @@ two-MCC Compare workflow, and the scatter / tanglegram rendering.
 
 import functools
 
-from dash import dcc, html, callback, Input, Output, State, no_update, Patch
+from dash import (dcc, html, callback, Input, Output, State, no_update, Patch,
+                  clientside_callback)
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
 import numpy as np
@@ -778,6 +779,25 @@ def register_clade_explore_callbacks():
         return not (uid1 and uid2)
 
     # ------ Clade Frequency Comparison: compute and plot ------
+
+    # Instant feedback on click: flip the output paper visible so the
+    # ``dcc.Loading`` wrapper around ``clade-freq-plot`` (defined in
+    # ui/panels/clade_freq.py) can render its spinner while the slow
+    # server compute below runs. Without this the paper stays hidden
+    # until the compute returns, so the user sees no loader at all.
+    # Runs clientside (no Python roundtrip) so the spinner appears
+    # within a frame of the click.
+    clientside_callback(
+        """
+        function(n_clicks) {
+            if (!n_clicks) return window.dash_clientside.no_update;
+            return {};
+        }
+        """,
+        Output("clade-freq-output-paper", "style", allow_duplicate=True),
+        Input("clade-freq-compare-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
 
     @callback(
         Output("clade-freq-plot", "children"),

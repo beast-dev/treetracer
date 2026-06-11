@@ -31,23 +31,52 @@ def stop_button(which: str):
     )
 
 
-def computing_banner(title: str, message: str, which: str):
+def computing_banner(title: str, message: str, which: str,
+                     show_progress: bool = False):
     """A blue "computing…" Alert with an embedded Stop button — the
-    shared banner used by the RF and MDS compute callbacks."""
-    return dmc.Alert(
-        dmc.Group(
+    shared banner used by the RF and MDS compute callbacks.
+
+    When ``show_progress=True`` the banner stacks an additional
+    ``dmc.Progress`` bar and a small status label under the
+    message/stop row. The bar's id is ``f"{which}-progress-bar"`` and
+    the label's id is ``f"{which}-progress-label"`` so a separate
+    polling callback can drive them off a sidecar progress file (see
+    ``update_rf_progress`` in ``callbacks/compute.py``).
+    """
+    # flex:1 + minWidth:0 lets the (often long) message shrink and
+    # wrap instead of shoving the Stop button past the Alert's right
+    # edge, where it gets clipped.
+    message_row = dmc.Group(
+        [
+            dmc.Text(message, size="sm",
+                     style={"flex": 1, "minWidth": 0}),
+            stop_button(which),
+        ],
+        align="center",
+        wrap="nowrap",
+        gap="md",
+    )
+
+    if show_progress:
+        body = dmc.Stack(
             [
-                # flex:1 + minWidth:0 lets the (often long) message
-                # shrink and wrap instead of shoving the Stop button
-                # past the Alert's right edge, where it gets clipped.
-                dmc.Text(message, size="sm",
-                         style={"flex": 1, "minWidth": 0}),
-                stop_button(which),
+                message_row,
+                dmc.Progress(
+                    id=f"{which}-progress-bar",
+                    value=0,
+                    size="md",
+                    color="blue",
+                ),
+                dmc.Text("starting…", size="xs", c="dimmed",
+                         id=f"{which}-progress-label"),
             ],
-            align="center",
-            wrap="nowrap",
-            gap="md",
-        ),
+            gap="xs",
+        )
+    else:
+        body = message_row
+
+    return dmc.Alert(
+        body,
         title=title,
         color="blue",
         variant="light",

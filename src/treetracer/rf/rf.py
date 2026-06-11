@@ -57,6 +57,7 @@ def rf_distance_with_snapshots_from_newick_iter(
     translate_maps: List[Dict[str, str]],
     map_indices: List[int] | None = None,
     rooted: bool = False,
+    progress=None,
 ) -> Tuple[List[str], np.ndarray, np.ndarray, List[str], int]:
     """Compute pairwise RF distances *and* the per-tree split presence matrix.
 
@@ -84,7 +85,8 @@ def rf_distance_with_snapshots_from_newick_iter(
         map_indices = [0] * len(names)
     names_out, rf_bytes, leaf_names, n_bipartitions, presence_bytes, bip_bytes = (
         rapidtrees.pairwise_rf_with_snapshots_from_newick_iter(
-            names, newick_iter, translate_maps, map_indices, rooted=rooted,
+            names, newick_iter, translate_maps, map_indices,
+            rooted=rooted, progress=progress,
         )
     )
     n = len(names_out)

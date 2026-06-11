@@ -9,7 +9,7 @@ back across the process boundary.
 
 
 def compute_rf(names, newicks, translate_maps, map_indices, save_path,
-               is_rooted=True):
+               is_rooted=True, progress=None):
     """Compute pairwise RF distances + the per-tree split presence matrix in
     a single rapidtrees call, and persist both to disk.
 
@@ -71,7 +71,7 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
         rf_distance_with_snapshots_from_newick_iter(
             names, iter(newicks), translate_maps, map_indices,
-            rooted=is_rooted,
+            rooted=is_rooted, progress=progress,
         )
     )
     wlog(

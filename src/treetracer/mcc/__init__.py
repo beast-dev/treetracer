@@ -39,13 +39,28 @@ def compute_mcc_index(presence_subset: np.ndarray) -> tuple[int, float]:
     n = presence_subset.shape[0]
     if n == 0:
         raise ValueError("empty selection")
-    counts = presence_subset.sum(axis=0)              # (n_splits,)
-    freq = counts / n                                 # in (0, 1]
+    counts = presence_subset.sum(axis=0)              # (n_splits,) int64
+    freq = counts / n                                 # (n_splits,) float64
     # log of zero would NaN — for splits absent from every selected tree we
     # pin freq to 1 so log = 0 contributes nothing (those columns are also
     # zero in the presence matrix, so they wouldn't add anything anyway).
-    log_freq = np.log(np.where(counts > 0, freq, 1.0))
-    scores = (presence_subset.astype(np.int64) * log_freq).sum(axis=1)
+    log_freq = np.log(np.where(counts > 0, freq, 1.0)).astype(np.float32)
+
+    # Per-tree score = ⟨presence_row, log_freq⟩. The previous
+    # ``(presence_subset.astype(int64) * log_freq).sum(axis=1)`` was
+    # numerically identical but materialised a full (n_trees, n_splits)
+    # buffer — at 4 k selected trees × 550 k splits the int64 cast alone
+    # blows the working set up to ~18 GB. Stream the computation in
+    # row-chunks instead so peak memory is bounded by
+    # ``CHUNK * n_splits * 4 B`` (~140 MB at CHUNK=64, n_splits=550 k)
+    # regardless of n_trees, and each chunk dispatches to BLAS sgemv for
+    # a further ~2-3× speed-up over the explicit multiply + reduce path.
+    scores = np.empty(n, dtype=np.float64)
+    CHUNK = 64
+    for i in range(0, n, CHUNK):
+        block = presence_subset[i:i + CHUNK].astype(np.float32)
+        scores[i:i + CHUNK] = block @ log_freq
+
     idx = int(scores.argmax())
     return idx, float(scores[idx])
 

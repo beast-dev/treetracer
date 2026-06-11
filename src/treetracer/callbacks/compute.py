@@ -112,6 +112,12 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
         f"{'rooted' if is_rooted else 'unrooted'} mode)..."
     )
 
+    # Sidecar file the worker will keep up-to-date with the rapidtrees
+    # ProgressCounter state every ~100ms. The Dash poll callback
+    # (``update_rf_progress``) reads this file to drive the progress bar
+    # in the computing banner.
+    progress_path = save_path + ".progress"
+
     _wlog(f"[parent] _rf_pipeline: about to call persistent_worker.submit_job for {rf_name!r}")
     result = persistent_worker.submit_job(
         "compute_rf",
@@ -119,6 +125,7 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
         source_file_paths=source_file_paths,
         translate_maps=translate_maps,
         save_path=save_path,
+        progress_path=progress_path,
         rf_name=rf_name,
         is_rooted=is_rooted,
     )
@@ -126,6 +133,7 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     # Add parent-side total wall-time (includes IPC round-trip).
     result["total_elapsed"] = time.time() - t0
     result["is_rooted"] = is_rooted
+    result["progress_path"] = progress_path
     _wlog(f"[parent] _rf_pipeline: returning result; total_elapsed={result['total_elapsed']:.3f}s")
     return result
 
@@ -148,9 +156,10 @@ def register_compute_callbacks():
     @callback(
         Output("notifications-container", "children", allow_duplicate=True),
         Input({"type": "compute-stop", "which": ALL}, "n_clicks"),
+        State("rf-progress-path", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_stop(_stop_clicks):
+    def handle_compute_stop(_stop_clicks, rf_progress_path):
         # Pattern-matching inputs fire both on real clicks and whenever
         # a Stop button is added to / removed from the layout (the
         # banners are dynamic). Only a real click carries a truthy
@@ -158,6 +167,16 @@ def register_compute_callbacks():
         if not any(t.get("value") for t in ctx.triggered):
             return no_update
         if persistent_worker.cancel_current_job():
+            # Cancel hard-kills the worker subprocess, so the progress
+            # writer thread's ``finally`` block (which normally unlinks
+            # the sidecar file) never runs. Tidy up here. The file is
+            # ~80B so a leak is cosmetic, but next compute reuses the
+            # same naming pattern — better to start clean.
+            if rf_progress_path:
+                import contextlib
+                from pathlib import Path
+                with contextlib.suppress(OSError):
+                    Path(rf_progress_path).unlink()
             add_log("Compute cancelled by user — worker subprocess killed.",
                     "WARNING")
             return dmc.Notification(
@@ -242,6 +261,10 @@ def register_compute_callbacks():
         Output("compute-rf-output", "children"),
         Output("compute-poll-interval", "disabled"),
         Output("compute-rf-button", "disabled", allow_duplicate=True),
+        # Progress-path Store — populated when an RF compute actually
+        # starts so ``update_rf_progress`` knows which sidecar file to
+        # tail. Early returns leave it at no_update.
+        Output("rf-progress-path", "data", allow_duplicate=True),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
@@ -250,7 +273,7 @@ def register_compute_callbacks():
     )
     def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
 
         # Determine which files are selected
         selected_files = [
@@ -271,7 +294,7 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id=notif_id(),
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -295,7 +318,7 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id=notif_id(),
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
 
         # --- Rooting consistency check ---
         # RF over rooted clades and RF over bipartitions are different
@@ -320,7 +343,7 @@ def register_compute_callbacks():
                 title="Rooting Mismatch",
                 message=msg,
                 color="red", action="show", autoClose=8000, id=notif_id(),
-            ), no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update
         selected_is_rooted = unique_rootings.pop()
 
         # --- Taxa validation passed — submit the pipeline to a worker thread ---
@@ -359,8 +382,48 @@ def register_compute_callbacks():
                 f"matrix in background. Files: {expected_breakdown_str}"
             ),
             which="rf",
+            show_progress=True,
         )
-        return no_update, computing_indicator, False, True
+        # Hand the same path ``_rf_pipeline`` derives down to the
+        # Store so ``update_rf_progress`` reads from the right file.
+        progress_path = save_path + ".progress"
+        return no_update, computing_indicator, False, True, progress_path
+
+    # Per-tick reader for the RF progress sidecar file. Runs off the
+    # same ``compute-poll-interval`` as ``poll_completion`` but writes
+    # to disjoint Outputs (the progress-bar value + label), so it
+    # doesn't trip Dash 4.x's same-input/same-output duplicate check.
+    @callback(
+        Output("rf-progress-bar", "value"),
+        Output("rf-progress-label", "children"),
+        Input("compute-poll-interval", "n_intervals"),
+        State("rf-progress-path", "data"),
+        prevent_initial_call=True,
+    )
+    def update_rf_progress(_n, progress_path):
+        if not progress_path:
+            return no_update, no_update
+        import json
+        from pathlib import Path
+        try:
+            data = json.loads(Path(progress_path).read_text())
+        except (OSError, ValueError):
+            # File doesn't exist yet, was just deleted, or caught
+            # mid-write — try again next tick. ValueError covers
+            # JSONDecodeError (subclass) too.
+            return no_update, no_update
+        val = int(data.get("value", 0))
+        tot = int(data.get("total", 0))
+        frac = float(data.get("fraction", 0.0))
+        phase = data.get("phase", "computing")
+        if tot == 0:
+            return 0, "starting…"
+        pct = max(0.0, min(100.0, frac * 100.0))
+        if phase == "finalizing":
+            label = f"{val:,} / {tot:,} pairs — finalizing…"
+        else:
+            label = f"{val:,} / {tot:,} pairs ({pct:.1f}%)"
+        return pct, label
 
     # ------ RF MATRIX LIST (right column) ------
 

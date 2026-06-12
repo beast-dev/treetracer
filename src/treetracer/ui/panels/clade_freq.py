@@ -216,7 +216,19 @@ def _add_clade_freq_panel():
                              style={"writingMode": "vertical-rl",
                                     "transform": "rotate(180deg)"}),
                 ], gap=4, align="center", wrap="nowrap"),
-            ], gap=6, align="center", pt=8),
+            ], gap=6, align="center", pt=8,
+               # Pin the Expand-tree slider + Clade-complement toggle so
+               # they stay reachable while a tall tanglegram scrolls past.
+               # Sticky just below the pinned tab strip; the parent
+               # Group's ``align="flex-start"`` keeps this Stack at its
+               # natural height (not stretched to the graph's height),
+               # which position:sticky needs to have room to move.
+               style={
+                   "position": "sticky",
+                   "top": "calc(var(--app-shell-header-offset, 60px) + 42px)",
+                   "zIndex": 2,
+                   "alignSelf": "flex-start",
+               }),
         ], gap="md", align="flex-start", wrap="nowrap"),
         dcc.Store(id="clade-freq-tanglegram-pair-store"),
     ], p="md", withBorder=True, radius="sm",

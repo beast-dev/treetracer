@@ -19,6 +19,8 @@ import pandas as pd
 from .. import state
 from ..clade_freq import compute_clade_frequencies
 from ..clade_freq.layout import parse_nexus, build_tree_traces, _collect_nodes
+from ..theme import get_template, DARK_TEMPLATE
+from ..plot_utils import retheme_figure
 
 
 # Server-side resolution table for the Clade Frequency scatter →
@@ -245,6 +247,27 @@ _TANGLEGRAM_COMPLEMENT_CONN = 10
 _SKELETON_DIM = "#c8c8c8"   # branches outside the MRCA subtree
 _MRCA_ACCENT  = "#1c7ed6"   # branches inside the MRCA subtree
 _MRCA_MARKER  = "#1864ab"   # the MRCA node marker
+
+# Off-white backbone for dark mode: the light-grey ``_SKELETON_DIM``
+# recedes on a white canvas, but needs to be lighter to stay legible
+# against the dark plotly_dark canvas.
+_SKELETON_DIM_DARK = "#cfcfcf"
+
+
+def _is_dark():
+    """True when the dark Plotly template is active (theme toggle)."""
+    return get_template() == DARK_TEMPLATE
+
+
+def _backbone_color():
+    """Skeleton (backbone) branch colour for the current theme."""
+    return _SKELETON_DIM_DARK if _is_dark() else _SKELETON_DIM
+
+
+def _scatter_colorscale():
+    """Clade-size colour scale. Viridis' dark low-end sinks into the dark
+    canvas, so dark mode uses the higher-contrast Turbo."""
+    return "Turbo" if _is_dark() else "Viridis"
 
 
 def _highlight_overlay_trace(tips_by_name, highlight):
@@ -526,7 +549,7 @@ def _build_scatter_fig(df_plot, label1, label2):
         marker=dict(
             size=8,
             color=df_plot["clade_size"],
-            colorscale="Viridis",
+            colorscale=_scatter_colorscale(),
             showscale=True,
             colorbar=dict(title="Clade size", thickness=12),
             opacity=0.75,
@@ -572,7 +595,7 @@ def _build_scatter_fig(df_plot, label1, label2):
         name="selected",
     ))
     fig.update_layout(
-        template="simple_white",
+        template=get_template(),
         xaxis=dict(title=f"Frequency — {label1}", range=[-0.02, 1.02]),
         yaxis=dict(title=f"Frequency — {label2}", range=[-0.02, 1.02]),
         margin=dict(l=60, r=20, t=30, b=50),
@@ -1157,8 +1180,15 @@ def register_clade_explore_callbacks():
             t if isinstance(t, go.Scatter) else go.Scatter(**t)
             for t in traces
         ])
+        # Backbone (skeleton branch) colour follows the theme — an
+        # off-white reads against the dark canvas in dark mode. Set it on
+        # the built figure (traces 0/1) rather than the cached layout so
+        # the lru-cached skeleton dicts stay theme-agnostic.
+        backbone = _backbone_color()
+        fig.data[0].line.color = backbone
+        fig.data[1].line.color = backbone
         fig.update_layout(
-            template="simple_white",
+            template=get_template(),
             height=height,
             margin=dict(l=10, r=10, t=10, b=10),
             xaxis=dict(visible=False,
@@ -1167,6 +1197,50 @@ def register_clade_explore_callbacks():
             hovermode="closest",
         )
         return fig, [uid1, uid2], title_children
+
+    # ------ theme toggle → re-theme the Clade Exploration plots ------
+    # Mirrors treespace's ``update_plot_theme``: rebuild with the active
+    # template so backgrounds/axes follow light/dark. Beyond the template
+    # we also flip the theme-sensitive trace colours that aren't
+    # template-derived — the scatter's colour scale and the tanglegram's
+    # backbone branches.
+    @callback(
+        Output("clade-freq-scatter", "figure", allow_duplicate=True),
+        Input("plotly-template-store", "data"),
+        State("clade-freq-scatter", "figure"),
+        prevent_initial_call=True,
+    )
+    def retheme_clade_scatter(_template, current_fig):
+        if not current_fig:
+            return no_update
+        fig = retheme_figure(current_fig, skip_invalid=True)
+        # The clade-size scale isn't template-derived; swap it too. The
+        # data trace (index 0) is the only one carrying a colour scale.
+        if len(fig.data):
+            try:
+                fig.data[0].marker.colorscale = _scatter_colorscale()
+            except (AttributeError, ValueError):
+                pass
+        return fig
+
+    @callback(
+        Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
+        Input("plotly-template-store", "data"),
+        State("clade-freq-tanglegram", "figure"),
+        prevent_initial_call=True,
+    )
+    def retheme_clade_tanglegram(_template, current_fig):
+        if not current_fig or not current_fig.get("data"):
+            return no_update
+        fig = retheme_figure(current_fig, skip_invalid=True)
+        backbone = _backbone_color()
+        for idx in (0, 1):   # the two skeleton (backbone) branch traces
+            if idx < len(fig.data):
+                try:
+                    fig.data[idx].line.color = backbone
+                except (AttributeError, ValueError):
+                    pass
+        return fig
 
     @callback(
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),

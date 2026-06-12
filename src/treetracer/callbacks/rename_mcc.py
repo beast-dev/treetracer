@@ -238,12 +238,19 @@ def register_rename_mcc_callbacks():
         function(payload) {
             if (payload && payload.uuid) {
                 const name = payload.name || '';
+                // Match peartree's theme to TreeTracer's current scheme.
+                // Mantine sets data-mantine-color-scheme on its root; read
+                // it wherever it lives and default to light.
+                const schemeEl = document.querySelector('[data-mantine-color-scheme]');
+                const theme = (schemeEl
+                    && schemeEl.getAttribute('data-mantine-color-scheme')) || 'light';
                 if (window.pywebview && window.pywebview.api
                     && window.pywebview.api.open_peartree) {
-                    window.pywebview.api.open_peartree(payload.uuid, name);
+                    window.pywebview.api.open_peartree(payload.uuid, name, theme);
                 } else {
                     const url = '/peartree/' + payload.uuid
-                              + '?name=' + encodeURIComponent(name);
+                              + '?name=' + encodeURIComponent(name)
+                              + '&theme=' + encodeURIComponent(theme);
                     const features = 'width=1200,height=800,resizable=yes,scrollbars=yes';
                     window.open(url, 'peartree-' + payload.uuid, features);
                 }

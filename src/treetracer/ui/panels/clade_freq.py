@@ -41,7 +41,7 @@ def _add_clade_freq_panel():
         # placing it between scatter and tanglegram (as previously)
         # left it visually orphaned from either chart.
         dmc.Stack([
-            dmc.Text("Minimum clade size", size="md", fw=500, c="dimmed"),
+            dmc.Text("Minimum clade size", size="md", fw=500),
             dmc.Slider(
                 id="clade-freq-min-clade-size",
                 min=2, max=50, step=1, value=5,
@@ -82,7 +82,10 @@ def _add_clade_freq_panel():
                 "position": "sticky",
                 "top": 0,
                 "zIndex": 10,
-                "background": "white",
+                # Follow the app theme (white in light, dark surface in
+                # dark) so the sticky title blends instead of showing a
+                # white box over the dark tanglegram.
+                "background": "var(--mantine-color-body)",
                 "padding": "6px 0",
                 "textAlign": "center",
                 "fontSize": "18px",
@@ -99,8 +102,8 @@ def _add_clade_freq_panel():
                             "height": 200,
                             "xaxis": {"visible": False},
                             "yaxis": {"visible": False},
-                            "plot_bgcolor": "white",
-                            "paper_bgcolor": "white",
+                            "plot_bgcolor": "rgba(0,0,0,0)",
+                            "paper_bgcolor": "rgba(0,0,0,0)",
                             "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
                             "annotations": [{
                                 "text": "Select two MCC trees and click "
@@ -163,7 +166,7 @@ def _add_clade_freq_panel():
                         style={"width": 40, "display": "flex",
                                "justifyContent": "center"},
                     ),
-                    dmc.Text("Expand tree", size="md", fw=500, c="dimmed",
+                    dmc.Text("Expand tree", size="md", fw=500,
                              style={"writingMode": "vertical-rl",
                                     "transform": "rotate(180deg)"}),
                 ], gap=4, align="center", wrap="nowrap"),
@@ -203,7 +206,7 @@ def _add_clade_freq_panel():
                         style={"width": 40, "height": 48, "display": "flex",
                                "alignItems": "center", "justifyContent": "center"},
                     ),
-                    dmc.Text("Clade complement", size="md", fw=500, c="dimmed",
+                    dmc.Text("Clade complement", size="md", fw=500,
                              style={"writingMode": "vertical-rl",
                                     "transform": "rotate(180deg)"}),
                 ], gap=4, align="center", wrap="nowrap"),

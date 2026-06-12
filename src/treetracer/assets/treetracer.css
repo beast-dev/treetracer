@@ -21,3 +21,21 @@
   display: block;
   overflow: visible;
 }
+
+/* Dark-mode dcc.Slider chrome.
+ *
+ * dcc.Slider (rc-slider) is not a Mantine component, so it doesn't pick
+ * up the dark color scheme — its default light-grey rail/dots wash out
+ * against the dark app background. Lift the rail/dots to a visible
+ * mid-grey and the filled track to the accent blue when Mantine is in
+ * dark mode (the scheme attribute lives on the provider root). */
+[data-mantine-color-scheme="dark"] .rc-slider-rail {
+  background-color: #5c5f66;
+}
+[data-mantine-color-scheme="dark"] .rc-slider-dot {
+  background-color: #5c5f66;
+  border-color: #5c5f66;
+}
+[data-mantine-color-scheme="dark"] .rc-slider-track {
+  background-color: #748ffc;
+}

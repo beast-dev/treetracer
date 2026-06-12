@@ -32,9 +32,34 @@ _PEARTREE_PAGE = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>MCC tree — {{ name }}</title>
+  <!-- Tints the native window title bar (macOS WKWebView derives its
+       title-bar / overscroll colour from the page background, and some
+       browsers from theme-color). peartree's default body background is
+       a dark teal; set both to the accent blue so the title bar matches
+       the toolbar instead of staying teal. -->
+  <meta name="theme-color" content="{{ bar_color }}">
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; width: 100%; }
+    html, body { margin: 0; padding: 0; height: 100%; width: 100%;
+                 background: {{ bar_color }}; }
     #tree { height: 100vh; width: 100vw; }
+    /* Match TreeTracer: recolour peartree's toolbar + status-bar chrome
+       to the TreeTracer accent blue (the selected-tab colour). Both bars
+       are driven by ``--pt-bg-dark`` in the bundle; overriding the two
+       selectors directly keeps everything else untouched.
+
+       The toolbar buttons read the ``--pt-surface`` / ``--pt-border``
+       tokens. Scoping those to the bars (so the override cascades only
+       to controls inside them, not modals/panels elsewhere) darkens the
+       buttons and brightens their borders — the light icons then pop
+       against dark buttons, and the buttons stand out from the blue. */
+    nav.pt-toolbar, #status-bar {
+      background: {{ bar_color }} !important;
+      --pt-surface: rgba(0, 0, 0, 0.28);
+      --pt-surface-focus: rgba(0, 0, 0, 0.45);
+      --pt-border: rgba(255, 255, 255, 0.6);
+    }
+    nav.pt-toolbar { border-bottom-color: rgba(0, 0, 0, 0.25) !important; }
+    #status-bar    { border-top-color: rgba(0, 0, 0, 0.25) !important; }
   </style>
 </head>
 <body>
@@ -57,12 +82,18 @@ _PEARTREE_PAGE = """<!doctype html>
     // the animation by snapping back to the pre-sort layout ("appears
     // sorted, then unsorts"). Disabling the animation means the layout
     // is final at sort time.
-    PearTreeEmbed.embed({
+    const controller = PearTreeEmbed.embed({
       container: "tree",
       treeUrl:   "/peartree/{{ uid }}/tree.nex",
       filename:  "mcc.nex",
       height:    "100vh",
-      settings: { introAnimation: "none" },
+      settings: {
+        introAnimation: "none",
+        // Canvas + branch colours follow TreeTracer's light/dark theme
+        // (server-templated from the ?theme= query param).
+        canvasBgColor: "{{ canvas_bg }}",
+        branchColor:   "{{ branch_color }}",
+      },
     });
     (() => {
       const iv = setInterval(() => {
@@ -70,6 +101,21 @@ _PEARTREE_PAGE = """<!doctype html>
         if (!btn || btn.disabled) return;
         btn.click();
         clearInterval(iv);
+        // Force our theme colours onto the rendered canvas. peartree
+        // applies its default theme (cream canvas) on load, and its
+        // applySettings only sets the colour-input *values* without
+        // firing their 'input' handlers — so the renderer never
+        // repaints. Set the values AND dispatch 'input', which is
+        // exactly the user-picks-a-colour path and calls
+        // renderer.setBgColor / setBranchColor.
+        const _setColor = (id, val) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.value = val;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        };
+        _setColor("canvas-bg-color", "{{ canvas_bg }}");
+        _setColor("branch-color", "{{ branch_color }}");
       }, 100);
       // Hard cap so the interval doesn't leak if the tree never loads.
       setTimeout(() => clearInterval(iv), 10000);
@@ -191,7 +237,7 @@ class PeartreeJSApi:
         window. Called once from app.py."""
         self._main_window = window
 
-    def open_peartree(self, uid, name=""):
+    def open_peartree(self, uid, name="", theme="light"):
         """Open a sibling pywebview window for ``/peartree/<uid>``.
 
         Returns a small ack dict so the JS-side promise has something
@@ -215,9 +261,14 @@ class PeartreeJSApi:
         import webview
 
         title = f"MCC tree — {name}" if name else f"MCC tree — {uid}"
-        url = f"http://127.0.0.1:8050/peartree/{uid}"
+        params = []
         if name:
-            url += "?name=" + quote(name)
+            params.append("name=" + quote(name))
+        if theme:
+            params.append("theme=" + quote(theme))
+        url = f"http://127.0.0.1:8050/peartree/{uid}"
+        if params:
+            url += "?" + "&".join(params)
         win = webview.create_window(title, url, width=1200, height=800,
                                     resizable=True, js_api=self)
 
@@ -305,7 +356,22 @@ def register_routes(server):
             abort(404)
         # Allow callers to label the window's <title> via ?name=...
         name = request.args.get("name") or "MCC tree"
-        return render_template_string(_PEARTREE_PAGE, uid=uid, name=name)
+        # Theme to match TreeTracer's light/dark scheme (passed by the
+        # opener as ?theme=). The canvas background + branch colour
+        # follow the scheme; the toolbar / status-bar chrome is always
+        # the TreeTracer accent blue (see _PEARTREE_PAGE).
+        theme = (request.args.get("theme") or "light").lower()
+        if theme == "dark":
+            canvas_bg, branch_color = "#1A1B1E", "#C1C2C5"
+        else:
+            canvas_bg, branch_color = "#FFFFFF", "#2B2B2B"
+        return render_template_string(
+            _PEARTREE_PAGE, uid=uid, name=name,
+            canvas_bg=canvas_bg, branch_color=branch_color,
+            # Deeper shade of the TreeTracer accent blue so the toolbar's
+            # light icons keep strong contrast against the bar.
+            bar_color="#1971C2",
+        )
 
     @server.route("/peartree/<uid>/tree.nex")
     def peartree_data(uid):

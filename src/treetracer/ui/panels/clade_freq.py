@@ -80,8 +80,14 @@ def _add_clade_freq_panel():
             id="clade-freq-tanglegram-title",
             style={
                 "position": "sticky",
-                "top": 0,
-                "zIndex": 10,
+                # Stick BELOW the pinned tab strip (header offset + the
+                # tab strip's height) instead of at the viewport top, so
+                # the title doesn't ride up over the tabs while the tall
+                # tanglegram scrolls. zIndex stays under the tabs (2) so
+                # the tabs always win any overlap, but above the
+                # scrolling graph (0) so the title stays readable.
+                "top": "calc(var(--app-shell-header-offset, 60px) + 42px)",
+                "zIndex": 1,
                 # Follow the app theme (white in light, dark surface in
                 # dark) so the sticky title blends instead of showing a
                 # white box over the dark tanglegram.

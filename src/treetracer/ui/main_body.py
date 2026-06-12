@@ -49,6 +49,18 @@ def add_main_body():
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
+                # Pin the tab strip just below the fixed app header so it
+                # stays in view while the active panel scrolls under it.
+                # ``--app-shell-header-offset`` is the header height
+                # Mantine already uses to offset the main content (60px
+                # fallback if the var is absent). The opaque body
+                # background keeps scrolling content from showing through.
+                style={
+                    "position": "sticky",
+                    "top": "var(--app-shell-header-offset, 60px)",
+                    "zIndex": 2,
+                    "background": "var(--mantine-color-body)",
+                },
             ),
             dmc.TabsPanel(
                 html.Div([

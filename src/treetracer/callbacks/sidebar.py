@@ -298,7 +298,7 @@ def register_sidebar_callbacks():
             items,
             multiple=True,
             variant="separated",
-            value=list(stored_summaries.keys()),
+            value=[],
         )
 
     # Callback to downsample trees for a given file

@@ -39,6 +39,11 @@ _mds_future = None     # concurrent.futures.Future for between-run MDS job
 _mds_meta = {}         # metadata needed by poll_completion to build MDS result
 
 
+def _mds_export_filename(source_distmat):
+    stem = source_distmat[:-4] if source_distmat.endswith(".tsv") else source_distmat
+    return f"{stem}_MDS.tsv"
+
+
 def _get_executor():
     global _executor
     if _executor is None:
@@ -743,7 +748,7 @@ def register_compute_callbacks():
                 mds_df["group_col"] = mds_df["group"].map(group_mapping)
                 mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
                 mds_df["size"] = 6
-                mds_filename = selected_distmat.replace('.tsv', '_MDS.tsv')
+                mds_filename = _mds_export_filename(selected_distmat)
                 mds_df["file"] = mds_filename
 
                 metadata = {
@@ -827,7 +832,12 @@ def register_compute_callbacks():
         if not entry or not entry.get("data"):
             return no_update
         metadata = entry["metadata"]
-        path = _save_file_dialog(default_filename=metadata["filename"])
+        default_filename = metadata.get("filename") or selected_mds
+        if not default_filename.endswith(".tsv"):
+            default_filename = _mds_export_filename(
+                metadata.get("source_distmat") or selected_mds
+            )
+        path = _save_file_dialog(default_filename=default_filename)
         if not path:
             return no_update
         mds_df = pd.DataFrame(entry["data"])

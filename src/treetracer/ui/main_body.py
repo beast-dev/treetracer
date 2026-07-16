@@ -53,7 +53,7 @@ def _save_action(id_, label):
 def _add_export_drawer():
     return dmc.Drawer(
         id="compute-export-drawer",
-        title="Save results",
+        title="Save distances",
         position="right",
         size="md",
         padding="md",
@@ -174,7 +174,20 @@ def add_main_body():
                 html.Div([
                     dmc.Group(
                         [
-                            dmc.Title("RF Distances", order=4),
+                            dmc.Group(
+                                [
+                                    dmc.Title("RF Distances", order=4),
+                                    dmc.Badge(
+                                        "0",
+                                        id="rf-matrix-count-main",
+                                        variant="light",
+                                        color="gray",
+                                        size="sm",
+                                    ),
+                                ],
+                                gap="xs",
+                                align="center",
+                            ),
                             _save_action("open-rf-export-drawer", "Save RF matrix"),
                         ],
                         justify="space-between",
@@ -197,7 +210,20 @@ def add_main_body():
                     dmc.Divider(my="lg"),
                     dmc.Group(
                         [
-                            dmc.Title("Tree-Space MDS", order=4),
+                            dmc.Group(
+                                [
+                                    dmc.Title("Tree-Space MDS", order=4),
+                                    dmc.Badge(
+                                        "0",
+                                        id="mds-result-count-main",
+                                        variant="light",
+                                        color="gray",
+                                        size="sm",
+                                    ),
+                                ],
+                                gap="xs",
+                                align="center",
+                            ),
                             _save_action("open-mds-export-drawer", "Save MDS result"),
                         ],
                         justify="space-between",

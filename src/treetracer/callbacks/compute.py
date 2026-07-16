@@ -458,12 +458,14 @@ def register_compute_callbacks():
         Output("rf-matrix-select", "value"),
         Output("rf-matrix-count", "children"),
         Output("rf-matrix-count", "color"),
+        Output("rf-matrix-count-main", "children"),
+        Output("rf-matrix-count-main", "color"),
         Output("export-rf-button", "disabled"),
         Input("distmat-store", "data"),
     )
     def update_rf_matrix_list(distmat_data):
         if not distmat_data:
-            return [], None, "0", "gray", True
+            return [], None, "0", "gray", "0", "gray", True
         options = [
             {"value": k, "label":
                 f"{k} — {v['n_trees']} trees "
@@ -472,7 +474,7 @@ def register_compute_callbacks():
         ]
         last_key = list(distmat_data.keys())[-1]
         count = str(len(distmat_data))
-        return options, last_key, count, "blue", False
+        return options, last_key, count, "blue", count, "blue", False
 
     # Show file breakdown badges when an RF matrix is selected
     @callback(
@@ -861,13 +863,15 @@ def register_compute_callbacks():
         Output("mds-result-select", "value"),
         Output("mds-result-count", "children"),
         Output("mds-result-count", "color"),
+        Output("mds-result-count-main", "children"),
+        Output("mds-result-count-main", "color"),
         Output("export-mds-button", "disabled", allow_duplicate=True),
         Input("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def update_mds_result_list(mds_index):
         if not mds_index:
-            return [], None, "0", "gray", True
+            return [], None, "0", "gray", "0", "gray", True
         options = []
         for key, meta in mds_index.items():
             n_groups = len(meta.get("groups", []))
@@ -875,7 +879,7 @@ def register_compute_callbacks():
             options.append({"value": key, "label": label})
         last_key = list(mds_index.keys())[-1]
         count = str(len(mds_index))
-        return options, last_key, count, "blue", False
+        return options, last_key, count, "blue", count, "blue", False
 
     @callback(
         Output("mds-result-info", "children"),

@@ -25,7 +25,7 @@ def add_navbar():
                                     color="green",
                                     size=40,
                                 ),
-                                label="Load Trees",
+                                label="Load Trees (max 10 files)",
                             ),
                             dmc.Tooltip(
                                 dmc.ActionIcon(

@@ -482,10 +482,10 @@ def register_within_run_callbacks():
 
         info = dmc.Group([
             dmc.Badge(f"Result: {result.get('metadata', {}).get('filename', '?')}",
-                      variant="light", color="blue", size="lg"),
-            dmc.Badge(f"Run: {selected_run}", variant="light", color="teal", size="lg"),
-            dmc.Badge(f"Trees: {n}", variant="light", color="grape", size="lg"),
-        ], gap="sm")
+                      variant="light", color="blue", size="sm"),
+            dmc.Badge(f"Run: {selected_run}", variant="light", color="teal", size="sm"),
+            dmc.Badge(f"Trees: {n}", variant="light", color="grape", size="sm"),
+        ], gap="xs")
 
         return (
             {"display": "flex"},
@@ -702,7 +702,7 @@ def register_within_run_callbacks():
             return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
-                      color="red", variant="light", size="lg"),
+                      color="red", variant="light", size="sm"),
             False,
             False,
         )

@@ -69,6 +69,71 @@
   white-space: nowrap;
 }
 
+/* MCC registry tables.
+ *
+ * Long generated MCC names and run labels should not force the table
+ * wider than the active tab. Keep numeric/action columns compact and
+ * truncate the text-heavy Name/Run cells with a native title tooltip.
+ */
+.tt-mcc-registry-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.tt-mcc-registry-table th,
+.tt-mcc-registry-table td {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tt-mcc-cell-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tt-mcc-name-text {
+  font-family: monospace;
+}
+
+.tt-mcc-name-col {
+  width: 42%;
+}
+
+.tt-mcc-run-col {
+  width: 28%;
+}
+
+.tt-mcc-registry-table-with-mode .tt-mcc-name-col {
+  width: 34%;
+}
+
+.tt-mcc-registry-table-with-mode .tt-mcc-run-col {
+  width: 24%;
+}
+
+.tt-mcc-mode-col {
+  width: 72px;
+}
+
+.tt-mcc-tree-col {
+  width: 64px;
+}
+
+.tt-mcc-lnp-col {
+  width: 72px;
+}
+
+.tt-mcc-selected-col {
+  width: 78px;
+}
+
+.tt-mcc-actions-col {
+  width: 94px;
+}
+
 /* Between-run / Within-run action toolbar.
  *
  * The toolbar is wider than the plot at comfortable desktop sizes,

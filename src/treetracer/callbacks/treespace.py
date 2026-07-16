@@ -499,7 +499,7 @@ def register_treespace_callbacks():
             return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
-                      color="red", variant="light", size="lg"),
+                      color="red", variant="light", size="sm"),
             False,
             False,
         )

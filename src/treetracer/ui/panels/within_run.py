@@ -30,49 +30,60 @@ def _add_within_run_panel():
         dmc.Stack([
             # Row 1: Result + Run selectors + axis selectors + info (boxed)
             dmc.Paper(
-                dmc.Group([
-                    html.Div(
-                        dmc.Select(
-                            label="MDS Result",
-                            id="within-run-result-select",
-                            placeholder="No MDS results yet",
-                            data=[], value=None, size="xs",
-                            style={"width": "100%"},
+                dmc.Stack(
+                    [
+                        dmc.Group([
+                            html.Div(
+                                dmc.Select(
+                                    label="MDS Result",
+                                    id="within-run-result-select",
+                                    placeholder="No MDS results yet",
+                                    data=[], value=None, size="xs",
+                                    style={"width": "100%"},
+                                ),
+                                style={"width": "300px", "flexShrink": 0, "flexGrow": 0},
+                            ),
+                            html.Div(
+                                dmc.Select(
+                                    label="Run",
+                                    id="within-run-run-select",
+                                    placeholder="Run",
+                                    data=[], value=None, size="xs",
+                                    style={"width": "100%"},
+                                ),
+                                style={"width": "180px", "flexShrink": 0, "flexGrow": 0},
+                            ),
+                            html.Div(
+                                dmc.Select(label="X", id="within-run-dim-x",
+                                           data=[], value=None, size="xs",
+                                           style={"width": "100%"}),
+                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                            ),
+                            html.Div(
+                                dmc.Select(label="Y", id="within-run-dim-y",
+                                           data=[], value=None, size="xs",
+                                           style={"width": "100%"}),
+                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                            ),
+                            html.Div(
+                                dmc.Select(label="Z", id="within-run-dim-z",
+                                           data=[], value=None, size="xs",
+                                           style={"width": "100%"}),
+                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                            ),
+                        ], align="flex-end", gap="md", wrap="nowrap"),
+                        dmc.Group(
+                            [
+                                html.Div(id="within-run-info"),
+                                html.Div(id="within-run-selection-info"),
+                            ],
+                            align="center",
+                            gap="sm",
                         ),
-                        style={"width": "300px", "flexShrink": 0, "flexGrow": 0},
-                    ),
-                    html.Div(
-                        dmc.Select(
-                            label="Run",
-                            id="within-run-run-select",
-                            placeholder="Run",
-                            data=[], value=None, size="xs",
-                            style={"width": "100%"},
-                        ),
-                        style={"width": "180px", "flexShrink": 0, "flexGrow": 0},
-                    ),
-                    html.Div(
-                        dmc.Select(label="X", id="within-run-dim-x",
-                                   data=[], value=None, size="xs",
-                                   style={"width": "100%"}),
-                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
-                    ),
-                    html.Div(
-                        dmc.Select(label="Y", id="within-run-dim-y",
-                                   data=[], value=None, size="xs",
-                                   style={"width": "100%"}),
-                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
-                    ),
-                    html.Div(
-                        dmc.Select(label="Z", id="within-run-dim-z",
-                                   data=[], value=None, size="xs",
-                                   style={"width": "100%"}),
-                        style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
-                    ),
-                    html.Div(id="within-run-info"),
-                    html.Div(id="within-run-selection-info"),
-                ], align="flex-end", gap="md", wrap="nowrap"),
-                withBorder=True, p="sm", radius="sm", shadow="xs", mt="sm",
+                    ],
+                    gap="xs",
+                ),
+                withBorder=True, p="sm", radius="sm", shadow="xs",
                 style={"width": "100%"},
             ),
 
@@ -214,7 +225,7 @@ def _add_within_run_panel():
                 figure=placeholder_fig(
                     "No MDS result selected. Compute an MDS in the Compute tab."
                 ),
-                style={"height": "calc(100vh - 280px)"},
+                style={"height": "calc(100vh - 320px)"},
                 config={"doubleClick": False},
             ),
         ], gap="xs"),

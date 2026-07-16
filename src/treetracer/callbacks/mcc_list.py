@@ -34,6 +34,10 @@ _DELETE_BTN = {"type": "mcc-row-delete"}
 _RENAME_BTN = {"type": "mcc-row-rename"}
 
 
+def _uses_compact_registry_table(*, show_mode, source):
+    return source in {"treespace", "within", "clade"}
+
+
 def _row_action_button(*, kind, name, source, color, icon_name,
                        disabled=False, title=""):
     # ``source`` disambiguates buttons that share a ``name`` across
@@ -79,47 +83,75 @@ def _entry_summary_row(entry, *, show_mode=False, source):
     except (TypeError, ValueError):
         lnp_text = "—"
     cached = state.has_cached_mcc_tree(entry.get("uuid", ""))
-    cells = [
-        dmc.TableTd(name, style={"fontFamily": "monospace"}),
-    ]
+    compact_table = _uses_compact_registry_table(
+        show_mode=show_mode,
+        source=source,
+    )
+    if compact_table:
+        name_cell = dmc.TableTd(
+            html.Div(
+                name,
+                className="tt-mcc-cell-ellipsis tt-mcc-name-text",
+                title=name,
+            ),
+            className="tt-mcc-name-col",
+        )
+    else:
+        name_cell = dmc.TableTd(name, style={"fontFamily": "monospace"})
+
+    cells = [name_cell]
     if show_mode:
-        cells.append(dmc.TableTd(entry.get("mode") or "—"))
-    cells.extend([
-        dmc.TableTd(mcc_run),
-        dmc.TableTd(treenum_text),
-        dmc.TableTd(lnp_text),
-        dmc.TableTd(f"{n_sel}"),
-        dmc.TableTd(
-            dmc.Group([
-                _row_action_button(
-                    kind="mcc-row-rename",
-                    name=name,
-                    source=source,
-                    color="blue",
-                    icon_name="tabler:pencil",
-                    title="Rename",
-                ),
-                _row_action_button(
-                    kind="mcc-row-view",
-                    name=name,
-                    source=source,
-                    color="violet",
-                    icon_name="tabler:tree",
-                    disabled=not cached,
-                    title=("View in PearTree" if cached
-                           else "MCC was evicted; recompute to view"),
-                ),
-                _row_action_button(
-                    kind="mcc-row-delete",
-                    name=name,
-                    source=source,
-                    color="red",
-                    icon_name="tabler:trash",
-                    title="Remove from registry",
-                ),
-            ], gap=4),
+        mode_cell_props = {"className": "tt-mcc-mode-col"} if compact_table else {}
+        cells.append(dmc.TableTd(entry.get("mode") or "—", **mode_cell_props))
+
+    action_group = dmc.Group([
+        _row_action_button(
+            kind="mcc-row-rename",
+            name=name,
+            source=source,
+            color="blue",
+            icon_name="tabler:pencil",
+            title="Rename",
         ),
-    ])
+        _row_action_button(
+            kind="mcc-row-view",
+            name=name,
+            source=source,
+            color="violet",
+            icon_name="tabler:tree",
+            disabled=not cached,
+            title=("View in PearTree" if cached
+                   else "MCC was evicted; recompute to view"),
+        ),
+        _row_action_button(
+            kind="mcc-row-delete",
+            name=name,
+            source=source,
+            color="red",
+            icon_name="tabler:trash",
+            title="Remove from registry",
+        ),
+    ], gap=4)
+
+    if compact_table:
+        cells.extend([
+            dmc.TableTd(
+                html.Div(mcc_run, className="tt-mcc-cell-ellipsis", title=mcc_run),
+                className="tt-mcc-run-col",
+            ),
+            dmc.TableTd(treenum_text, className="tt-mcc-tree-col"),
+            dmc.TableTd(lnp_text, className="tt-mcc-lnp-col"),
+            dmc.TableTd(f"{n_sel}", className="tt-mcc-selected-col"),
+            dmc.TableTd(action_group, className="tt-mcc-actions-col"),
+        ])
+    else:
+        cells.extend([
+            dmc.TableTd(mcc_run),
+            dmc.TableTd(treenum_text),
+            dmc.TableTd(lnp_text),
+            dmc.TableTd(f"{n_sel}"),
+            dmc.TableTd(action_group),
+        ])
     return dmc.TableTr(cells)
 
 
@@ -128,16 +160,41 @@ def _table_for(entries, *, show_mode=False, source):
         return None
     rows = [_entry_summary_row(e, show_mode=show_mode, source=source)
             for e in entries]
-    headers = [dmc.TableTh("Name")]
-    if show_mode:
-        headers.append(dmc.TableTh("Mode"))
-    headers.extend([
-        dmc.TableTh("Run"),
-        dmc.TableTh("Tree #"),
-        dmc.TableTh("lnP"),
-        dmc.TableTh("Selected"),
-        dmc.TableTh(""),
-    ])
+    compact_table = _uses_compact_registry_table(
+        show_mode=show_mode,
+        source=source,
+    )
+    if compact_table:
+        headers = [dmc.TableTh("Name", className="tt-mcc-name-col")]
+        if show_mode:
+            headers.append(dmc.TableTh("Mode", className="tt-mcc-mode-col"))
+        headers.extend([
+            dmc.TableTh("Run", className="tt-mcc-run-col"),
+            dmc.TableTh("Tree #", className="tt-mcc-tree-col"),
+            dmc.TableTh("lnP", className="tt-mcc-lnp-col"),
+            dmc.TableTh("Selected", className="tt-mcc-selected-col"),
+            dmc.TableTh("", className="tt-mcc-actions-col"),
+        ])
+    else:
+        headers = [dmc.TableTh("Name")]
+        if show_mode:
+            headers.append(dmc.TableTh("Mode"))
+        headers.extend([
+            dmc.TableTh("Run"),
+            dmc.TableTh("Tree #"),
+            dmc.TableTh("lnP"),
+            dmc.TableTh("Selected"),
+            dmc.TableTh(""),
+        ])
+    table_props = {}
+    if compact_table:
+        table_class = "tt-mcc-registry-table"
+        if show_mode:
+            table_class += " tt-mcc-registry-table-with-mode"
+        table_props = {
+            "layout": "fixed",
+            "className": table_class,
+        }
     return dmc.Table(
         [
             dmc.TableThead(dmc.TableTr(headers)),
@@ -145,6 +202,7 @@ def _table_for(entries, *, show_mode=False, source):
         ],
         striped=True, highlightOnHover=True, withTableBorder=False,
         verticalSpacing=2, horizontalSpacing=8,
+        **table_props,
     )
 
 

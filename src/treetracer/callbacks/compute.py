@@ -221,15 +221,23 @@ def register_compute_callbacks():
 
             rows.append(
                 dmc.TableTr([
-                    dmc.TableTd(filename),
-                    dmc.TableTd(str(summary.get("n_taxa", "—"))),
+                    dmc.TableTd(
+                        html.Div(
+                            filename,
+                            className="tt-compute-filename",
+                            title=filename,
+                        ),
+                        className="tt-compute-file-cell",
+                    ),
+                    dmc.TableTd(str(summary.get("n_taxa", "—")), className="tt-compute-number-cell"),
                     burnin_cell,
-                    dmc.TableTd(str(total_trees)),
+                    dmc.TableTd(str(total_trees), className="tt-compute-number-cell"),
                     dmc.TableTd(
                         dmc.Checkbox(
                             id={"type": "compute-tree-checkbox", "index": filename},
                             checked=True,
-                        )
+                        ),
+                        className="tt-compute-select-cell",
                     ),
                 ])
             )
@@ -251,9 +259,22 @@ def register_compute_callbacks():
             highlightOnHover=True,
             withTableBorder=True,
             withColumnBorders=True,
+            layout="fixed",
+            className="tt-compute-table",
         )
 
         return table, False
+
+    @callback(
+        Output("compute-export-drawer", "opened"),
+        Input("open-rf-export-drawer", "n_clicks"),
+        Input("open-mds-export-drawer", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def open_export_drawer(_rf_clicks, _mds_clicks):
+        if not any(t.get("value") for t in ctx.triggered):
+            return no_update
+        return True
 
     # Callback to validate taxa, extract data, and start RF computation in background
     @callback(
@@ -862,4 +883,3 @@ def register_compute_callbacks():
         ]
         badges.append(dmc.Badge(f"{meta.get('rows', '?')} trees", variant="light", color="grape", size="sm"))
         return dmc.Group(badges, gap=4)
-

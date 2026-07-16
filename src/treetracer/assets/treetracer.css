@@ -22,6 +22,53 @@
   overflow: visible;
 }
 
+/* Compute tab RF input table.
+ *
+ * The file column is intentionally the only flexible column. Numeric
+ * columns keep stable widths while long filenames ellipsize instead of
+ * expanding the table into adjacent controls or beyond the viewport. */
+.tt-compute-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.tt-compute-table th,
+.tt-compute-table td {
+  min-width: 0;
+}
+
+.tt-compute-table th:nth-child(2),
+.tt-compute-table td:nth-child(2),
+.tt-compute-table th:nth-child(4),
+.tt-compute-table td:nth-child(4) {
+  width: 88px;
+  white-space: nowrap;
+}
+
+.tt-compute-table th:nth-child(3),
+.tt-compute-table td:nth-child(3) {
+  width: 120px;
+  white-space: nowrap;
+}
+
+.tt-compute-table th:nth-child(5),
+.tt-compute-table td:nth-child(5) {
+  width: 72px;
+  text-align: center;
+}
+
+.tt-compute-file-cell {
+  min-width: 0;
+}
+
+.tt-compute-filename {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Dark-mode dcc.Slider chrome.
  *
  * dcc.Slider (rc-slider) is not a Mantine component, so it doesn't pick

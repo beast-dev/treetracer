@@ -4,7 +4,7 @@ import numpy as np
 
 
 def compute_mds(distance_matrix: np.ndarray, n_components: int = 6,
-                algorithm: str = "pcoa") -> np.ndarray:
+                algorithm: str = "pcoa", progress=None) -> np.ndarray:
     """Compute MDS embedding from a precomputed distance matrix.
 
     Args:
@@ -21,6 +21,11 @@ def compute_mds(distance_matrix: np.ndarray, n_components: int = 6,
                               top ``n_components``. ~100× faster
                               at n≈5000, bit-equivalent to ``"pcoa"``
                               within numerical noise.
+        progress: Optional callback invoked as
+                  ``progress(phase, fraction, label)`` at coarse phase
+                  boundaries. The eigensolve itself is a single SciPy
+                  call, so progress is phase-based rather than per
+                  ARPACK iteration.
 
     Returns:
         Embedding array of shape (n, n_components).
@@ -37,27 +42,36 @@ def compute_mds(distance_matrix: np.ndarray, n_components: int = 6,
             f"Unknown MDS algorithm '{algorithm}'. "
             f"Supported: {list(algorithms.keys())}"
         )
-    return algorithms[algorithm](distance_matrix, n_components)
+    return algorithms[algorithm](distance_matrix, n_components, progress)
 
 
-def _pcoa(distance_matrix: np.ndarray, n_components: int) -> np.ndarray:
+def _report(progress, phase: str, fraction: float, label: str) -> None:
+    if progress is not None:
+        progress(phase, fraction, label)
+
+
+def _pcoa(distance_matrix: np.ndarray, n_components: int, progress=None) -> np.ndarray:
     """Classical MDS (PCoA) via double-centering and eigendecomposition."""
     n_components = min(n_components, distance_matrix.shape[0] - 1)
     n = distance_matrix.shape[0]
+    _report(progress, "centering", 0.20, "squaring distance matrix…")
     D_sq = distance_matrix ** 2
     centering = np.eye(n) - np.ones((n, n)) / n
+    _report(progress, "centering", 0.45, "double-centering distance matrix…")
     B = -0.5 * centering @ D_sq @ centering
+    _report(progress, "eigensolve", 0.70, "solving eigenvectors…")
     eigenvalues, eigenvectors = np.linalg.eigh(B)
     # eigh returns ascending order; reverse to get largest first
     idx = np.argsort(eigenvalues)[::-1]
     eigenvalues = eigenvalues[idx[:n_components]]
     eigenvectors = eigenvectors[:, idx[:n_components]]
     # Clamp negative eigenvalues to zero
+    _report(progress, "finalizing", 0.92, "building coordinates…")
     eigenvalues = np.maximum(eigenvalues, 0)
     return eigenvectors * np.sqrt(eigenvalues)
 
 
-def _pcoa_fast(distance_matrix: np.ndarray, n_components: int) -> np.ndarray:
+def _pcoa_fast(distance_matrix: np.ndarray, n_components: int, progress=None) -> np.ndarray:
     """Classical MDS (PCoA) — vectorised double-centering + truncated
     eigendecomposition. Mathematically equivalent to ``_pcoa``;
     measured ~100× faster at n≈5000 (Procrustes disparity < 1e-28
@@ -92,10 +106,13 @@ def _pcoa_fast(distance_matrix: np.ndarray, n_components: int) -> np.ndarray:
         return np.zeros((n, 0))
 
     # In-place double centering on a private float64 copy of D².
+    _report(progress, "centering", 0.20, "squaring distance matrix…")
     B = distance_matrix.astype(np.float64, copy=True)
     np.square(B, out=B)
+    _report(progress, "centering", 0.35, "computing row means…")
     row_mean = B.mean(axis=1)
     grand_mean = row_mean.mean()
+    _report(progress, "centering", 0.50, "double-centering distance matrix…")
     B -= row_mean[:, None]
     B -= row_mean[None, :]
     B += grand_mean
@@ -105,17 +122,20 @@ def _pcoa_fast(distance_matrix: np.ndarray, n_components: int) -> np.ndarray:
     if n_components < n - 1:
         # Top-k path: Lanczos on B's matvec products.
         try:
+            _report(progress, "eigensolve", 0.70, "solving top eigenvectors…")
             from scipy.sparse.linalg import eigsh, ArpackNoConvergence
             eigenvalues, eigenvectors = eigsh(B, k=n_components, which="LA")
         except (ImportError, ArpackNoConvergence):
             eigenvalues = eigenvectors = None
     if eigenvalues is None:
+        _report(progress, "eigensolve", 0.70, "solving full eigendecomposition…")
         eigenvalues, eigenvectors = np.linalg.eigh(B)
         eigenvalues = eigenvalues[-n_components:]
         eigenvectors = eigenvectors[:, -n_components:]
 
     # Both ``eigh`` and ``eigsh(which='LA')`` return ascending order;
     # flip so column 0 carries the principal coordinate.
+    _report(progress, "finalizing", 0.92, "building coordinates…")
     idx = np.argsort(eigenvalues)[::-1]
     eigenvalues = np.maximum(eigenvalues[idx], 0)
     eigenvectors = eigenvectors[:, idx]

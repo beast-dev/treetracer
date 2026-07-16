@@ -101,6 +101,10 @@ def add_navbar():
                     # consumed by ``update_rf_progress`` to drive the
                     # progress bar inside the computing banner.
                     dcc.Store(id="rf-progress-path", storage_type="memory"),
+                    # Same sidecar-progress pattern for MDS/PCoA. This
+                    # is phase progress: centering/eigensolve/finalizing,
+                    # not ARPACK iteration-level progress.
+                    dcc.Store(id="mds-progress-path", storage_type="memory"),
                     # Log panel state
                     dcc.Store(id="log-panel-visible", storage_type="memory", data=False),
                     dcc.Store(id="sidebar-visible", storage_type="memory", data=True),

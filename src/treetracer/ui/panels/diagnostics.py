@@ -7,6 +7,8 @@ own tab — see ui/panels/clade_explore.py."""
 import dash_mantine_components as dmc
 from dash import dcc, html
 
+from ...icons import icon
+
 
 def _add_diagnostics_panel():
     """Build the Diagnostics tab panel content."""
@@ -73,8 +75,9 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=120,
                     ),
-                    dmc.Button("Export PDF", id="export-lnl-trace-button", variant="light",
-                               size="xs", disabled=True),
+                    dmc.Button("Export", id="export-lnl-trace-button", variant="light",
+                               size="xs", disabled=True,
+                               leftSection=icon("tabler:pdf", size=20)),
                     # ``flex-end`` lines every control on the row's
                     # bottom edge. The Burnin ``NumberInput`` has a
                     # stacked label and is therefore taller than the
@@ -128,8 +131,9 @@ def _add_diagnostics_panel():
                         size="sm",
                         disabled=True,
                     ),
-                    dmc.Button("Export PDF", id="export-rf-trace-button", variant="light",
-                               size="xs", disabled=True),
+                    dmc.Button("Export", id="export-rf-trace-button", variant="light",
+                               size="xs", disabled=True,
+                               leftSection=icon("tabler:pdf", size=20)),
                     # Bottom-align (see Log-Posterior Trace) so the
                     # labeled Burnin input doesn't drift above the row.
                 ], align="flex-end", gap="md"),

@@ -685,6 +685,19 @@ def register_clade_explore_callbacks():
         table = _table_for(matched, show_mode=True, source="clade")
         return title, table, {}
 
+    # ------ Empty-state notice: visible only while the MCC registry is
+    # wholly empty, hidden as soon as any MCC exists. Registry-only (not
+    # matrix-scoped), unlike ``render_clade_mcc_panel`` above.
+
+    @callback(
+        Output("clade-mcc-empty-paper", "style"),
+        Input("mcc-registry-store", "data"),
+    )
+    def toggle_clade_mcc_empty_state(registry):
+        # Visible branch keeps textAlign so the rewrite doesn't drop the
+        # centering baked into the Paper's style prop.
+        return {"display": "none"} if registry else {"textAlign": "center"}
+
     # ------ Hide the Clade Frequency panel when the MCC registry is
     # empty (covers the "user deleted every MCC" case — the other two
     # writers, Compare-button success and Clear-Data, handle the show

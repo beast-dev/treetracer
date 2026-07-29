@@ -36,6 +36,28 @@ def _add_clade_explore_panel():
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
+            # Empty-state notice shown while the MCC registry has no
+            # entries at all. Hidden the moment any MCC is registered;
+            # driven by ``toggle_clade_mcc_empty_state`` in
+            # callbacks/clade_explore.py. Visible by default because the
+            # registry starts empty on load.
+            dmc.Paper(
+                dmc.Stack([
+                    dmc.Text(
+                        "No MCC trees available",
+                        size="md", fw=500, c="dimmed",
+                    ),
+                    dmc.Text(
+                        "Compute at least two MCC trees in the Between- or "
+                        "Within-analysis tabs for the comparison.",
+                        size="sm", c="dimmed",
+                    ),
+                ], gap="xs", align="center"),
+                id="clade-mcc-empty-paper",
+                p="md", withBorder=True, radius="sm",
+                style={"textAlign": "center"},
+            ),
+
             # Per-matrix MCC registry summary + Clade-Frequency
             # comparison controls (two MCC dropdowns + Compare button).
             # The dropdowns and button sit at the top of this paper,

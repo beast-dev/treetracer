@@ -97,17 +97,51 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     return list(result_names), elapsed
 
 
-def compute_mds_worker(matrix_path, n_components):
+def compute_mds_worker(matrix_path, n_components, progress_path=None):
     """Compute PCoA embedding from a matrix on disk.
 
     Reads the .npy file directly — avoids pickling large matrices.
     Returns (embedding_list, elapsed).
     """
+    import json
     import time
+    from pathlib import Path
+
     import numpy as np
+
+    progress_file = Path(progress_path) if progress_path else None
+
+    def write_progress(phase, fraction, label):
+        if progress_file is None:
+            return
+        try:
+            progress_file.write_text(json.dumps({
+                "phase": phase,
+                "fraction": max(0.0, min(float(fraction), 1.0)),
+                "label": label,
+            }))
+        except OSError:
+            pass
+
     t0 = time.time()
     from .mds import compute_mds
-    distance_matrix = np.load(matrix_path).astype(float)
-    embedding = compute_mds(distance_matrix, n_components=n_components, algorithm="pcoa_fast")
-    elapsed = time.time() - t0
-    return embedding.tolist(), elapsed
+    write_progress("loading", 0.05, "loading distance matrix…")
+    try:
+        distance_matrix = np.load(matrix_path).astype(float)
+        write_progress("loading", 0.12, "distance matrix loaded")
+        embedding = compute_mds(
+            distance_matrix,
+            n_components=n_components,
+            algorithm="pcoa_fast",
+            progress=write_progress,
+        )
+        write_progress("finalizing", 0.98, "serializing coordinates…")
+        elapsed = time.time() - t0
+        write_progress("complete", 1.0, "MDS embedding complete")
+        return embedding.tolist(), elapsed
+    finally:
+        if progress_file is not None:
+            try:
+                progress_file.unlink()
+            except OSError:
+                pass

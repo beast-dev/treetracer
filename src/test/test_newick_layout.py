@@ -177,6 +177,29 @@ End;
     assert {t.name for t in tips} == {"A_taxon_2024-01", "B_taxon_2024-02"}
 
 
+def test_nexus_parse_strips_direct_quoted_tip_labels():
+    """Some MCC Newick bodies contain quoted taxon names directly,
+    rather than integer labels resolved through a Translate block.
+    Those names must still match the unquoted canonical leaf names used
+    by the clade-frequency click -> tanglegram lookup."""
+    nexus = b"""#NEXUS
+Begin trees;
+    tree t = ('A_taxon_2024-01':1,'B_taxon_2024-02':1):0;
+End;
+"""
+    root, _ = parse_nexus(nexus)
+    tips = [n for n in _collect_nodes(root) if n.is_tip]
+    assert {t.name for t in tips} == {"A_taxon_2024-01", "B_taxon_2024-02"}
+
+    traces = build_tree_traces(root, highlight={"A_taxon_2024-01"})
+    red = next(
+        (t for t in traces if t.get("marker", {}).get("color") == "#e63946"),
+        None,
+    )
+    assert red is not None
+    assert red["text"] == ["A_taxon_2024-01"]
+
+
 # ---------------------------------------------------------------------------
 # 7. Trace builders
 # ---------------------------------------------------------------------------

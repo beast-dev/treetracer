@@ -1,6 +1,6 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from .theme import get_template
+from .theme import DARK_TEMPLATE, get_template
 
 
 def retheme_figure(fig_dict, *, skip_invalid=False):
@@ -20,9 +20,11 @@ def placeholder_fig(text):
     """Empty figure with centered placeholder text. Used so the between-run
     Graph component can exist statically (giving selection callbacks a stable
     target) even before the user has plotted anything."""
+    dark = get_template() == DARK_TEMPLATE
     return {
         "data": [],
         "layout": {
+            "template": get_template(),
             "xaxis": {"visible": False},
             "yaxis": {"visible": False},
             "annotations": [{
@@ -30,11 +32,11 @@ def placeholder_fig(text):
                 "xref": "paper", "yref": "paper",
                 "x": 0.5, "y": 0.5,
                 "showarrow": False,
-                "font": {"size": 18, "color": "#666"},
+                "font": {"size": 18, "color": "#868e96" if dark else "#666"},
             }],
             "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
-            "plot_bgcolor": "white",
-            "paper_bgcolor": "white",
+            "plot_bgcolor": "rgba(0,0,0,0)",
+            "paper_bgcolor": "rgba(0,0,0,0)",
         },
     }
 

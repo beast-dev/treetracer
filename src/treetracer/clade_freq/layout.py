@@ -208,6 +208,12 @@ _TREE_LINE_RE = re.compile(
 )
 
 
+def _strip_outer_quotes(label: str) -> str:
+    if len(label) >= 2 and label[0] == label[-1] and label[0] in ("'", '"'):
+        return label[1:-1]
+    return label
+
+
 def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
     """Parse NEXUS bytes into a laid-out root Node and translate map."""
     text = nexus_bytes.decode("utf-8", errors="replace")
@@ -222,7 +228,7 @@ def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
                 continue
             parts = line.split(None, 1)
             if len(parts) == 2:
-                translate[parts[0]] = parts[1].strip("'\"")
+                translate[parts[0]] = _strip_outer_quotes(parts[1])
 
     # Find the tree line by scanning line by line.
     # Handles any annotation between tree name and '=', and any annotation
@@ -281,6 +287,8 @@ def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
 
     for node in _collect_nodes(root):
         node.is_tip = not bool(node.children)
+        if node.is_tip:
+            node.name = _strip_outer_quotes(node.name)
 
     _assign_layout(root)
     return root, translate
@@ -382,5 +390,4 @@ def build_tree_traces(
         ))
 
     return traces
-
 

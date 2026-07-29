@@ -29,14 +29,19 @@ from . import persistent_worker
 # That wait releases the GIL the whole time, so the parent stays
 # perfectly responsive while the child does the work.
 #
-# MDS still runs in the same thread executor without a subprocess —
-# scipy's LAPACK calls release the GIL natively, so there's no beach
-# ball risk and the subprocess startup overhead isn't worth it.
+# The executor threads block on persistent-worker IPC. The heavy RF/MDS
+# work runs in the worker subprocess, keeping the pywebview/Dash process
+# responsive while compute jobs are in flight.
 _executor = None
 _rf_future = None      # concurrent.futures.Future for RF job
 _rf_meta = {}          # metadata needed by poll_completion to save RF result
 _mds_future = None     # concurrent.futures.Future for between-run MDS job
 _mds_meta = {}         # metadata needed by poll_completion to build MDS result
+
+
+def _mds_export_filename(source_distmat):
+    stem = source_distmat[:-4] if source_distmat.endswith(".tsv") else source_distmat
+    return f"{stem}_MDS.tsv"
 
 
 def _get_executor():
@@ -157,9 +162,10 @@ def register_compute_callbacks():
         Output("notifications-container", "children", allow_duplicate=True),
         Input({"type": "compute-stop", "which": ALL}, "n_clicks"),
         State("rf-progress-path", "data"),
+        State("mds-progress-path", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_stop(_stop_clicks, rf_progress_path):
+    def handle_compute_stop(_stop_clicks, rf_progress_path, mds_progress_path):
         # Pattern-matching inputs fire both on real clicks and whenever
         # a Stop button is added to / removed from the layout (the
         # banners are dynamic). Only a real click carries a truthy
@@ -172,11 +178,12 @@ def register_compute_callbacks():
             # the sidecar file) never runs. Tidy up here. The file is
             # ~80B so a leak is cosmetic, but next compute reuses the
             # same naming pattern — better to start clean.
-            if rf_progress_path:
-                import contextlib
-                from pathlib import Path
-                with contextlib.suppress(OSError):
-                    Path(rf_progress_path).unlink()
+            import contextlib
+            from pathlib import Path
+            for progress_path in (rf_progress_path, mds_progress_path):
+                if progress_path:
+                    with contextlib.suppress(OSError):
+                        Path(progress_path).unlink()
             add_log("Compute cancelled by user — worker subprocess killed.",
                     "WARNING")
             return dmc.Notification(
@@ -221,15 +228,23 @@ def register_compute_callbacks():
 
             rows.append(
                 dmc.TableTr([
-                    dmc.TableTd(filename),
-                    dmc.TableTd(str(summary.get("n_taxa", "—"))),
+                    dmc.TableTd(
+                        html.Div(
+                            filename,
+                            className="tt-compute-filename",
+                            title=filename,
+                        ),
+                        className="tt-compute-file-cell",
+                    ),
+                    dmc.TableTd(str(summary.get("n_taxa", "—")), className="tt-compute-number-cell"),
                     burnin_cell,
-                    dmc.TableTd(str(total_trees)),
+                    dmc.TableTd(str(total_trees), className="tt-compute-number-cell"),
                     dmc.TableTd(
                         dmc.Checkbox(
                             id={"type": "compute-tree-checkbox", "index": filename},
                             checked=True,
-                        )
+                        ),
+                        className="tt-compute-select-cell",
                     ),
                 ])
             )
@@ -251,9 +266,22 @@ def register_compute_callbacks():
             highlightOnHover=True,
             withTableBorder=True,
             withColumnBorders=True,
+            layout="fixed",
+            className="tt-compute-table",
         )
 
         return table, False
+
+    @callback(
+        Output("compute-export-drawer", "opened"),
+        Input("open-rf-export-drawer", "n_clicks"),
+        Input("open-mds-export-drawer", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def open_export_drawer(_rf_clicks, _mds_clicks):
+        if not any(t.get("value") for t in ctx.triggered):
+            return no_update
+        return True
 
     # Callback to validate taxa, extract data, and start RF computation in background
     @callback(
@@ -425,6 +453,29 @@ def register_compute_callbacks():
             label = f"{val:,} / {tot:,} pairs ({pct:.1f}%)"
         return pct, label
 
+    @callback(
+        Output("mds-progress-bar", "value"),
+        Output("mds-progress-label", "children"),
+        Input("compute-poll-interval", "n_intervals"),
+        State("mds-progress-path", "data"),
+        prevent_initial_call=True,
+    )
+    def update_mds_progress(_n, progress_path):
+        if not progress_path:
+            return no_update, no_update
+        import json
+        from pathlib import Path
+        try:
+            data = json.loads(Path(progress_path).read_text())
+        except (OSError, ValueError):
+            return no_update, no_update
+
+        frac = max(0.0, min(float(data.get("fraction", 0.0)), 1.0))
+        pct = frac * 100.0
+        phase = data.get("phase", "computing")
+        label = data.get("label") or phase.replace("_", " ")
+        return pct, f"{label} ({pct:.0f}%)"
+
     # ------ RF MATRIX LIST (right column) ------
 
     @callback(
@@ -432,12 +483,14 @@ def register_compute_callbacks():
         Output("rf-matrix-select", "value"),
         Output("rf-matrix-count", "children"),
         Output("rf-matrix-count", "color"),
+        Output("rf-matrix-count-main", "children"),
+        Output("rf-matrix-count-main", "color"),
         Output("export-rf-button", "disabled"),
         Input("distmat-store", "data"),
     )
     def update_rf_matrix_list(distmat_data):
         if not distmat_data:
-            return [], None, "0", "gray", True
+            return [], None, "0", "gray", "0", "gray", True
         options = [
             {"value": k, "label":
                 f"{k} — {v['n_trees']} trees "
@@ -446,7 +499,7 @@ def register_compute_callbacks():
         ]
         last_key = list(distmat_data.keys())[-1]
         count = str(len(distmat_data))
-        return options, last_key, count, "blue", False
+        return options, last_key, count, "blue", count, "blue", False
 
     # Show file breakdown badges when an RF matrix is selected
     @callback(
@@ -514,20 +567,21 @@ def register_compute_callbacks():
         Output("compute-mds-output", "children"),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
+        Output("mds-progress-path", "data", allow_duplicate=True),
         Input("compute-mds-button", "n_clicks"),
         State("mds-distmat-select", "value"),
         prevent_initial_call=True,
     )
     def handle_compute_mds(n_clicks, selected_distmat):
         if not n_clicks or not selected_distmat:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         try:
             tree_names, _ = load_distmat(selected_distmat)
         except KeyError:
             msg = "Selected distance matrix not available. Please recompute RF distances."
             add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update
+            return dmc.Text(msg, c="red"), no_update, no_update, no_update
 
         n = len(tree_names)
         n_components = min(6, n - 1)
@@ -543,12 +597,15 @@ def register_compute_callbacks():
         # background-compute pattern and clean process isolation.
         from . import persistent_worker
         matrix_path = get_distmat_file_path(selected_distmat)
+        progress_path = str(matrix_path) + ".mds.progress"
+        _mds_meta["progress_path"] = progress_path
         global _mds_future
         _mds_future = _get_executor().submit(
             persistent_worker.submit_job,
             "compute_mds",
             matrix_path=str(matrix_path),
             n_components=n_components,
+            progress_path=progress_path,
         )
 
         computing_indicator = computing_banner(
@@ -558,8 +615,9 @@ def register_compute_callbacks():
                 f"{n} trees in background."
             ),
             which="mds",
+            show_progress=True,
         )
-        return computing_indicator, False, True
+        return computing_indicator, False, True, progress_path
 
     # ------ POLL + PROCESS: checks futures, processes results in one round trip ------
     # Processing is fast (<20ms) since workers save to disk — no large pickle transfer.
@@ -722,7 +780,7 @@ def register_compute_callbacks():
                 mds_df["group_col"] = mds_df["group"].map(group_mapping)
                 mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
                 mds_df["size"] = 6
-                mds_filename = selected_distmat.replace('.tsv', '_MDS.tsv')
+                mds_filename = _mds_export_filename(selected_distmat)
                 mds_df["file"] = mds_filename
 
                 metadata = {
@@ -806,7 +864,12 @@ def register_compute_callbacks():
         if not entry or not entry.get("data"):
             return no_update
         metadata = entry["metadata"]
-        path = _save_file_dialog(default_filename=metadata["filename"])
+        default_filename = metadata.get("filename") or selected_mds
+        if not default_filename.endswith(".tsv"):
+            default_filename = _mds_export_filename(
+                metadata.get("source_distmat") or selected_mds
+            )
+        path = _save_file_dialog(default_filename=default_filename)
         if not path:
             return no_update
         mds_df = pd.DataFrame(entry["data"])
@@ -830,13 +893,15 @@ def register_compute_callbacks():
         Output("mds-result-select", "value"),
         Output("mds-result-count", "children"),
         Output("mds-result-count", "color"),
+        Output("mds-result-count-main", "children"),
+        Output("mds-result-count-main", "color"),
         Output("export-mds-button", "disabled", allow_duplicate=True),
         Input("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def update_mds_result_list(mds_index):
         if not mds_index:
-            return [], None, "0", "gray", True
+            return [], None, "0", "gray", "0", "gray", True
         options = []
         for key, meta in mds_index.items():
             n_groups = len(meta.get("groups", []))
@@ -844,7 +909,7 @@ def register_compute_callbacks():
             options.append({"value": key, "label": label})
         last_key = list(mds_index.keys())[-1]
         count = str(len(mds_index))
-        return options, last_key, count, "blue", False
+        return options, last_key, count, "blue", count, "blue", False
 
     @callback(
         Output("mds-result-info", "children"),
@@ -862,4 +927,3 @@ def register_compute_callbacks():
         ]
         badges.append(dmc.Badge(f"{meta.get('rows', '?')} trees", variant="light", color="grape", size="sm"))
         return dmc.Group(badges, gap=4)
-

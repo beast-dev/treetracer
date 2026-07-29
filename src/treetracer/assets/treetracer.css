@@ -22,6 +22,177 @@
   overflow: visible;
 }
 
+/* Compute tab RF input table.
+ *
+ * The file column is intentionally the only flexible column. Numeric
+ * columns keep stable widths while long filenames ellipsize instead of
+ * expanding the table into adjacent controls or beyond the viewport. */
+.tt-compute-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.tt-compute-table th,
+.tt-compute-table td {
+  min-width: 0;
+}
+
+.tt-compute-table th:nth-child(2),
+.tt-compute-table td:nth-child(2),
+.tt-compute-table th:nth-child(4),
+.tt-compute-table td:nth-child(4) {
+  width: 88px;
+  white-space: nowrap;
+}
+
+.tt-compute-table th:nth-child(3),
+.tt-compute-table td:nth-child(3) {
+  width: 120px;
+  white-space: nowrap;
+}
+
+.tt-compute-table th:nth-child(5),
+.tt-compute-table td:nth-child(5) {
+  width: 72px;
+  text-align: center;
+}
+
+.tt-compute-file-cell {
+  min-width: 0;
+}
+
+.tt-compute-filename {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* MCC registry tables.
+ *
+ * Long generated MCC names and run labels should not force the table
+ * wider than the active tab. Keep numeric/action columns compact and
+ * truncate the text-heavy Name/Run cells with a native title tooltip.
+ */
+.tt-mcc-registry-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.tt-mcc-registry-table th,
+.tt-mcc-registry-table td {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tt-mcc-cell-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tt-mcc-name-text {
+  font-family: monospace;
+}
+
+.tt-mcc-name-col {
+  width: 42%;
+}
+
+.tt-mcc-run-col {
+  width: 28%;
+}
+
+.tt-mcc-registry-table-with-mode .tt-mcc-name-col {
+  width: 34%;
+}
+
+.tt-mcc-registry-table-with-mode .tt-mcc-run-col {
+  width: 24%;
+}
+
+.tt-mcc-mode-col {
+  width: 72px;
+}
+
+.tt-mcc-tree-col {
+  width: 64px;
+}
+
+.tt-mcc-lnp-col {
+  width: 72px;
+}
+
+.tt-mcc-selected-col {
+  width: 78px;
+}
+
+.tt-mcc-actions-col {
+  width: 94px;
+}
+
+/* Between-run / Within-run action toolbar.
+ *
+ * The toolbar is wider than the plot at comfortable desktop sizes,
+ * but the secondary export/MCC actions are the first controls to
+ * truncate when the visible tab narrows. Keep the existing buttons and
+ * callback IDs; below 1400px, show only their icons and rely on the
+ * attached tooltips/ARIA labels for the full action names. */
+.tt-analysis-controls {
+  container-type: inline-size;
+}
+
+.tt-analysis-shortenable-button {
+  min-width: 60px;
+  flex-shrink: 0;
+}
+
+.tt-analysis-short-label {
+  display: none;
+}
+
+@container (max-width: 1399px) {
+  .tt-analysis-collapse-button {
+    width: 34px;
+    min-width: 34px;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .tt-analysis-collapse-button .tt-analysis-action-inner {
+    justify-content: center;
+  }
+
+  .tt-analysis-collapse-button .tt-analysis-action-section {
+    margin: 0;
+  }
+
+  .tt-analysis-collapse-button .tt-analysis-action-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@container (max-width: 1279px) {
+  .tt-analysis-shortenable-button .tt-analysis-full-label {
+    display: none;
+  }
+
+  .tt-analysis-shortenable-button .tt-analysis-short-label {
+    display: inline;
+  }
+}
+
 /* Dark-mode dcc.Slider chrome.
  *
  * dcc.Slider (rc-slider) is not a Mantine component, so it doesn't pick

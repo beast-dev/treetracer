@@ -57,6 +57,28 @@ def test_pcoa_synthetic_euclidean_round_trip(algorithm):
     assert disp < 1e-12, (algorithm, disp)
 
 
+def test_pcoa_fast_reports_phase_progress():
+    rng = np.random.default_rng(1)
+    X = rng.standard_normal((20, 4))
+    D = squareform(pdist(X))
+    events = []
+
+    compute_mds(
+        D,
+        n_components=3,
+        algorithm="pcoa_fast",
+        progress=lambda phase, fraction, label: events.append(
+            (phase, fraction, label)
+        ),
+    )
+
+    phases = [phase for phase, _fraction, _label in events]
+    assert "centering" in phases
+    assert "eigensolve" in phases
+    assert "finalizing" in phases
+    assert all(0 <= fraction <= 1 for _phase, fraction, _label in events)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 def test_pcoa_real_rf_matches_scipy(rapidtrees_full, algorithm):

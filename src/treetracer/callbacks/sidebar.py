@@ -10,6 +10,9 @@ from .clade_explore import clear_clade_freq_caches, _tanglegram_placeholder_fig
 from ._helpers import _open_file_dialog
 
 
+MAX_TREE_FILES = 10
+
+
 def register_sidebar_callbacks():
     # Show loading overlay instantly when Load Trees is clicked
     clientside_callback(
@@ -40,10 +43,27 @@ def register_sidebar_callbacks():
             return no_update, no_update, no_update, no_update, no_update, False
 
         stored_summaries = stored_summaries or {}
+        if len(stored_summaries) >= MAX_TREE_FILES:
+            msg = (
+                f"Tree file limit reached ({MAX_TREE_FILES}). "
+                "Remove a loaded file or clear data before loading more."
+            )
+            add_log(msg, "WARNING")
+            notification = dmc.Notification(
+                title="Tree File Limit Reached",
+                message=msg,
+                color="yellow",
+                action="show",
+                autoClose=5000,
+                id=notif_id(),
+            )
+            return no_update, msg, {"display": "block"}, no_update, notification, False
+
         tree_service = get_tree_service()
         loaded_count = 0
         errors = []
         taxa_warnings = []
+        limit_skips = []
 
         for file_path in file_paths:
             filename = os.path.basename(file_path)
@@ -51,6 +71,15 @@ def register_sidebar_callbacks():
             if not file_path.endswith((".trees", ".t")):
                 errors.append(f"'{filename}' is not a .trees or .t file")
                 add_log(f"Skipped {filename}: not a .trees or .t file", "WARNING")
+                continue
+
+            if len(stored_summaries) >= MAX_TREE_FILES:
+                limit_skips.append(filename)
+                add_log(
+                    f"Skipped {filename}: tree file limit "
+                    f"({MAX_TREE_FILES}) already reached",
+                    "WARNING",
+                )
                 continue
 
             # Deduplicate names
@@ -104,25 +133,48 @@ def register_sidebar_callbacks():
                 errors.append(f"'{filename}': {str(e)}")
                 add_log(f"Error processing {filename}: {e}", "ERROR")
 
-        if loaded_count == 0 and errors:
-            msg = "Failed to load: " + "; ".join(errors)
-            return no_update, msg, {"display": "block"}, no_update, no_update, False
+        if loaded_count == 0 and (errors or limit_skips):
+            msg_parts = []
+            if errors:
+                msg_parts.append("Failed to load: " + "; ".join(errors))
+            if limit_skips:
+                msg_parts.append(
+                    f"TreeTracer supports up to {MAX_TREE_FILES} loaded "
+                    f"tree files; skipped {len(limit_skips)} file(s)."
+                )
+            msg = " ".join(msg_parts)
+            notification = dmc.Notification(
+                title="No Trees Loaded",
+                message=msg,
+                color="yellow",
+                action="show",
+                autoClose=5000,
+                id=notif_id(),
+            )
+            return no_update, msg, {"display": "block"}, no_update, notification, False
 
         # Build notification
         msg_parts = [f"Loaded {loaded_count} file(s)"]
         if errors:
             msg_parts.append(f"{len(errors)} failed")
+        if limit_skips:
+            msg_parts.append(f"{len(limit_skips)} skipped at limit")
         if taxa_warnings:
             msg_parts.append("taxa mismatch detected")
             add_log(f"Taxa mismatch: {', '.join(taxa_warnings)}", "WARNING")
 
         color = "green"
-        if taxa_warnings or errors:
+        if taxa_warnings or errors or limit_skips:
             color = "yellow"
 
+        notification_message = f"Successfully loaded {loaded_count} .trees file(s)."
+        if limit_skips:
+            notification_message += (
+                f" Maximum loaded tree files: {MAX_TREE_FILES}."
+            )
         notification = dmc.Notification(
             title=" — ".join(msg_parts),
-            message=f"Successfully loaded {loaded_count} .trees file(s).",
+            message=notification_message,
             color=color,
             action="show",
             autoClose=4000,
@@ -298,7 +350,7 @@ def register_sidebar_callbacks():
             items,
             multiple=True,
             variant="separated",
-            value=list(stored_summaries.keys()),
+            value=[],
         )
 
     # Callback to downsample trees for a given file

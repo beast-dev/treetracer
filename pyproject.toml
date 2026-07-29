@@ -18,7 +18,6 @@ dependencies = [
     "psutil>=7.0.0",
     "numpy",
     "scipy",
-    "kaleido",
     "pywebview>=6.1",
 ]
 
@@ -107,7 +106,6 @@ requires = [
     "psutil>=7.0.0",
     "numpy",
     "scipy",
-    "kaleido",
     "pywebview>=6.1",
 ]
 

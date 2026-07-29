@@ -859,29 +859,15 @@ def register_treespace_callbacks():
     # ``after='view'``) so the user can confirm or edit the auto-name
     # before peartree opens on Save.
 
-    # ------ export PDF ------
-    @callback(
+    # ------ export SVG ------
+    # Client-side render (window.ttExportSvg in assets/export_svg.js) saved
+    # through the pywebview ``save_download`` bridge — no Kaleido/Chrome
+    # subprocess, which broke inside the Briefcase bundle.
+    clientside_callback(
+        "function(n){return (n && window.ttExportSvg)"
+        " ? window.ttExportSvg('graph', 'treespace.svg')"
+        " : window.dash_clientside.no_update;}",
         Output("notifications-container", "children", allow_duplicate=True),
         Input("treespace-export-pdf", "n_clicks"),
-        State("graph", "figure"),
         prevent_initial_call=True,
     )
-    def export_pdf(n_clicks, fig_dict):
-        from ..logger import notif_id
-        from ._helpers import _save_file_dialog
-        if not n_clicks or not fig_dict:
-            return no_update
-        path = _save_file_dialog(default_filename="treespace.pdf")
-        if not path:
-            return no_update
-        # skip_invalid=True drops any browser-only properties that Plotly's
-        # Python validator rejects (e.g. selectedpoints accidentally left on
-        # a 3D trace by an old Patch).
-        fig = go.Figure(fig_dict, skip_invalid=True)
-        fig.update_layout(template=get_template())
-        fig.write_image(path, width=1800, height=1200, scale=2)
-        add_log(f"Exported between-run plot to {path}")
-        return dmc.Notification(title="PDF Exported",
-                                message=f"Saved to {path}",
-                                color="green", action="show",
-                                autoClose=3000, id=notif_id())

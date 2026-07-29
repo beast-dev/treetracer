@@ -864,28 +864,20 @@ def register_within_run_callbacks():
     # which opens the shared rename modal so the user can name the
     # freshly computed MCC before PearTree opens.
 
-    # ------ export PDF ------
-    @callback(
+    # ------ export SVG ------
+    # Rendered client-side by ``assets/export_svg.js`` (window.ttExportSvg):
+    # Plotly.toImage in the live webview -> save via the pywebview
+    # ``save_download`` bridge. This deliberately avoids Kaleido, whose Chrome
+    # subprocess re-launched the app inside the Briefcase bundle and never
+    # produced a file — see the header of ``export_svg.js``.
+    clientside_callback(
+        "function(n){return (n && window.ttExportSvg)"
+        " ? window.ttExportSvg('within-run-graph', 'within_run.svg')"
+        " : window.dash_clientside.no_update;}",
         Output("notifications-container", "children", allow_duplicate=True),
         Input("within-run-export-pdf", "n_clicks"),
-        State("within-run-graph", "figure"),
         prevent_initial_call=True,
     )
-    def export_within_run_pdf(n_clicks, fig_dict):
-        from ..logger import add_log, notif_id
-        if not n_clicks or not fig_dict:
-            return no_update
-        from ._helpers import _save_file_dialog
-        path = _save_file_dialog(default_filename="within_run.pdf")
-        if not path:
-            return no_update
-        fig = go.Figure(fig_dict)
-        fig.update_layout(template=get_template())
-        fig.write_image(path, width=1800, height=500, scale=2)
-        add_log(f"Exported within-run plot to {path}")
-        return dmc.Notification(title="PDF Exported", message=f"Saved to {path}",
-                                color="green", action="show", autoClose=3000,
-                                id=notif_id())
 
     # ------ main figure rebuild — selection / show_lines / color_gradient
     # are States; each has its own targeted callback below. ------

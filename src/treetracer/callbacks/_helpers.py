@@ -60,9 +60,33 @@ def _get_pywebview_window():
 _TREE_FILE_GLOBS = ("*.trees", "*.t")
 
 
-def _save_file_dialog(default_filename="output.tsv"):
+def file_types_for_filename(filename):
+    """Return a pywebview ``file_types`` tuple keyed off the extension of
+    ``filename``, so the native save dialog offers the right filter (and
+    doesn't coerce a ``.svg`` export into ``.tsv``).
+
+    Falls back to an all-files filter for unknown extensions.
+    """
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    known = {
+        ".svg": ("SVG image (*.svg)", "All files (*.*)"),
+        ".tsv": ("TSV files (*.tsv)", "All files (*.*)"),
+        ".nex": ("NEXUS files (*.nex)", "All files (*.*)"),
+        ".trees": ("Tree files (*.trees;*.t)", "All files (*.*)"),
+        ".t": ("Tree files (*.trees;*.t)", "All files (*.*)"),
+    }
+    return known.get(ext, ("All files (*.*)",))
+
+
+def _save_file_dialog(default_filename="output.tsv", file_types=None):
     """Open a native save-file dialog and return the chosen path, or
-    ``None`` if the user cancelled / no dialog could be shown."""
+    ``None`` if the user cancelled / no dialog could be shown.
+
+    ``file_types`` is a pywebview filter tuple; when omitted it is derived
+    from ``default_filename``'s extension via ``file_types_for_filename``.
+    """
+    if file_types is None:
+        file_types = file_types_for_filename(default_filename)
     # Desktop path: ask pywebview directly. Stays in-process; pywebview
     # marshals the call onto the GUI thread internally and triggers the
     # OS-native dialog. This is the ONLY path that runs in a Briefcase
@@ -75,7 +99,7 @@ def _save_file_dialog(default_filename="output.tsv"):
             result = window.create_file_dialog(
                 webview.FileDialog.SAVE,
                 save_filename=default_filename,
-                file_types=("TSV files (*.tsv)", "All files (*.*)"),
+                file_types=file_types,
             )
         except Exception:
             result = None

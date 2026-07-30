@@ -65,7 +65,7 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     Wall-clock cost in the parent: ~50 ms for 5000 trees, well below
     the macOS beach-ball threshold.
 
-    ``is_rooted`` is the consensus rooting convention of the selected
+    ``is_rooted`` is the consensus tree rooting convention of the selected
     files (caller validates that they all agree). The worker forwards
     this to ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``
     so the presence matrix's columns are rooted clades (True) or
@@ -591,7 +591,7 @@ def register_compute_callbacks():
         _mds_meta["selected_distmat"] = selected_distmat
         _mds_meta["n_components"] = n_components
 
-        # Route through the persistent worker — same pattern as RF/MCC/
+        # Route through the persistent worker — same pattern as RF/consensus tree/
         # Pseudo-ESS. Per-compute IPC overhead is ~100ms, dwarfed by the
         # ARPACK eigsh on a 5k×5k matrix; the win is a single unified
         # background-compute pattern and clean process isolation.

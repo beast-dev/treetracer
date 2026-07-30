@@ -16,7 +16,7 @@ def create_dash_app():
         # peartree.bundle.min.js lives in assets/ so Dash auto-serves it
         # at /assets/peartree.bundle.min.js, but we don't want it injected
         # into the main page's <head> — it's only needed inside the
-        # /peartree/<uid> windows opened by "View MCC". This regex stops
+        # /peartree/<uid> windows opened by "View consensus tree". This regex stops
         # the auto-injection while leaving the file accessible.
         assets_ignore=r"peartree\.bundle\.min\.js",
         title="TreeTracer",
@@ -82,7 +82,7 @@ def main():
         # Popen returns ~immediately; the actual Python boot + heavy
         # imports happen inside the subprocess in parallel with our own
         # GUI assembly below. By the time the user clicks Compute RF or
-        # View MCC, the worker is sitting in its read loop ready to go.
+        # View consensus tree, the worker is sitting in its read loop ready to go.
         threading.Thread(
             target=persistent_worker.start,
             name="treetracer-worker-bootstrap",
@@ -185,7 +185,7 @@ def main():
                 # case fall back to the existing _on_closed path.
                 pass
 
-            # Expose the peartree JS API on this window so the View-MCC
+            # Expose the peartree JS API on this window so the View-consensus-tree
             # clientside callback can spawn sibling pywebview windows via
             # ``window.pywebview.api.open_peartree(uid, name)`` instead of
             # bouncing out to the system browser.

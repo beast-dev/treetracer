@@ -11,7 +11,7 @@ Two execution modes, branching on the env var
    parent app.
 
    The persistent design avoids paying ~1.5 s of Python interpreter
-   boot + import on every Compute RF / View MCC click — the boot is
+   boot + import on every Compute RF / View consensus tree click — the boot is
    paid once at app launch, hidden behind the normal startup
    sequence.
 
@@ -123,12 +123,12 @@ def _run_persistent_worker() -> int:
                 wlog("calling compute_rf_worker_entry")
                 result = compute_rf_worker_entry(**kwargs)
                 wlog("compute_rf_worker_entry returned")
-            elif job == "compute_mcc":
-                wlog("importing compute_mcc_worker_entry")
-                from .mcc._subprocess_worker import compute_mcc_worker_entry
-                wlog("calling compute_mcc_worker_entry")
-                result = compute_mcc_worker_entry(**kwargs)
-                wlog("compute_mcc_worker_entry returned")
+            elif job == "compute_consensus_tree":
+                wlog("importing compute_consensus_tree_worker_entry")
+                from .consensus_tree._subprocess_worker import compute_consensus_tree_worker_entry
+                wlog("calling compute_consensus_tree_worker_entry")
+                result = compute_consensus_tree_worker_entry(**kwargs)
+                wlog("compute_consensus_tree_worker_entry returned")
             elif job == "compute_pseudo_ess":
                 wlog("importing compute_pseudo_ess_worker_entry")
                 from .ess._subprocess_worker import compute_pseudo_ess_worker_entry

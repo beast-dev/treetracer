@@ -1,6 +1,6 @@
 """Pseudo-ESS dispatch + polling.
 
-Same shape as ``mcc_compute.py``: the Diagnostics tab's
+Same shape as ``consensus_tree_compute.py``: the Diagnostics tab's
 "Compute Pseudo-ESS" click handler validates input, slices the
 distmat into per-run index lists, and hands the work off to the
 persistent worker subprocess via ``persistent_worker.submit_job``.
@@ -175,13 +175,13 @@ def register_pseudo_ess_compute_callbacks():
         # "n_intervals")``:
         #
         #   * poll_completion       (compute.py — RF / MDS)
-        #   * poll_mcc_completion   (mcc_compute.py)
+        #   * poll_consensus_tree_completion   (consensus_tree_compute.py)
         #   * poll_pseudo_ess_completion (here)
         #
         # On every 100 ms tick they fire concurrently. When the ESS
         # job finishes, this callback returns a real value for
         # ``compute-poll-interval.disabled``, while the other two
-        # return ``no_update`` for everything (no RF/MDS/MCC running).
+        # return ``no_update`` for everything (no RF/MDS/consensus tree running).
         # ``compute-poll-interval.disabled``'s primary writer
         # (no ``allow_duplicate``) lives in ``handle_compute_rf`` in
         # compute.py. Dash 4.x has a bug — observed empirically on

@@ -178,7 +178,7 @@ End;
 
 
 def test_nexus_parse_strips_direct_quoted_tip_labels():
-    """Some MCC Newick bodies contain quoted taxon names directly,
+    """Some consensus tree Newick bodies contain quoted taxon names directly,
     rather than integer labels resolved through a Translate block.
     Those names must still match the unquoted canonical leaf names used
     by the clade-frequency click -> tanglegram lookup."""

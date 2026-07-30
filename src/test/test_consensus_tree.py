@@ -1,4 +1,4 @@
-"""``compute_mcc_index`` and the full MCC pipeline must agree with
+"""``compute_consensus_tree_index`` and the full consensus tree pipeline must agree with
 DendroPy's ``TreeArray.maximum_product_of_split_support_tree`` — they
 maximise the same objective (Π P(split), expressed in log-space).
 
@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from treetracer.mcc import compute_mcc_index, extract_log_posterior
+from treetracer.consensus_tree import compute_consensus_tree_index, extract_log_posterior
 
 
 # ----- algorithm only (DendroPy presence) ----------------------------------
@@ -57,10 +57,10 @@ def _presence_from_dendropy(tlist):
 
 
 @pytest.mark.integration
-def test_mcc_algorithm_matches_dendropy_50(dendropy_trees_50):
+def test_consensus_tree_algorithm_matches_dendropy_50(dendropy_trees_50):
     dendropy = pytest.importorskip("dendropy")
     presence = _presence_from_dendropy(dendropy_trees_50)
-    tt_idx, _score = compute_mcc_index(presence)
+    tt_idx, _score = compute_consensus_tree_index(presence)
 
     array = dendropy.TreeArray(taxon_namespace=dendropy_trees_50.taxon_namespace)
     for t in dendropy_trees_50:
@@ -77,9 +77,9 @@ def test_mcc_algorithm_matches_dendropy_50(dendropy_trees_50):
 
 
 @pytest.mark.integration
-def test_mcc_full_pipeline_matches_dendropy(rapidtrees_full, dendropy_trees_100):
-    """Run the production MCC path end-to-end: rapidtrees produces
-    the presence matrix, ``compute_mcc_index`` selects on it,
+def test_consensus_tree_full_pipeline_matches_dendropy(rapidtrees_full, dendropy_trees_100):
+    """Run the production consensus tree path end-to-end: rapidtrees produces
+    the presence matrix, ``compute_consensus_tree_index`` selects on it,
     DendroPy independently selects from the same trees and the picks
     must agree (RF=0)."""
     dendropy = pytest.importorskip("dendropy")
@@ -88,7 +88,7 @@ def test_mcc_full_pipeline_matches_dendropy(rapidtrees_full, dendropy_trees_100)
     n = presence.shape[0]
     assert n == 100
 
-    tt_idx, _score = compute_mcc_index(presence)
+    tt_idx, _score = compute_consensus_tree_index(presence)
 
     array = dendropy.TreeArray(taxon_namespace=dendropy_trees_100.taxon_namespace)
     for t in dendropy_trees_100:
@@ -102,7 +102,7 @@ def test_mcc_full_pipeline_matches_dendropy(rapidtrees_full, dendropy_trees_100)
 
 
 @pytest.mark.integration
-def test_mcc_runner_up_has_real_gap(rapidtrees_full, dendropy_trees_100):
+def test_consensus_tree_runner_up_has_real_gap(rapidtrees_full, dendropy_trees_100):
     """Discrimination check: runner-up score must be strictly below
     the winner's AND the two trees must be topologically different —
     otherwise the previous tests could pass on a many-way tie."""

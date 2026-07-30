@@ -38,7 +38,7 @@ packages = ["src/treetracer"]
 
 # Test-only dependencies. Install with: ``uv sync --group test``.
 # ``arviz`` and ``dendropy`` are reference implementations used to
-# cross-check TreeTracer's ESS / RF / MCC math; they are NOT imported
+# cross-check TreeTracer's ESS / RF / consensus tree math; they are NOT imported
 # by anything under ``src/treetracer`` at runtime.
 [dependency-groups]
 test = [

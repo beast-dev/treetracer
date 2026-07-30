@@ -1,12 +1,12 @@
-"""Cross-source label-remapping helpers, shared between ``mcc`` and
+"""Cross-source label-remapping helpers, shared between ``consensus tree`` and
 ``callbacks/treespace``.
 
 These used to live at the top of ``callbacks/treespace.py`` and were
-imported by ``mcc.py`` — a real circular-import shape (mcc imports from
-callbacks, callbacks imports from mcc) that worked at runtime only
-because ``mcc.py``'s imports of these helpers were inside function
-bodies. Moving them here breaks the cycle properly, and lets the MCC
-subprocess worker (``mcc._subprocess_worker``) call them without
+imported by ``consensus_tree.py`` — a real circular-import shape (consensus tree imports from
+callbacks, callbacks imports from consensus tree) that worked at runtime only
+because ``consensus_tree.py``'s imports of these helpers were inside function
+bodies. Moving them here breaks the cycle properly, and lets the consensus tree
+subprocess worker (``consensus_tree._subprocess_worker``) call them without
 dragging in any of the Dash callback machinery.
 """
 

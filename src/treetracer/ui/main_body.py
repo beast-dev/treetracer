@@ -153,7 +153,7 @@ def add_main_body():
                     dmc.TabsTab("Between-run Analysis", value="treespace"),
                     dmc.TabsTab("Within-run Analysis", value="within-run"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
-                    dmc.TabsTab("Clade Exploration", value="clade-explore"),
+                    dmc.TabsTab("Compare Consensus", value="clade-explore"),
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
@@ -272,8 +272,8 @@ def add_main_body():
         _add_about_modal(),
         _add_export_drawer(),
         # Shared rename modal — opens on first View, on the pencil
-        # icon in MCC tables, and right after View MCC → compute
+        # icon in consensus tree tables, and right after View consensus tree → compute
         # completes. See ui/rename_modal.py for layout and
-        # callbacks/rename_mcc.py for the lifecycle.
+        # callbacks/rename_consensus_tree.py for the lifecycle.
         _add_rename_modal(),
     ])

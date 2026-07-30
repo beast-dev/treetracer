@@ -1,7 +1,7 @@
 """Diagnostics tab panel: log-posterior trace, RF-to-reference trace,
 and Pseudo-ESS — the MCMC-convergence diagnostics.
 
-The MCC clade-frequency comparison that used to live here now has its
+The consensus tree clade-frequency comparison that used to live here now has its
 own tab — see ui/panels/clade_explore.py."""
 
 import dash_mantine_components as dmc

@@ -2,7 +2,7 @@
 # Entrypoint for the TreeTracer CI test suite.
 #
 # Full run:       bash run_tests.sh
-# Pick a subset:  bash run_tests.sh -k mcc    # any pytest flags pass through
+# Pick a subset:  bash run_tests.sh -k consensus_tree    # any pytest flags pass through
 set -euo pipefail
 cd "$(dirname "$0")"
 

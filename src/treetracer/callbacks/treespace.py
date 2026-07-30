@@ -13,7 +13,7 @@ from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
     retheme_figure,
 )
-from ..mcc._canonical_remap import (
+from ..consensus_tree._canonical_remap import (
     _substitute_newick_labels,
     _build_canonical_remaps,
 )
@@ -45,12 +45,12 @@ def _rewrite_tree_line(line, new_name, label_remap):
 # the last 8 traces are 2 trailing overlay bundles of 4 each, in this
 # exact order:
 #   -8 … -5 → selection overlays (3D + xy + xz + yz)
-#   -4 … -1 → MCC overlays       (3D + xy + xz + yz)
+#   -4 … -1 → consensus tree overlays       (3D + xy + xz + yz)
 SELECTION_OVERLAY_OFFSETS = (-8, -7, -6, -5)
-MCC_OVERLAY_OFFSETS = (-4, -3, -2, -1)
+CONSENSUS_TREE_OVERLAY_OFFSETS = (-4, -3, -2, -1)
 N_SELECTION_OVERLAYS = 4
-N_MCC_OVERLAYS = 4
-N_TRAILING_OVERLAYS = N_SELECTION_OVERLAYS + N_MCC_OVERLAYS
+N_CONSENSUS_TREE_OVERLAYS = 4
+N_TRAILING_OVERLAYS = N_SELECTION_OVERLAYS + N_CONSENSUS_TREE_OVERLAYS
 
 
 def _panels_2d(x, y, z):
@@ -98,18 +98,18 @@ def _overlay_panels_data(df, selected_pairs, x, y, z):
     ]
 
 
-def _mcc_overlay_panels_data(df, registry, source_distmat, x, y, z):
-    """Same shape as ``_overlay_panels_data`` but pulled from the MCC
+def _consensus_tree_overlay_panels_data(df, registry, source_distmat, x, y, z):
+    """Same shape as ``_overlay_panels_data`` but pulled from the consensus tree
     registry, filtered to **Between**-mode entries belonging to
     *source_distmat*.
 
-    Within-mode MCCs are deliberately excluded so MCCs computed on the
+    Within-mode consensus trees are deliberately excluded so consensus trees computed on the
     within-run tab don't leak as green rings onto the between-runs plot
     (and vice-versa — the within-run side does its own filtering).
 
-    Each entry contributes one point at ``mcc_tree.(group, treenum)``,
-    looked up in *df*. ``customdata[1]`` carries the MCC's registered
-    name so the hover reads "Tree #N: <RF_001_Between_MCC_2>".
+    Each entry contributes one point at ``consensus_tree.(group, treenum)``,
+    looked up in *df*. ``customdata[1]`` carries the consensus tree's registered
+    name so the hover reads "Tree #N: <RF_001_Between_consensus_tree_2>".
     """
     pairs = []
     name_by_pair = {}
@@ -118,7 +118,7 @@ def _mcc_overlay_panels_data(df, registry, source_distmat, x, y, z):
             continue
         if e.get("mode") != "Between":
             continue
-        mt = e.get("mcc_tree") or {}
+        mt = e.get("consensus_tree") or {}
         g, t = mt.get("group"), mt.get("treenum")
         if g is None or t is None:
             continue
@@ -234,7 +234,7 @@ def register_treespace_callbacks():
         Output("graph", "figure", allow_duplicate=True),
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("treespace-export-trees", "disabled", allow_duplicate=True),
-        Output("treespace-view-mcc", "disabled", allow_duplicate=True),
+        Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
         Output("treespace-selection-info", "children", allow_duplicate=True),
         Input("treespace-result-select", "value"),
         State("mds-result-store", "data"),
@@ -331,14 +331,14 @@ def register_treespace_callbacks():
         State("plot-config-store", "data"),
         State("treespace-dragmode", "value"),
         State("treespace-selected-trees-store", "data"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         State("treespace-result-select", "value"),
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def auto_update_graph(dim_x, dim_y, dim_z, treenum_range,
                           show_lines, current_fig, plot_config, dragmode,
-                          selected, mcc_registry, selected_key,
+                          selected, consensus_tree_registry, selected_key,
                           mds_results):
         if not plot_config or not all([dim_x, dim_y, dim_z]) or not treenum_range:
             return no_update
@@ -356,7 +356,7 @@ def register_treespace_callbacks():
         # each group's points into chunks and stacks them by chunk-index so
         # no single run sits entirely on top of the others in the 2D panels.
         # It also appends 8 trailing overlay traces — 4 selection (red) +
-        # 4 MCC (green).
+        # 4 consensus tree (green).
         fig = make_plot_grid()
         add_trace_multiplot_interleaved(
             fig, filtered_dff, dim_x, dim_y, dim_z,
@@ -388,14 +388,14 @@ def register_treespace_callbacks():
                 SELECTION_OVERLAY_OFFSETS,
             )
 
-        # Re-apply registered MCCs (green rings) for the current matrix.
+        # Re-apply registered consensus trees (green rings) for the current matrix.
         source_distmat = _resolve_source_distmat(selected_key, mds_results)
-        if mcc_registry and source_distmat:
+        if consensus_tree_registry and source_distmat:
             _stamp_overlay_bundle(
                 fig,
-                _mcc_overlay_panels_data(filtered_dff, mcc_registry,
+                _consensus_tree_overlay_panels_data(filtered_dff, consensus_tree_registry,
                                          source_distmat, dim_x, dim_y, dim_z),
-                MCC_OVERLAY_OFFSETS,
+                CONSENSUS_TREE_OVERLAY_OFFSETS,
             )
 
         return fig
@@ -487,11 +487,11 @@ def register_treespace_callbacks():
             return no_update
         return retheme_figure(current_fig, skip_invalid=True)
 
-    # ------ selection-info badge + Export-trees / Export-MCC enable ------
+    # ------ selection-info badge + Export-trees / Export-consensus-tree enable ------
     @callback(
         Output("treespace-selection-info", "children"),
         Output("treespace-export-trees", "disabled"),
-        Output("treespace-view-mcc", "disabled"),
+        Output("treespace-view-consensus-tree", "disabled"),
         Input("treespace-selected-trees-store", "data"),
     )
     def update_selection_info(selected):
@@ -520,7 +520,7 @@ def register_treespace_callbacks():
         if not current_fig or not plot_config:
             return no_update
         n_traces = len(current_fig.get("data", []))
-        # The trailing overlay block is 8 traces (4 selection + 4 MCC).
+        # The trailing overlay block is 8 traces (4 selection + 4 consensus tree).
         # Bail if the graph hasn't been plotted yet or the trace count
         # doesn't have room for them.
         if n_traces < N_TRAILING_OVERLAYS:
@@ -550,10 +550,10 @@ def register_treespace_callbacks():
                               SELECTION_OVERLAY_OFFSETS)
         return patch
 
-    # ------ MCC registry change → patch only the green overlays ------
+    # ------ consensus tree registry change → patch only the green overlays ------
     @callback(
         Output("graph", "figure", allow_duplicate=True),
-        Input("mcc-registry-store", "data"),
+        Input("consensus-tree-registry-store", "data"),
         State("graph", "figure"),
         State("dim-x-select", "value"),
         State("dim-y-select", "value"),
@@ -563,7 +563,7 @@ def register_treespace_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def update_mcc_overlay(registry, current_fig, dim_x, dim_y, dim_z,
+    def update_consensus_tree_overlay(registry, current_fig, dim_x, dim_y, dim_z,
                            plot_config, selected_key, mds_results):
         if not current_fig or not plot_config:
             return no_update
@@ -575,14 +575,14 @@ def register_treespace_callbacks():
 
         source_distmat = _resolve_source_distmat(selected_key, mds_results)
         combined_df = pd.DataFrame(plot_config["combined_data"])
-        mcc_data = _mcc_overlay_panels_data(
+        consensus_tree_data = _consensus_tree_overlay_panels_data(
             combined_df, registry or [], source_distmat,
             dim_x, dim_y, dim_z,
         )
 
         patch = Patch()
-        _patch_overlay_bundle(patch, n_traces, mcc_data,
-                              MCC_OVERLAY_OFFSETS)
+        _patch_overlay_bundle(patch, n_traces, consensus_tree_data,
+                              CONSENSUS_TREE_OVERLAY_OFFSETS)
         return patch
 
     # ------ reset zoom button ------
@@ -597,14 +597,14 @@ def register_treespace_callbacks():
         State("plot-config-store", "data"),
         State("treespace-selected-trees-store", "data"),
         State("treespace-dragmode", "value"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         State("treespace-result-select", "value"),
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
     def reset_axes(n_clicks, dim_x, dim_y, dim_z, treenum_range,
                    show_lines, plot_config, selected, dragmode,
-                   mcc_registry, selected_key, mds_results):
+                   consensus_tree_registry, selected_key, mds_results):
         if not n_clicks or not plot_config or not all([dim_x, dim_y, dim_z]):
             return no_update
 
@@ -631,14 +631,14 @@ def register_treespace_callbacks():
                                           dim_x, dim_y, dim_z),
                 SELECTION_OVERLAY_OFFSETS,
             )
-        # Re-apply registered MCCs (green rings).
+        # Re-apply registered consensus trees (green rings).
         source_distmat = _resolve_source_distmat(selected_key, mds_results)
-        if mcc_registry and source_distmat:
+        if consensus_tree_registry and source_distmat:
             _stamp_overlay_bundle(
                 fig,
-                _mcc_overlay_panels_data(filtered_dff, mcc_registry,
+                _consensus_tree_overlay_panels_data(filtered_dff, consensus_tree_registry,
                                          source_distmat, dim_x, dim_y, dim_z),
-                MCC_OVERLAY_OFFSETS,
+                CONSENSUS_TREE_OVERLAY_OFFSETS,
             )
         return fig
 
@@ -754,40 +754,40 @@ def register_treespace_callbacks():
                                 color="green", action="show",
                                 autoClose=4000, id=notif_id())
 
-    # ------ View MCC tree — thin submit handler ------
-    # Validates input, builds the matched-record list + MCC-coord
+    # ------ View consensus tree — thin submit handler ------
+    # Validates input, builds the matched-record list + consensus-tree-coord
     # lookup, then hands off to the persistent worker via
-    # ``mcc_compute.submit_mcc_job``. Completion is handled by
-    # ``mcc_compute.poll_mcc_completion`` which fans the result back to
-    # this tab's view-mcc-store, dismisses the loading overlay, and
+    # ``consensus_tree_compute.submit_consensus_tree_job``. Completion is handled by
+    # ``consensus_tree_compute.poll_consensus_tree_completion`` which fans the result back to
+    # this tab's view-consensus-tree-store, dismisses the loading overlay, and
     # re-enables the button.
     @callback(
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
-        Output("treespace-view-mcc", "disabled", allow_duplicate=True),
-        # MCC polling uses its own interval (see navbar.py) so this
-        # handler and poll_mcc_completion don't collide with the RF/MDS
+        Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
+        # consensus tree polling uses its own interval (see navbar.py) so this
+        # handler and poll_consensus_tree_completion don't collide with the RF/MDS
         # poll on a shared allow_duplicate output.
-        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
+        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
-        Input("treespace-view-mcc", "n_clicks"),
+        Input("treespace-view-consensus-tree", "n_clicks"),
         State("treespace-selected-trees-store", "data"),
         State("plot-config-store", "data"),
         State("treespace-result-select", "value"),
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def view_mcc_tree(n_clicks, selected_pairs, plot_config,
+    def view_consensus_tree(n_clicks, selected_pairs, plot_config,
                       selected_key, results):
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
-        from . import mcc_compute
+        from . import consensus_tree_compute
 
         if not n_clicks or not selected_pairs or not plot_config:
             return no_update, no_update, no_update, no_update
 
         def _err(msg, autoclose=5000):
             return (False, False, no_update, dmc.Notification(
-                title="MCC Error", message=msg,
+                title="Consensus tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
             ))
@@ -827,20 +827,20 @@ def register_treespace_callbacks():
             rec["line_length"] = int(rec["line_length"])
 
         # (group, treenum) per tree-name so the poll callback can put the
-        # green ring on the MCC's dot.
-        mcc_coord_by_tree_name = {
+        # green ring on the consensus tree's dot.
+        consensus_tree_coord_by_tree_name = {
             row["tree"]: (row["group"], int(row["treenum"]))
             for _, row in combined_df.iterrows()
         }
 
-        mcc_compute.submit_mcc_job(
+        consensus_tree_compute.submit_consensus_tree_job(
             matched_records=matched_records,
             source_distmat=source_distmat,
             mode="Between",
             selection=[[g, int(t)] for g, t in selected_pairs],
             run=None,
-            mcc_coord_by_tree_name=mcc_coord_by_tree_name,
-            store_target="treespace-view-mcc-store",
+            consensus_tree_coord_by_tree_name=consensus_tree_coord_by_tree_name,
+            store_target="treespace-view-consensus-tree-store",
         )
 
         # Return: overlay on, button disabled, polling enabled, no
@@ -849,13 +849,13 @@ def register_treespace_callbacks():
 
     # The per-tab clientside ``window.open`` that used to live here is
     # gone — it was a duplicate of the one in within_run.py and the
-    # one in mcc_list.py. They all now route through
-    # ``mcc-peartree-open-store`` and the single clientside callback
-    # in ``callbacks/rename_mcc.py`` does the actual ``window.open``.
-    # The poll callback in ``mcc_compute.py`` still writes the freshly
-    # registered MCC's ``{uuid, name}`` to ``treespace-view-mcc-store``
+    # one in consensus_tree_list.py. They all now route through
+    # ``consensus-tree-peartree-open-store`` and the single clientside callback
+    # in ``callbacks/rename_consensus_tree.py`` does the actual ``window.open``.
+    # The poll callback in ``consensus_tree_compute.py`` still writes the freshly
+    # registered consensus tree's ``{uuid, name}`` to ``treespace-view-consensus-tree-store``
     # — it's now picked up by ``forward_compute_to_modal`` in
-    # ``rename_mcc.py``, which opens the rename modal (with
+    # ``rename_consensus_tree.py``, which opens the rename modal (with
     # ``after='view'``) so the user can confirm or edit the auto-name
     # before peartree opens on Save.
 

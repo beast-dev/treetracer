@@ -1,9 +1,9 @@
 """Rename-modal lifecycle callbacks + the single shared peartree opener.
 
 This module is the *only* place that opens the PearTree viewer
-(formerly each of mcc_list.py / treespace.py / within_run.py had its
+(formerly each of consensus_tree_list.py / treespace.py / within_run.py had its
 own near-identical clientside ``window.open`` callback). All three
-flows now drop a ``{uuid, name}`` payload into ``mcc-peartree-open-store``
+flows now drop a ``{uuid, name}`` payload into ``consensus-tree-peartree-open-store``
 and the lone clientside callback here fans it out to either
 ``pywebview.api.open_peartree`` (desktop) or ``window.open`` (browser).
 
@@ -14,19 +14,19 @@ Callback graph (server unless noted):
 
     Triggers that should rename / view
     ──────────────────────────────────
-    * pencil click on a row             →   mcc-rename-state (after=null)
-    * row View click on unrenamed entry →   mcc-rename-state (after='view')
-    * row View click on renamed entry   →   mcc-peartree-open-store
-    * fresh View MCC → compute done     →   mcc-rename-state (after='view')
-        (forwarded from ``*-view-mcc-store`` by ``forward_compute_to_modal``)
+    * pencil click on a row             →   consensus-tree-rename-state (after=null)
+    * row View click on unrenamed entry →   consensus-tree-rename-state (after='view')
+    * row View click on renamed entry   →   consensus-tree-peartree-open-store
+    * fresh View consensus tree → compute done     →   consensus-tree-rename-state (after='view')
+        (forwarded from ``*-view-consensus-tree-store`` by ``forward_compute_to_modal``)
 
     Modal lifecycle
     ───────────────
-    mcc-rename-state    →  open_modal   →  opens modal, prefills input,
+    consensus-tree-rename-state    →  open_modal   →  opens modal, prefills input,
                                            rewrites Save button label
     Cancel click        →  cancel       →  closes modal
-    Save click          →  save         →  state.rename_mcc(...) →
-                                             refreshes mcc-registry-store,
+    Save click          →  save         →  state.rename_consensus_tree(...) →
+                                             refreshes consensus-tree-registry-store,
                                              closes modal,
                                              writes peartree-open-store
                                              (if after=='view'),
@@ -35,7 +35,7 @@ Callback graph (server unless noted):
                                                       input + selects
                                                       text + wires Enter
                                                       to Save button.
-    mcc-peartree-open  →  window.open / pywebview (clientside)
+    consensus-tree-peartree-open  →  window.open / pywebview (clientside)
 
 The two-pass nature (state-store → open_modal) is deliberate: it lets
 us reuse the same modal for compute-driven, view-driven, and pencil-
@@ -61,15 +61,15 @@ from .. import state
 from ..logger import notif_id
 
 
-def register_rename_mcc_callbacks():
+def register_rename_consensus_tree_callbacks():
     # ── Modal open: prefill input, reset error, set Save button label
     # based on whether peartree should open after Save.
     @callback(
-        Output("mcc-rename-modal", "opened"),
-        Output("mcc-rename-input", "value"),
-        Output("mcc-rename-error", "children"),
-        Output("mcc-rename-save", "children"),
-        Input("mcc-rename-state", "data"),
+        Output("consensus-tree-rename-modal", "opened"),
+        Output("consensus-tree-rename-input", "value"),
+        Output("consensus-tree-rename-error", "children"),
+        Output("consensus-tree-rename-save", "children"),
+        Input("consensus-tree-rename-state", "data"),
         prevent_initial_call=True,
     )
     def open_modal(payload):
@@ -83,13 +83,13 @@ def register_rename_mcc_callbacks():
             "Save & View" if after == "view" else "Save",
         )
 
-    # ── After ``View MCC`` → compute completes, the per-tab view-mcc
+    # ── After ``View consensus tree`` → compute completes, the per-tab view-consensus-tree
     # stores fire ``{uuid, name}``. Forward into the rename modal with
     # ``after='view'`` so Save chains the peartree open.
     @callback(
-        Output("mcc-rename-state", "data", allow_duplicate=True),
-        Input("treespace-view-mcc-store", "data"),
-        Input("within-run-view-mcc-store", "data"),
+        Output("consensus-tree-rename-state", "data", allow_duplicate=True),
+        Input("treespace-view-consensus-tree-store", "data"),
+        Input("within-run-view-consensus-tree-store", "data"),
         prevent_initial_call=True,
     )
     def forward_compute_to_modal(treespace_payload, within_payload):
@@ -110,11 +110,11 @@ def register_rename_mcc_callbacks():
             "n": payload["uuid"],
         }
 
-    # ── Pencil-click on any MCC row: open modal in rename-only mode.
+    # ── Pencil-click on any consensus tree row: open modal in rename-only mode.
     @callback(
-        Output("mcc-rename-state", "data", allow_duplicate=True),
-        Input({"type": "mcc-row-rename", "name": ALL, "source": ALL}, "n_clicks"),
-        State("mcc-registry-store", "data"),
+        Output("consensus-tree-rename-state", "data", allow_duplicate=True),
+        Input({"type": "consensus-tree-row-rename", "name": ALL, "source": ALL}, "n_clicks"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def open_modal_from_pencil(_clicks, registry):
@@ -144,8 +144,8 @@ def register_rename_mcc_callbacks():
 
     # ── Cancel: just close the modal. No state changes.
     @callback(
-        Output("mcc-rename-modal", "opened", allow_duplicate=True),
-        Input("mcc-rename-cancel", "n_clicks"),
+        Output("consensus-tree-rename-modal", "opened", allow_duplicate=True),
+        Input("consensus-tree-rename-cancel", "n_clicks"),
         prevent_initial_call=True,
     )
     def cancel(n_clicks):
@@ -155,13 +155,13 @@ def register_rename_mcc_callbacks():
 
     # ── Defensive: close the modal if the registry empties under us
     # (the user hit Clear Data with the modal open). Otherwise Save
-    # would error with "MCC entry not found" — harmless but ugly.
+    # would error with "consensus tree entry not found" — harmless but ugly.
     # Renames themselves leave the registry non-empty, so this only
     # fires on the genuine clear / last-delete paths.
     @callback(
-        Output("mcc-rename-modal", "opened", allow_duplicate=True),
-        Input("mcc-registry-store", "data"),
-        State("mcc-rename-modal", "opened"),
+        Output("consensus-tree-rename-modal", "opened", allow_duplicate=True),
+        Input("consensus-tree-registry-store", "data"),
+        State("consensus-tree-rename-modal", "opened"),
         prevent_initial_call=True,
     )
     def close_modal_on_registry_clear(registry, opened):
@@ -176,15 +176,15 @@ def register_rename_mcc_callbacks():
     # via the TextInput's ``n_submit`` counter — keeps "type a name
     # and hit Enter" working without a separate clientside listener.
     @callback(
-        Output("mcc-rename-modal", "opened", allow_duplicate=True),
-        Output("mcc-rename-error", "children", allow_duplicate=True),
-        Output("mcc-registry-store", "data", allow_duplicate=True),
-        Output("mcc-peartree-open-store", "data", allow_duplicate=True),
+        Output("consensus-tree-rename-modal", "opened", allow_duplicate=True),
+        Output("consensus-tree-rename-error", "children", allow_duplicate=True),
+        Output("consensus-tree-registry-store", "data", allow_duplicate=True),
+        Output("consensus-tree-peartree-open-store", "data", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
-        Input("mcc-rename-save", "n_clicks"),
-        Input("mcc-rename-input", "n_submit"),
-        State("mcc-rename-input", "value"),
-        State("mcc-rename-state", "data"),
+        Input("consensus-tree-rename-save", "n_clicks"),
+        Input("consensus-tree-rename-input", "n_submit"),
+        State("consensus-tree-rename-input", "value"),
+        State("consensus-tree-rename-state", "data"),
         prevent_initial_call=True,
     )
     def save(n_clicks, n_submit, new_name, payload):
@@ -194,13 +194,13 @@ def register_rename_mcc_callbacks():
         if not uuid:
             return no_update, no_update, no_update, no_update, no_update
 
-        entry, error = state.rename_mcc(uuid, new_name)
+        entry, error = state.rename_consensus_tree(uuid, new_name)
         if entry is None:
             # Keep modal open, surface the error inline so the user can
             # fix the name (most commonly a collision or empty input).
             return no_update, error or "Rename failed.", no_update, no_update, no_update
 
-        registry_payload = state.get_mcc_registry()
+        registry_payload = state.get_consensus_tree_registry()
 
         # Pencil-flow gets a small success toast — the modal closing
         # is the only other feedback, and the renamed entry is the
@@ -220,7 +220,7 @@ def register_rename_mcc_callbacks():
             }
         else:
             notif = dmc.Notification(
-                title="MCC renamed",
+                title="Consensus tree renamed",
                 message=f"Now: {entry['name']}",
                 color="green",
                 action="show",
@@ -232,7 +232,7 @@ def register_rename_mcc_callbacks():
 
     # ── Single clientside ``window.open`` for the PearTree viewer.
     # Replaces the three duplicates that used to live in
-    # mcc_list.py / treespace.py / within_run.py.
+    # consensus_tree_list.py / treespace.py / within_run.py.
     clientside_callback(
         """
         function(payload) {
@@ -258,8 +258,8 @@ def register_rename_mcc_callbacks():
             return window.dash_clientside.no_update;
         }
         """,
-        Output("mcc-peartree-open-store", "data", allow_duplicate=True),
-        Input("mcc-peartree-open-store", "data"),
+        Output("consensus-tree-peartree-open-store", "data", allow_duplicate=True),
+        Input("consensus-tree-peartree-open-store", "data"),
         prevent_initial_call=True,
     )
 
@@ -274,14 +274,14 @@ def register_rename_mcc_callbacks():
         function(opened) {
             if (opened) {
                 setTimeout(function() {
-                    const inp = document.getElementById('mcc-rename-input');
+                    const inp = document.getElementById('consensus-tree-rename-input');
                     if (inp) { inp.focus(); inp.select(); }
                 }, 100);
             }
             return window.dash_clientside.no_update;
         }
         """,
-        Output("mcc-rename-focus-sink", "children"),
-        Input("mcc-rename-modal", "opened"),
+        Output("consensus-tree-rename-focus-sink", "children"),
+        Input("consensus-tree-rename-modal", "opened"),
         prevent_initial_call=True,
     )

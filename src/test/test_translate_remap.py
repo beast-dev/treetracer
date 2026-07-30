@@ -1,19 +1,19 @@
-"""Cross-source MCC remapping logic.
+"""Cross-source consensus tree remapping logic.
 
 When the user selects trees from two or more ``.trees`` files for an
-MCC, those files may have **different** translate blocks — the same
+consensus tree, those files may have **different** translate blocks — the same
 taxon ``"foo"`` could be integer 5 in file A and integer 12 in file B.
 ``_build_canonical_remaps`` figures out the int→int remap so the
 combined NEXUS export carries consistent integer labels. Trees from
 sources missing a canonical taxon get flagged via ``missing_taxa``.
 
 Both halves matter — silently dropping taxa would produce a wrong
-MCC; silently relabelling would produce a topologically-wrong export.
+consensus tree; silently relabelling would produce a topologically-wrong export.
 """
 
 from __future__ import annotations
 
-from treetracer.mcc._canonical_remap import (
+from treetracer.consensus_tree._canonical_remap import (
     _build_canonical_remaps,
     _substitute_newick_labels,
 )

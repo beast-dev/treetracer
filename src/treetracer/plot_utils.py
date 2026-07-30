@@ -57,11 +57,11 @@ N_CHUNKS_2D = 15
 
 # Trailing overlay bundles appended to the between-runs figure: one
 # bundle for the user's current SELECTION (red), one for every
-# REGISTERED MCC (green). Each bundle has 4 traces (1 × Scatter3d for
+# REGISTERED consensus tree (green). Each bundle has 4 traces (1 × Scatter3d for
 # the 3D panel, 3 × Scatter for the 2D panels).
 N_SELECTION_OVERLAYS = 4
-N_MCC_OVERLAYS = 4
-N_TRAILING_OVERLAYS = N_SELECTION_OVERLAYS + N_MCC_OVERLAYS
+N_CONSENSUS_TREE_OVERLAYS = 4
+N_TRAILING_OVERLAYS = N_SELECTION_OVERLAYS + N_CONSENSUS_TREE_OVERLAYS
 
 _OVERLAY_STYLES = {
     "selection": {
@@ -72,7 +72,7 @@ _OVERLAY_STYLES = {
         "name": "selection",
         "hover": "Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
     },
-    "mcc": {
+    "consensus tree": {
         "color": "#39ff14",   # neon green
         # 3D ring needs to be substantially bigger than the selection
         # ring — Scatter3d ``circle-open`` strokes scale with size, not
@@ -80,8 +80,8 @@ _OVERLAY_STYLES = {
         "size3d": 12,
         "size2d": 14,
         "line2d_width": 3.0,
-        "name": "mcc",
-        "hover": "Tree #%{customdata[0]}: %{customdata[1]}<extra>MCC</extra>",
+        "name": "consensus tree",
+        "hover": "Tree #%{customdata[0]}: %{customdata[1]}<extra>consensus tree</extra>",
     },
 }
 
@@ -89,16 +89,16 @@ _OVERLAY_STYLES = {
 def _add_overlay_bundle(fig, panels_2d, *, kind):
     """Append a 4-trace overlay bundle (1 × 3D + 3 × 2D) to *fig*.
 
-    *kind* is ``"selection"`` (red) or ``"mcc"`` (green). Both bundles
+    *kind* is ``"selection"`` (red) or ``"consensus tree"`` (green). Both bundles
     share the same Scatter3d / Scatter shape so the patching callbacks
     can address them by fixed negative offsets.
     """
     style = _OVERLAY_STYLES[kind]
     # Scatter3d ignores ``marker.line.width`` for visible thickness, so
     # both 3D overlays use the ``circle-open`` symbol (the marker colour
-    # *is* the ring) and lean on size for prominence. The MCC ring is
+    # *is* the ring) and lean on size for prominence. The consensus tree ring is
     # noticeably larger than the selection ring so a tree that is both
-    # selected and a registered MCC reads as two concentric circles.
+    # selected and a registered consensus tree reads as two concentric circles.
     fig.add_trace(
         go.Scatter3d(
             x=[], y=[], z=[],
@@ -115,7 +115,7 @@ def _add_overlay_bundle(fig, panels_2d, *, kind):
     # ``Scattergl`` overlays so they live on the SAME WebGL canvas as
     # the data traces. With both on one canvas, trace insertion order
     # determines draw order — and since this bundle is appended AFTER
-    # all data + selection bundles, the MCC ring lands on top of
+    # all data + selection bundles, the consensus tree ring lands on top of
     # everything. Trying ``zorder`` on a Scatter overlay didn't work:
     # Plotly's WebGL canvas paints above the SVG layer in subplots, so
     # the SVG ring was hidden behind data. (Scattergl rejects zorder.)
@@ -408,18 +408,18 @@ def add_trace_multiplot_interleaved(fig, df, x, y, z, GROUPS, COLOR_DICT, show_l
     #     -7 → selection 2D x-y
     #     -6 → selection 2D x-z
     #     -5 → selection 2D y-z
-    #     -4 → MCC      3D (green, hollow, slightly larger so a tree
-    #                       that's both selected and a registered MCC
+    #     -4 → consensus tree      3D (green, hollow, slightly larger so a tree
+    #                       that's both selected and a registered consensus tree
     #                       reads as two concentric rings)
-    #     -3 → MCC      2D x-y
-    #     -2 → MCC      2D x-z
-    #     -1 → MCC      2D y-z
+    #     -3 → consensus tree      2D x-y
+    #     -2 → consensus tree      2D x-z
+    #     -1 → consensus tree      2D y-z
     #
-    # The two callbacks (update_selection_overlay / update_mcc_overlay)
+    # The two callbacks (update_selection_overlay / update_consensus_tree_overlay)
     # patch their bundle by these fixed negative offsets without
     # rebuilding the figure.
     _add_overlay_bundle(fig, panels_2d, kind="selection")
-    _add_overlay_bundle(fig, panels_2d, kind="mcc")
+    _add_overlay_bundle(fig, panels_2d, kind="consensus tree")
 
     fig.update_layout(
         template=get_template(),

@@ -1,8 +1,8 @@
-"""Flask routes serving an in-browser peartree view of an MCC tree.
+"""Flask routes serving an in-browser peartree view of a consensus tree.
 
-When the user clicks "View MCC" we:
-  1. compute the MCC tree server-side (mcc.assemble_mcc_nexus) and stash
-     the resulting NEXUS bytes in ``state._mcc_cache`` under a random
+When the user clicks "View consensus tree" we:
+  1. compute the consensus tree server-side (consensus_tree.assemble_consensus_tree_nexus) and stash
+     the resulting NEXUS bytes in ``state._consensus_tree_cache`` under a random
      URL-safe handle ``uid``;
   2. open a new browser window pointing at /peartree/<uid> via a Dash
      clientside callback (window.open).
@@ -31,7 +31,7 @@ _PEARTREE_PAGE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>MCC tree — {{ name }}</title>
+  <title>consensus tree — {{ name }}</title>
   <!-- Tints the native window title bar (macOS WKWebView derives its
        title-bar / overscroll colour from the page background, and some
        browsers from theme-color). peartree's default body background is
@@ -85,7 +85,7 @@ _PEARTREE_PAGE = """<!doctype html>
     const controller = PearTreeEmbed.embed({
       container: "tree",
       treeUrl:   "/peartree/{{ uid }}/tree.nex",
-      filename:  "mcc.nex",
+      filename:  "consensus_tree.nex",
       height:    "100vh",
       settings: {
         introAnimation: "none",
@@ -218,7 +218,7 @@ class PeartreeJSApi:
     """JS API exposed to the main TreeTracer pywebview window.
 
     Methods on this object are reachable from JS as
-    ``window.pywebview.api.<method>(...)``. The View-MCC clientside
+    ``window.pywebview.api.<method>(...)``. The View-consensus-tree clientside
     callback calls ``open_peartree(uid, name)`` to spawn a sibling
     native window pointing at this server's ``/peartree/<uid>`` route,
     keeping the desktop experience inside pywebview rather than handing
@@ -260,7 +260,7 @@ class PeartreeJSApi:
         from urllib.parse import quote
         import webview
 
-        title = f"MCC tree — {name}" if name else f"MCC tree — {uid}"
+        title = f"Consensus tree — {name}" if name else f"Consensus tree — {uid}"
         params = []
         if name:
             params.append("name=" + quote(name))
@@ -352,10 +352,10 @@ def register_routes(server):
 
     @server.route("/peartree/<uid>")
     def peartree_page(uid):
-        if not state.has_cached_mcc_tree(uid):
+        if not state.has_cached_consensus_tree(uid):
             abort(404)
         # Allow callers to label the window's <title> via ?name=...
-        name = request.args.get("name") or "MCC tree"
+        name = request.args.get("name") or "consensus tree"
         # Theme to match TreeTracer's light/dark scheme (passed by the
         # opener as ?theme=). The canvas background + branch colour
         # follow the scheme; the toolbar / status-bar chrome is always
@@ -375,7 +375,7 @@ def register_routes(server):
 
     @server.route("/peartree/<uid>/tree.nex")
     def peartree_data(uid):
-        data = state.get_cached_mcc_tree(uid)
+        data = state.get_cached_consensus_tree(uid)
         if data is None:
             abort(404)
         # Cache-Control no-store — UUIDs are short-lived and may collide
@@ -386,6 +386,6 @@ def register_routes(server):
             mimetype="text/plain",
             headers={
                 "Cache-Control": "no-store",
-                "Content-Disposition": 'inline; filename="mcc.nex"',
+                "Content-Disposition": 'inline; filename="consensus_tree.nex"',
             },
         )

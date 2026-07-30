@@ -150,7 +150,7 @@ def _add_diagnostics_panel():
             # computes Lanfear-style pseudo-ESS for each.
             dmc.Paper([
                 dmc.Group([
-                    dmc.Title("Pseudo-ESS", order=5),
+                    dmc.Title("Tree-ESS", order=5),
                     dmc.NumberInput(
                         id="ess-burnin-input",
                         label="Burn-in (trees)",
@@ -170,7 +170,7 @@ def _add_diagnostics_panel():
                         w=140,
                     ),
                     dmc.Button(
-                        "Compute Pseudo-ESS",
+                        "Compute Tree-ESS",
                         id="compute-pseudo-ess-button",
                         variant="filled",
                         color="green",

@@ -210,12 +210,15 @@ def register_consensus_tree_compute_callbacks():
         out_treespace_store = no_update
         out_within_store = no_update
         out_registry = no_update
-        # Always dismiss BOTH overlays + re-enable BOTH buttons on
-        # completion. Cheap, and the user might have switched tabs.
+        # Dismiss BOTH overlays on completion (cheap, and the user might
+        # have switched tabs mid-compute). The View buttons, though, are
+        # scoped to the originating tab in the success path below —
+        # enabling both here lights up the OTHER tab's View button for a
+        # consensus tree it can't show (the cross-tab leak bug).
         out_treespace_overlay = False
         out_within_overlay = False
-        out_treespace_btn = False
-        out_within_btn = False
+        out_treespace_btn = no_update
+        out_within_btn = no_update
         out_treespace_sel = no_update
         out_within_sel = no_update
 
@@ -313,15 +316,18 @@ def register_consensus_tree_compute_callbacks():
             color="green", action="show", autoClose=3000, id=notif_id(),
         )
 
-        # Route the {uuid, name} payload to the originating tab's
-        # view-consensus-tree-store. The OTHER tab's store stays untouched.
+        # Route the {uuid, name} payload — and enable the View button —
+        # for the originating tab only. The OTHER tab's store and button
+        # stay untouched (no_update) so each tab governs its own state.
         payload = {"uuid": uid, "name": registered_name}
         if store_target == "treespace-view-consensus-tree-store":
             out_treespace_store = payload
             out_treespace_sel = []
+            out_treespace_btn = False
         else:
             out_within_store = payload
             out_within_sel = []
+            out_within_btn = False
 
         out_registry = _state.get_consensus_tree_registry()
 

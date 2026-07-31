@@ -8,13 +8,14 @@ tree space, within-run trajectories, RF traces, pseudo-ESS, and
 consensus tree summaries.
 
 ---
+## Download TreeTracer installers
 
-## Install with `uv`
+[TreeTracer binaries for Mac and Windows](https://github.com/beast-dev/treetracer/releases)
 
-TreeTracer is distributed as a Python package and launched through
-[`uv`](https://docs.astral.sh/uv/) — a standalone tool that handles
-Python installation, dependency resolution, and virtual environments
-in one step. You don't need to set up Python yourself.
+## Command line/Linux installation
+
+TreeTracer is distributed as a standalone python tool and launched through
+[`uv`](https://docs.astral.sh/uv/).
 
 ### 1. Install `uv`
 
@@ -102,9 +103,3 @@ uv cache clean            # optional — frees uv's package cache
 ## Documentation
 
 For a tutorial on how to use TreeTracer, see the [BEAST X community website](https://beast.community/analysing_beast_output.html).
-
-## TODO
-
-- [ ] Fréchet correlation ESS
-- [ ] Standalone packaging
-

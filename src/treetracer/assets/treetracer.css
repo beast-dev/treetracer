@@ -99,19 +99,19 @@
 }
 
 .tt-consensus-tree-name-col {
-  width: 42%;
-}
-
-.tt-consensus-tree-run-col {
-  width: 28%;
-}
-
-.tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-name-col {
   width: 34%;
 }
 
+.tt-consensus-tree-run-col {
+  width: 20%;
+}
+
+.tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-name-col {
+  width: 28%;
+}
+
 .tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-run-col {
-  width: 24%;
+  width: 16%;
 }
 
 .tt-consensus-tree-mode-col {
@@ -123,11 +123,11 @@
 }
 
 .tt-consensus-tree-lnp-col {
-  width: 72px;
+  width: 108px;
 }
 
 .tt-consensus-tree-selected-col {
-  width: 78px;
+  width: 100px;
 }
 
 .tt-consensus-tree-actions-col {

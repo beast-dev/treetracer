@@ -133,6 +133,28 @@ def _entry_summary_row(entry, *, show_mode=False, source):
         ),
     ], gap=4)
 
+    # "Selected" cell: the input-tree count, plus (only in the tabs that
+    # actually have an MDS plot — Between/Within, not Clade Exploration) a
+    # small select icon that re-selects this consensus tree's exact input
+    # trees in the plot. Handled by ``select_consensus_tree_input_trees``.
+    if source in ("treespace", "within"):
+        selected_body = dmc.Group(
+            [
+                html.Span(f"{n_sel}"),
+                _row_action_button(
+                    kind="consensus-tree-row-select",
+                    name=name,
+                    source=source,
+                    color="teal",
+                    icon_name="tabler:select",
+                    title="Select this consensus tree's input trees in the MDS plot",
+                ),
+            ],
+            gap=4, wrap="nowrap", align="center",
+        )
+    else:
+        selected_body = f"{n_sel}"
+
     if compact_table:
         cells.extend([
             dmc.TableTd(
@@ -141,7 +163,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
             ),
             dmc.TableTd(treenum_text, className="tt-consensus-tree-col"),
             dmc.TableTd(lnp_text, className="tt-consensus-tree-lnp-col"),
-            dmc.TableTd(f"{n_sel}", className="tt-consensus-tree-selected-col"),
+            dmc.TableTd(selected_body, className="tt-consensus-tree-selected-col"),
             dmc.TableTd(action_group, className="tt-consensus-tree-actions-col"),
         ])
     else:
@@ -149,7 +171,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
             dmc.TableTd(consensus_tree_run),
             dmc.TableTd(treenum_text),
             dmc.TableTd(lnp_text),
-            dmc.TableTd(f"{n_sel}"),
+            dmc.TableTd(selected_body),
             dmc.TableTd(action_group),
         ])
     return dmc.TableTr(cells)
@@ -300,6 +322,40 @@ def register_consensus_tree_list_callbacks():
             "uuid": uuid,
             "n": (callback_context.triggered or [{}])[0].get("value"),
         }
+
+    # Row "select" icon → re-select this consensus tree's exact input trees
+    # in the tab's MDS plot. Writing the tab's selected-trees-store both
+    # clears the current selection AND re-selects it (which redraws the red
+    # overlay rings via the existing selection-store consumer). ``selection``
+    # is stored as [[group, treenum], ...]; the treespace store takes that
+    # verbatim, the within store takes bare treenums. Only Between/Within
+    # rows carry this button (the Clade tab has no MDS plot).
+    @callback(
+        Output("treespace-selected-trees-store", "data", allow_duplicate=True),
+        Output("within-run-selected-trees-store", "data", allow_duplicate=True),
+        Input({"type": "consensus-tree-row-select", "name": ALL, "source": ALL}, "n_clicks"),
+        State("consensus-tree-registry-store", "data"),
+        prevent_initial_call=True,
+    )
+    def select_consensus_tree_input_trees(_clicks, registry):
+        triggered = callback_context.triggered_id
+        if not triggered or not isinstance(triggered, dict):
+            return no_update, no_update
+        # Pattern-matching buttons restamp on every render → n_clicks is
+        # None for fresh buttons; bail so the initial render doesn't fire.
+        if not (callback_context.triggered or [{}])[0].get("value"):
+            return no_update, no_update
+        name = triggered.get("name")
+        source = triggered.get("source")
+        entry = next((e for e in (registry or []) if e.get("name") == name), None)
+        if entry is None:
+            return no_update, no_update
+        selection = entry.get("selection") or []   # [[group, treenum], ...]
+        if source == "treespace":
+            return selection, no_update
+        if source == "within":
+            return no_update, [int(t) for _g, t in selection]
+        return no_update, no_update
 
     # Server-side delete handler — runs whenever the action store says
     # so. View actions are handled clientside (next callback below).

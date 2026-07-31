@@ -215,7 +215,10 @@ def _add_treespace_panel():
                     "No MDS result selected. Compute an MDS in the Compute tab."
                 ),
                 style={"height": "calc(100vh - 320px)"},
-                config={"doubleClick": False},
+                # Hide Plotly's modebar — its toolbar overlaps the legend
+                # when many files are loaded, and the zoom/pan/export
+                # interactions are already exposed via the tab's buttons.
+                config={"doubleClick": False, "displayModeBar": False},
             ),
         ], gap="xs"),
     ], style={"padding": "10px", "position": "relative"})

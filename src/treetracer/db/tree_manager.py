@@ -265,7 +265,7 @@ class TreeManagerPandas:
             * pick ``rapidtrees(rooted=...)`` mode for RF computation,
             * validate that an RF compute doesn't mix rooting conventions
               across multiple selected files,
-            * decide whether to midpoint-root the MCC tree before display.
+            * decide whether to midpoint-root the consensus tree before display.
         """
         self._source_rooted[file_source] = bool(rooted)
 

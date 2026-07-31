@@ -1,4 +1,4 @@
-"""MCC compute worker — runs in the persistent worker subprocess.
+"""consensus tree compute worker — runs in the persistent worker subprocess.
 
 Mirrors the shape of ``rf/_subprocess_worker.py``: the parent extracts
 plain-Python descriptors from its in-memory DB + state, pickles them
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 
-def compute_mcc_worker_entry(
+def compute_consensus_tree_worker_entry(
     *,
     matched_records: List[Dict[str, Any]],
     source_distmat: str,
@@ -26,7 +26,7 @@ def compute_mcc_worker_entry(
     source_preambles: Dict[str, bytes],
     is_rooted: bool = True,
 ) -> Dict[str, Any]:
-    """Compute the MCC tree for a selection and assemble its NEXUS bytes.
+    """Compute the consensus tree for a selection and assemble its NEXUS bytes.
 
     Args:
         matched_records: list of dicts, one per selected tree, in the
@@ -46,7 +46,7 @@ def compute_mcc_worker_entry(
             up to and including the Translate block).
 
     Returns a dict the parent's polling callback unpacks. Same shape as
-    ``assemble_mcc_nexus`` returned, with ``mcc_row`` flattened to a
+    ``assemble_consensus_tree_nexus`` returned, with ``consensus_tree_row`` flattened to a
     plain dict so it pickles cleanly.
     """
     import numpy as np
@@ -55,7 +55,7 @@ def compute_mcc_worker_entry(
         _build_canonical_remaps, _substitute_newick_labels,
     )
     # Lazy import to keep startup cost out of the path until first use.
-    from . import compute_mcc_index, _inject_tree_annotation
+    from . import compute_consensus_tree_index, _inject_tree_annotation
 
     if not matched_records:
         raise ValueError("matched_records is empty")
@@ -76,10 +76,10 @@ def compute_mcc_worker_entry(
     if missing_taxa:
         return {
             "nexus_bytes": None,
-            "mcc_row": None,
+            "consensus_tree_row": None,
             "log_clade_credibility": None,
             "counts": None,
-            "cols_in_mcc": None,
+            "cols_in_consensus_tree": None,
             "missing_taxa": missing_taxa,
         }
 
@@ -90,17 +90,17 @@ def compute_mcc_worker_entry(
 
     selected_idx = [name_to_idx[rec["name"]] for rec in matched_records]
     presence_sub = presence[selected_idx]         # (n_sel, n_splits)
-    mcc_local, log_clade_cred = compute_mcc_index(presence_sub)
-    mcc_record = matched_records[mcc_local]
+    consensus_tree_local, log_clade_cred = compute_consensus_tree_index(presence_sub)
+    consensus_tree_record = matched_records[consensus_tree_local]
 
     counts = presence_sub.sum(axis=0).astype(np.int32)
-    cols_in_mcc = frozenset(np.flatnonzero(presence_sub[mcc_local]).tolist())
+    cols_in_consensus_tree = frozenset(np.flatnonzero(presence_sub[consensus_tree_local]).tolist())
 
-    # ── Read the MCC's newick from disk ────────────────────────────────
-    mcc_file_path = source_file_paths[mcc_record["file_source"]]
-    with open(mcc_file_path, "rb") as fh:
-        fh.seek(int(mcc_record["line_offset"]))
-        line = fh.read(int(mcc_record["line_length"])).decode("utf-8")
+    # ── Read the consensus tree's newick from disk ────────────────────────────────
+    consensus_tree_file_path = source_file_paths[consensus_tree_record["file_source"]]
+    with open(consensus_tree_file_path, "rb") as fh:
+        fh.seek(int(consensus_tree_record["line_offset"]))
+        line = fh.read(int(consensus_tree_record["line_length"])).decode("utf-8")
 
     # If the source distmat was computed in unrooted mode, the chosen
     # tree's newick has an arbitrary root inherited from whatever the
@@ -111,7 +111,7 @@ def compute_mcc_worker_entry(
         line = _midpoint_root_tree_line(line)
 
     line = _substitute_newick_labels(
-        line, remaps.get(mcc_record["file_source"], {}),
+        line, remaps.get(consensus_tree_record["file_source"], {}),
     )
     line = _inject_tree_annotation(
         line, "lnCladeCred", format(log_clade_cred, ".4f"),
@@ -127,10 +127,10 @@ def compute_mcc_worker_entry(
 
     return {
         "nexus_bytes": nexus_bytes,
-        "mcc_row": mcc_record,
+        "consensus_tree_row": consensus_tree_record,
         "log_clade_credibility": float(log_clade_cred),
         "counts": counts,
-        "cols_in_mcc": cols_in_mcc,
+        "cols_in_consensus_tree": cols_in_consensus_tree,
         "missing_taxa": set(),
     }
 
@@ -186,7 +186,7 @@ def _midpoint_root_tree_line(line: str) -> str:
     except Exception:
         # If midpoint rooting fails for any reason, fall through with
         # the original body — better to display an arbitrarily-rooted
-        # tree than to bail on the whole MCC compute.
+        # tree than to bail on the whole consensus tree compute.
         rooted_body = body_stripped
 
     suffix = "\n" if trailing_newline else ""

@@ -1,11 +1,11 @@
-"""Clade Exploration tab panel: per-matrix MCC registry table + the
-two-MCC Compare controls, and the Clade Frequency Comparison output
+"""Clade Exploration tab panel: per-matrix consensus tree registry table + the
+two-consensus-tree Compare controls, and the Clade Frequency Comparison output
 (scatter + tanglegram).
 
 Split out of the Diagnostics tab — clade-frequency comparison is
 exploratory phylogenetics, not a convergence diagnostic. The tab has
 its own "RF Matrix" selector (fed by the shared ``distmat-store``)
-because comparison only makes sense between MCCs of the same matrix.
+because comparison only makes sense between consensus trees of the same matrix.
 """
 
 import dash_mantine_components as dmc
@@ -19,8 +19,8 @@ def _add_clade_explore_panel():
     return html.Div([
         dmc.Stack([
             # Header: the tab's own RF Matrix selector. Comparison is
-            # matrix-scoped (MCCs only compare within one distmat), so
-            # the MCC table + Compare dropdowns below condition on it.
+            # matrix-scoped (consensus trees only compare within one distmat), so
+            # the consensus tree table + Compare dropdowns below condition on it.
             dmc.Paper([
                 dmc.Group([
                     dmc.Select(
@@ -36,32 +36,32 @@ def _add_clade_explore_panel():
                 ], align="flex-end", gap="md"),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Empty-state notice shown while the MCC registry has no
-            # entries at all. Hidden the moment any MCC is registered;
-            # driven by ``toggle_clade_mcc_empty_state`` in
+            # Empty-state notice shown while the consensus tree registry has no
+            # entries at all. Hidden the moment any consensus tree is registered;
+            # driven by ``toggle_clade_consensus_tree_empty_state`` in
             # callbacks/clade_explore.py. Visible by default because the
             # registry starts empty on load.
             dmc.Paper(
                 dmc.Stack([
                     dmc.Text(
-                        "No MCC trees available",
+                        "No consensus trees available",
                         size="md", fw=500, c="dimmed",
                     ),
                     dmc.Text(
-                        "Compute at least two MCC trees in the Between- or "
+                        "Compute at least two consensus trees in the Between- or "
                         "Within-analysis tabs for the comparison.",
                         size="sm", c="dimmed",
                     ),
                 ], gap="xs", align="center"),
-                id="clade-mcc-empty-paper",
+                id="clade-consensus-tree-empty-paper",
                 p="md", withBorder=True, radius="sm",
                 style={"textAlign": "center"},
             ),
 
-            # Per-matrix MCC registry summary + Clade-Frequency
-            # comparison controls (two MCC dropdowns + Compare button).
+            # Per-matrix consensus tree registry summary + Clade-Frequency
+            # comparison controls (two consensus tree dropdowns + Compare button).
             # The dropdowns and button sit at the top of this paper,
-            # with the MCC table immediately below them, so picking
+            # with the consensus tree table immediately below them, so picking
             # and comparing happen in the same visual unit.
             #
             # Output (scatter + tanglegram) renders into the separate
@@ -69,23 +69,23 @@ def _add_clade_explore_panel():
             # and benefit from owning the page width without the table
             # crammed above them.
             #
-            # Whole paper is hidden when no MCCs match the active
-            # matrix; driven by ``render_clade_mcc_panel`` in
+            # Whole paper is hidden when no consensus trees match the active
+            # matrix; driven by ``render_clade_consensus_tree_panel`` in
             # callbacks/clade_explore.py.
             dmc.Paper([
-                # Layout order: "MCC trees for <matrix>" title, then
+                # Layout order: "consensus trees for <matrix>" title, then
                 # the Compare-clade dropdowns + button, then the
-                # registered-MCC table itself. Title and table are
+                # registered-consensus-tree table itself. Title and table are
                 # two separate slots so the dropdowns can sit between
                 # them without being re-rendered (and losing state)
                 # every time the registry updates.
-                html.Div(id="clade-mcc-title"),
+                html.Div(id="clade-consensus-tree-title"),
                 dmc.Space(h=10),
                 dmc.Group([
                     dmc.Select(
-                        id="clade-freq-mcc-select-1",
-                        label="Group 1 (MCC tree)",
-                        placeholder="No MCC trees saved yet",
+                        id="clade-freq-consensus-tree-select-1",
+                        label="Group 1 (consensus tree)",
+                        placeholder="No consensus trees saved yet",
                         data=[],
                         value=None,
                         disabled=True,
@@ -93,9 +93,9 @@ def _add_clade_explore_panel():
                         size="sm",
                     ),
                     dmc.Select(
-                        id="clade-freq-mcc-select-2",
-                        label="Group 2 (MCC tree)",
-                        placeholder="No MCC trees saved yet",
+                        id="clade-freq-consensus-tree-select-2",
+                        label="Group 2 (consensus tree)",
+                        placeholder="No consensus trees saved yet",
                         data=[],
                         value=None,
                         disabled=True,
@@ -113,9 +113,9 @@ def _add_clade_explore_panel():
                     ),
                 ], gap="md", align="flex-end"),
                 dmc.Space(h=10),
-                html.Div(id="clade-mcc-list"),
+                html.Div(id="clade-consensus-tree-list"),
             ], p="md", withBorder=True, radius="sm",
-               id="clade-mcc-paper",
+               id="clade-consensus-tree-paper",
                style={"display": "none"}),
 
             # Clade frequency comparison panel (scatter + tanglegram).

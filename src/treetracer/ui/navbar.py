@@ -69,12 +69,12 @@ def add_navbar():
                     dcc.Store(id="mds-result-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-store", storage_type="memory"),
                     dcc.Store(id="within-run-treenum-range-store", storage_type="memory"),
-                    # Persistent registry of computed MCC trees
-                    # (RF_001_Between_MCC_1 etc.) and a one-shot action
+                    # Persistent registry of computed consensus trees
+                    # (RF_001_Between_consensus_tree_1 etc.) and a one-shot action
                     # signal driven by the per-row View / Delete buttons
-                    # in the MCC list panels.
-                    dcc.Store(id="mcc-registry-store", storage_type="memory", data=[]),
-                    dcc.Store(id="mcc-registry-action-store", storage_type="memory"),
+                    # in the consensus tree list panels.
+                    dcc.Store(id="consensus-tree-registry-store", storage_type="memory", data=[]),
+                    dcc.Store(id="consensus-tree-registry-action-store", storage_type="memory"),
                     # Current plotly template name (light/dark). Each
                     # plot-rendering callback reads it via
                     # ``theme.get_template()`` at fig build time; the
@@ -86,15 +86,15 @@ def add_navbar():
                     dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
-                    # MCC computation polls on its OWN interval. Dash derives an
+                    # consensus tree computation polls on its OWN interval. Dash derives an
                     # allow_duplicate output's disambiguation hash from the
                     # callback's Input signature (dash/_utils.py), so sharing
                     # ``compute-poll-interval`` between the RF/MDS poll and the
-                    # MCC poll makes them collide on the shared
+                    # consensus tree poll makes them collide on the shared
                     # ``compute-poll-interval.disabled`` /
                     # ``notifications-container.children`` outputs. A dedicated
-                    # interval gives ``poll_mcc_completion`` a distinct Input.
-                    dcc.Interval(id="mcc-poll-interval", interval=100, disabled=True),
+                    # interval gives ``poll_consensus_tree_completion`` a distinct Input.
+                    dcc.Interval(id="consensus-tree-poll-interval", interval=100, disabled=True),
                     # Path to the RF worker's sidecar progress file
                     # (``<save_path>.progress``). Set by
                     # ``handle_compute_rf`` when an RF compute starts;

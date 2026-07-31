@@ -20,17 +20,17 @@ cheap:
    so a Compare click pays at most one decode for a *new* distmat and
    zero for repeat clicks on the same distmat.
 
-2. Each MCC registry entry carries
+2. Each consensus tree registry entry carries
        counts:  np.int32 array, length n_bipartitions
        n_trees: int
-   computed at MCC registration time. ``counts[j]`` is the number of
-   trees in the user's MCC selection that contain bipartition ``j``;
+   computed at consensus tree registration time. ``counts[j]`` is the number of
+   trees in the user's consensus tree selection that contain bipartition ``j``;
    the frequency is just ``counts[j] / n_trees``. With this pre-
    computed, a Compare click does no row-sum work.
 
 Same-distmat only
 -----------------
-Both MCC entries MUST share ``source_distmat``. The diagnostics UI
+Both consensus tree entries MUST share ``source_distmat``. The diagnostics UI
 filters the Compare-clade dropdowns to the active RF matrix so this
 is always true; ``compute_clade_frequencies`` raises ``ValueError``
 on a mismatch as a defensive check. With shared distmat, both
@@ -81,27 +81,27 @@ def _normalise_counts(entry, source_distmat):
     row_idx = [name_to_idx[n] for n in tree_names if n in name_to_idx]
     if not row_idx:
         raise KeyError(
-            f"None of the MCC's tree names match {source_distmat}'s snapshot. "
-            "The distmat may have been recomputed since the MCC was registered."
+            f"None of the consensus tree's tree names match {source_distmat}'s snapshot. "
+            "The distmat may have been recomputed since the consensus tree was registered."
         )
     counts = presence[row_idx].sum(axis=0).astype(np.int32)
     return counts, len(row_idx)
 
 
 def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
-    """Compute per-rooted-clade frequencies for two MCC registry entries.
+    """Compute per-rooted-clade frequencies for two consensus tree registry entries.
 
     Both entries MUST share ``source_distmat`` — clade-frequency
-    comparison is only meaningful for MCCs computed from the same RF
+    comparison is only meaningful for consensus trees computed from the same RF
     matrix, since column indices in rapidtrees' rooted-clade presence
     table are basis-specific to that matrix. The dropdowns in the
-    Diagnostics UI enforce this by filtering MCC options to the active
-    distmat (see ``callbacks.diagnostics.populate_mcc_selects``); this
+    Diagnostics UI enforce this by filtering consensus tree options to the active
+    distmat (see ``callbacks.diagnostics.populate_consensus_tree_selects``); this
     function raises if a caller bypasses that filter.
 
     Args:
-        entry1, entry2: MCC registry entries (dicts as returned by
-            ``state.register_mcc``). Each must carry at least
+        entry1, entry2: consensus tree registry entries (dicts as returned by
+            ``state.register_consensus_tree``). Each must carry at least
             ``source_distmat``; ``counts`` and ``n_trees`` are used
             when present, otherwise recomputed from the snapshot.
 
@@ -125,7 +125,7 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
     src2 = entry2["source_distmat"]
     if src1 != src2:
         raise ValueError(
-            f"Cannot compare MCCs from different RF matrices "
+            f"Cannot compare consensus trees from different RF matrices "
             f"({src1!r} vs {src2!r}); UI must filter the dropdowns to "
             f"the active distmat."
         )

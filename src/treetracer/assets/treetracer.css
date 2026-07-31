@@ -69,24 +69,24 @@
   white-space: nowrap;
 }
 
-/* MCC registry tables.
+/* consensus tree registry tables.
  *
- * Long generated MCC names and run labels should not force the table
+ * Long generated consensus tree names and run labels should not force the table
  * wider than the active tab. Keep numeric/action columns compact and
  * truncate the text-heavy Name/Run cells with a native title tooltip.
  */
-.tt-mcc-registry-table {
+.tt-consensus-tree-registry-table {
   width: 100%;
   table-layout: fixed;
 }
 
-.tt-mcc-registry-table th,
-.tt-mcc-registry-table td {
+.tt-consensus-tree-registry-table th,
+.tt-consensus-tree-registry-table td {
   min-width: 0;
   overflow: hidden;
 }
 
-.tt-mcc-cell-ellipsis {
+.tt-consensus-tree-cell-ellipsis {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -94,50 +94,50 @@
   white-space: nowrap;
 }
 
-.tt-mcc-name-text {
+.tt-consensus-tree-name-text {
   font-family: monospace;
 }
 
-.tt-mcc-name-col {
-  width: 42%;
-}
-
-.tt-mcc-run-col {
-  width: 28%;
-}
-
-.tt-mcc-registry-table-with-mode .tt-mcc-name-col {
+.tt-consensus-tree-name-col {
   width: 34%;
 }
 
-.tt-mcc-registry-table-with-mode .tt-mcc-run-col {
-  width: 24%;
+.tt-consensus-tree-run-col {
+  width: 20%;
 }
 
-.tt-mcc-mode-col {
+.tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-name-col {
+  width: 28%;
+}
+
+.tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-run-col {
+  width: 16%;
+}
+
+.tt-consensus-tree-mode-col {
   width: 72px;
 }
 
-.tt-mcc-tree-col {
+.tt-consensus-tree-col {
   width: 64px;
 }
 
-.tt-mcc-lnp-col {
-  width: 72px;
+.tt-consensus-tree-lnp-col {
+  width: 108px;
 }
 
-.tt-mcc-selected-col {
-  width: 78px;
+.tt-consensus-tree-selected-col {
+  width: 100px;
 }
 
-.tt-mcc-actions-col {
+.tt-consensus-tree-actions-col {
   width: 94px;
 }
 
 /* Between-run / Within-run action toolbar.
  *
  * The toolbar is wider than the plot at comfortable desktop sizes,
- * but the secondary export/MCC actions are the first controls to
+ * but the secondary export/consensus tree actions are the first controls to
  * truncate when the visible tab narrows. Keep the existing buttons and
  * callback IDs; below 1400px, show only their icons and rely on the
  * attached tooltips/ARIA labels for the full action names. */

@@ -1,4 +1,4 @@
-"""Tests for ``treetracer.mcc._midpoint``.
+"""Tests for ``treetracer.consensus_tree._midpoint``.
 
 Verifies the midpoint property: after re-rooting, the two leaves at
 the ends of the longest path are equidistant from the new root.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from treetracer.mcc._midpoint import (
+from treetracer.consensus_tree._midpoint import (
     midpoint_root_newick, _parse_newick, _leaves, _farthest_leaf,
 )
 

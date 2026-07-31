@@ -133,7 +133,7 @@ def register_distmat(name, names, path, file_breakdown=None, groups_per_file=Non
     ``is_rooted`` reflects the rooting convention of the input ``.trees``
     files (validated to be consistent at compute time). Downstream
     features key off this:
-      * MCC: midpoint-roots the chosen tree when ``is_rooted=False``.
+      * consensus tree: midpoint-roots the chosen tree when ``is_rooted=False``.
       * RF dropdown UI: shows a "(rooted)" / "(unrooted)" suffix.
       * Future ASDSF / clade-freq exports: use bipartition semantics
         if ``is_rooted=False``.
@@ -300,7 +300,7 @@ def get_canonical_keys(source_distmat):
     # passes the translate values through verbatim, so its snapshot
     # ``leaf_names`` keep the quote characters. Without normalising
     # here, the canonical names (e.g. ``"'24P021_..._2024'"``) and the
-    # parsed MCC-tree node names (e.g. ``"24P021_..._2024"``) don't
+    # parsed consensus-tree node names (e.g. ``"24P021_..._2024"``) don't
     # match, the descendant-bits walk silently drops 1000+ tips, and
     # the tanglegram highlights scatter across paraphyletic groups.
     leaf_names = [str(n).strip("'\"") for n in snap["leaf_names"]]
@@ -359,80 +359,80 @@ def clear_all_mds_results():
 
 
 # ---------------------------------------------------------------------------
-# In-memory MCC tree cache
+# In-memory consensus tree cache
 # ---------------------------------------------------------------------------
-# When the user clicks "View MCC" we compute the MCC NEXUS bytes once on the
+# When the user clicks "View consensus tree" we compute the consensus tree NEXUS bytes once on the
 # server side and stash them under a random URL-safe token, then open
 # /peartree/<token> in a new browser window. The peartree page then fetches
 # /peartree/<token>/tree.nex back from this cache. Cache lives in memory
 # only — a server restart drops it.
 
-_mcc_cache = {}             # uuid_str -> bytes (NEXUS)
-_MAX_MCC_TREES = 50         # evict oldest when exceeded
+_consensus_tree_cache = {}             # uuid_str -> bytes (NEXUS)
+_MAX_CONSENSUS_TREE_TREES = 50         # evict oldest when exceeded
 
 
-def cache_mcc_tree(nexus_bytes):
-    """Stash NEXUS bytes for a freshly-computed MCC tree and return a
+def cache_consensus_tree(nexus_bytes):
+    """Stash NEXUS bytes for a freshly-computed consensus tree and return a
     URL-safe handle. Oldest cached tree is evicted when the cache fills."""
-    global _mcc_cache
-    if len(_mcc_cache) >= _MAX_MCC_TREES:
-        oldest = next(iter(_mcc_cache))
-        del _mcc_cache[oldest]
+    global _consensus_tree_cache
+    if len(_consensus_tree_cache) >= _MAX_CONSENSUS_TREE_TREES:
+        oldest = next(iter(_consensus_tree_cache))
+        del _consensus_tree_cache[oldest]
     uid = secrets.token_urlsafe(8)
-    _mcc_cache[uid] = nexus_bytes
+    _consensus_tree_cache[uid] = nexus_bytes
     return uid
 
 
-def get_cached_mcc_tree(uid):
+def get_cached_consensus_tree(uid):
     """Return cached NEXUS bytes for *uid*, or None if absent / evicted."""
-    return _mcc_cache.get(uid)
+    return _consensus_tree_cache.get(uid)
 
 
-def has_cached_mcc_tree(uid):
-    return uid in _mcc_cache
+def has_cached_consensus_tree(uid):
+    return uid in _consensus_tree_cache
 
 
-def clear_all_mcc_trees():
-    """Drop every cached MCC tree and its registry entry. Called from the
+def clear_all_consensus_trees():
+    """Drop every cached consensus tree and its registry entry. Called from the
     sidebar's Clear-data handler so the cache doesn't outlive the data it
     summarises."""
-    _mcc_cache.clear()
-    clear_all_mcc_registry()
+    _consensus_tree_cache.clear()
+    clear_all_consensus_tree_registry()
 
 
 # ---------------------------------------------------------------------------
-# MCC tree registry
+# consensus tree registry
 # ---------------------------------------------------------------------------
-# A persistent (within-session) record of every MCC computed in the
-# Between-runs and Within-run MDS tabs. Each entry pairs a cached MCC's
+# A persistent (within-session) record of every consensus tree computed in the
+# Between-runs and Within-run MDS tabs. Each entry pairs a cached consensus tree's
 # uuid with metadata about the source distmat / mode / run / selection,
 # so the UI can list, re-open, and overlay them on the MDS plots.
 
-_mcc_registry: list = []                # list of registry entry dicts
-_mcc_registry_counters: dict = {}       # (distmat, mode, run|None) -> int
-_MAX_MCC_REGISTRY = _MAX_MCC_TREES      # mirror cache cap
+_consensus_tree_registry: list = []                # list of registry entry dicts
+_consensus_tree_registry_counters: dict = {}       # (distmat, mode, run|None) -> int
+_MAX_CONSENSUS_TREE_REGISTRY = _MAX_CONSENSUS_TREE_TREES      # mirror cache cap
 
 
-def _next_mcc_name(source_distmat, mode, run):
-    """Allocate the next sequential MCC name for *(distmat, mode, run)*.
+def _next_consensus_tree_name(source_distmat, mode, run):
+    """Allocate the next sequential consensus tree name for *(distmat, mode, run)*.
 
     Run is included in the key (and the resulting name) only for Within
-    so that MCCs computed for different runs of the same matrix don't
+    so that consensus trees computed for different runs of the same matrix don't
     collide.
     """
     key = (source_distmat, mode, run)
-    n = _mcc_registry_counters.get(key, 0) + 1
-    _mcc_registry_counters[key] = n
+    n = _consensus_tree_registry_counters.get(key, 0) + 1
+    _consensus_tree_registry_counters[key] = n
     if mode == "Within" and run:
-        return f"{source_distmat}_Within_{run}_MCC_{n}"
-    return f"{source_distmat}_{mode}_MCC_{n}"
+        return f"{source_distmat}_Within_{run}_consensus_tree_{n}"
+    return f"{source_distmat}_{mode}_consensus_tree_{n}"
 
 
-def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
+def register_consensus_tree(*, source_distmat, mode, run, uuid, consensus_tree,
                  selection, log_clade_credibility,
-                 mcc_log_posterior=None, tree_names=None,
-                 counts=None, cols_in_mcc=None):
-    """Append a new MCC registry entry and return it.
+                 consensus_tree_log_posterior=None, tree_names=None,
+                 counts=None, cols_in_consensus_tree=None):
+    """Append a new consensus tree registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
     registry is at cap, keeping list and cache strictly synchronised.
@@ -444,62 +444,62 @@ def register_mcc(*, source_distmat, mode, run, uuid, mcc_tree,
     presence matrix over the selected rows: a numpy uint32/int32 array
     of length ``n_bipartitions``. Caller computes this from
     ``presence[row_idx].sum(axis=0)`` while it already has
-    ``presence_sub`` in scope (in ``mcc.compute_mcc_for_selection``).
+    ``presence_sub`` in scope (in ``consensus_tree.compute_consensus_tree_for_selection``).
     Caching at registration time means Compare clicks don't pay the
     row-sum cost. Optional — registry stays usable without it but
     falls back to the slow recompute path in
     ``clade_freq.compute_clade_frequencies``.
 
-    ``cols_in_mcc`` is an iterable of presence-matrix column indices
-    that appear in the chosen MCC tree itself (``np.flatnonzero(
-    presence_sub[mcc_local])``). These are the interned bipartition IDs
-    of the MCC's own clades; the Clade Frequency Comparison filter wraps
+    ``cols_in_consensus_tree`` is an iterable of presence-matrix column indices
+    that appear in the chosen consensus tree itself (``np.flatnonzero(
+    presence_sub[consensus_tree_local])``). These are the interned bipartition IDs
+    of the consensus tree's own clades; the Clade Frequency Comparison filter wraps
     them in a ``set`` once per Compare click for O(1) membership.
     Stored as a sorted list because the registry travels through the
-    browser-side ``mcc-registry-store`` and ``frozenset`` is not
+    browser-side ``consensus-tree-registry-store`` and ``frozenset`` is not
     JSON-serialisable.
     """
-    global _mcc_registry
-    if len(_mcc_registry) >= _MAX_MCC_REGISTRY:
-        oldest = _mcc_registry.pop(0)
-        _mcc_cache.pop(oldest.get("uuid"), None)
-    name = _next_mcc_name(source_distmat, mode, run)
+    global _consensus_tree_registry
+    if len(_consensus_tree_registry) >= _MAX_CONSENSUS_TREE_REGISTRY:
+        oldest = _consensus_tree_registry.pop(0)
+        _consensus_tree_cache.pop(oldest.get("uuid"), None)
+    name = _next_consensus_tree_name(source_distmat, mode, run)
     entry = {
         "name": name,
         "uuid": uuid,
         "source_distmat": source_distmat,
         "mode": mode,
         "run": run,
-        "mcc_tree": mcc_tree,
+        "consensus_tree": consensus_tree,
         "selection": selection,
         "log_clade_credibility": log_clade_credibility,
-        "mcc_log_posterior": mcc_log_posterior,
+        "consensus_tree_log_posterior": consensus_tree_log_posterior,
         "tree_names": list(tree_names) if tree_names is not None else [],
         "n_trees": len(tree_names) if tree_names is not None else 0,
         "counts": (np.asarray(counts, dtype=np.int32)
                    if counts is not None else None),
         # Stored as a plain list (JSON-serialisable) because the
-        # registry payload flows through ``mcc-registry-store`` in
+        # registry payload flows through ``consensus-tree-registry-store`` in
         # the browser. Callers that need O(1) membership wrap with
         # ``set(...)`` at use time — cheap (~few hundred ints) and
         # only paid once per Compare click.
-        "cols_in_mcc": (sorted(cols_in_mcc)
-                        if cols_in_mcc is not None else None),
-        # Flipped True by ``rename_mcc`` once the user has confirmed a
+        "cols_in_consensus_tree": (sorted(cols_in_consensus_tree)
+                        if cols_in_consensus_tree is not None else None),
+        # Flipped True by ``rename_consensus_tree`` once the user has confirmed a
         # name (even an unedited save counts — "I looked at it and this
         # is fine"). Drives the View-flow rename modal in
-        # ``callbacks/rename_mcc.py``: as long as this is False, the
+        # ``callbacks/rename_consensus_tree.py``: as long as this is False, the
         # first View click on the entry opens the rename prompt instead
         # of going straight to PearTree.
         "name_user_set": False,
         "created_at": time.time(),
     }
-    _mcc_registry.append(entry)
+    _consensus_tree_registry.append(entry)
     return entry
 
 
-def rename_mcc(name_or_uuid, new_name):
-    """Rename an MCC registry entry.
+def rename_consensus_tree(name_or_uuid, new_name):
+    """Rename a consensus tree registry entry.
 
     Returns ``(entry, error)``. On success ``entry`` is the mutated
     registry dict and ``error`` is ``None``. On failure ``entry`` is
@@ -528,15 +528,15 @@ def rename_mcc(name_or_uuid, new_name):
         return None, "Name is too long (max 80 characters)."
 
     target = None
-    for e in _mcc_registry:
+    for e in _consensus_tree_registry:
         if e.get("name") == name_or_uuid or e.get("uuid") == name_or_uuid:
             target = e
             break
     if target is None:
-        return None, "MCC entry not found (may have been cleared)."
+        return None, "consensus tree entry not found (may have been cleared)."
 
     if target["name"] != new_name:
-        for e in _mcc_registry:
+        for e in _consensus_tree_registry:
             if e is target:
                 continue
             if e.get("name") == new_name:
@@ -547,23 +547,23 @@ def rename_mcc(name_or_uuid, new_name):
     return target, None
 
 
-def get_mcc_registry():
+def get_consensus_tree_registry():
     """Snapshot the registry for a dcc.Store payload."""
-    return list(_mcc_registry)
+    return list(_consensus_tree_registry)
 
 
-def get_mcc_registry_entry(uid):
+def get_consensus_tree_registry_entry(uid):
     """Return the registry entry whose uuid matches *uid*, or None."""
-    for e in _mcc_registry:
+    for e in _consensus_tree_registry:
         if e.get("uuid") == uid:
             return e
     return None
 
 
-def get_mcc_registry_filtered(*, source_distmat=None, mode=None, run=None):
+def get_consensus_tree_registry_filtered(*, source_distmat=None, mode=None, run=None):
     """Return registry entries matching the given filters."""
     out = []
-    for e in _mcc_registry:
+    for e in _consensus_tree_registry:
         if source_distmat is not None and e["source_distmat"] != source_distmat:
             continue
         if mode is not None and e["mode"] != mode:
@@ -574,21 +574,21 @@ def get_mcc_registry_filtered(*, source_distmat=None, mode=None, run=None):
     return out
 
 
-def delete_mcc(name):
+def delete_consensus_tree(name):
     """Remove the entry with *name* and its cached NEXUS bytes.
 
     Returns True if an entry was removed, False otherwise.
     """
-    global _mcc_registry
-    for i, e in enumerate(_mcc_registry):
+    global _consensus_tree_registry
+    for i, e in enumerate(_consensus_tree_registry):
         if e["name"] == name:
-            _mcc_registry.pop(i)
-            _mcc_cache.pop(e.get("uuid"), None)
+            _consensus_tree_registry.pop(i)
+            _consensus_tree_cache.pop(e.get("uuid"), None)
             return True
     return False
 
 
-def clear_all_mcc_registry():
+def clear_all_consensus_tree_registry():
     """Drop the registry list and reset all naming counters."""
-    _mcc_registry.clear()
-    _mcc_registry_counters.clear()
+    _consensus_tree_registry.clear()
+    _consensus_tree_registry_counters.clear()

@@ -17,7 +17,7 @@ def stop_button(which: str):
     subprocess, interrupting whatever compute is in flight.
 
     ``which`` only has to be unique per button — ``"rf"``, ``"mds"``,
-    ``"mcc-treespace"``, ``"mcc-within"``, ``"ess"``.
+    ``"consensus-treespace"``, ``"consensus-tree-within"``, ``"ess"``.
     """
     return dmc.Button(
         "Stop",

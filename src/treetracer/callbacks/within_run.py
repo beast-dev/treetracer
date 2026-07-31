@@ -35,13 +35,15 @@ from ..plot_utils import retheme_figure
 TREETRACER_BLUE = "#228be6"
 
 # Fixed 12-trace shape: 3 panels × {out-of-range, in-range} + 3 selection
-# overlays (red) + 3 MCC overlays (neon green). The patching callbacks
+# overlays (red) + 3 consensus tree overlays (neon green). The patching callbacks
 # address each bundle by its fixed negative offsets so a selection
-# change or MCC-registry change never rebuilds the figure.
+# change or consensus-tree-registry change never rebuilds the figure.
 N_TRACES = 12
 SELECTION_OVERLAY_OFFSETS = (-6, -5, -4)
-MCC_OVERLAY_OFFSETS = (-3, -2, -1)
-MCC_OVERLAY_COLOR = "#39ff14"
+CONSENSUS_TREE_OVERLAY_OFFSETS = (-3, -2, -1)
+# Consensus-tree ring disabled for now — alpha 0 hides it. Restore
+# "#39ff14" (neon green) to re-enable the within-run ring overlay.
+CONSENSUS_TREE_OVERLAY_COLOR = "rgba(57,255,20,0)"
 
 
 def _get_active_result(selected_key, results_index):
@@ -95,8 +97,8 @@ def _empty_panel():
     return {"x": [], "y": [], "customdata": []}
 
 
-def _filter_mccs_for_within(registry, results, selected_key, selected_run):
-    """Subset of the MCC registry that should ring-overlay in this run.
+def _filter_consensus_trees_for_within(registry, results, selected_key, selected_run):
+    """Subset of the consensus tree registry that should ring-overlay in this run.
 
     Filters by ``source_distmat`` (taken from the active MDS result),
     ``mode == 'Within'``, and ``run == selected_run``. Returns an empty
@@ -195,12 +197,12 @@ def _selection_overlay_trace(xs, ys, customdata):
     )
 
 
-def _mcc_overlay_trace(xs, ys, customdata):
-    """Neon-green hollow ring used as the registered-MCC overlay. Same
+def _consensus_tree_overlay_trace(xs, ys, customdata):
+    """Neon-green hollow ring used as the registered-consensus-tree overlay. Same
     shape and renderer as the selection overlay so the patch callbacks
     address it the same way; just different colour, line width, and
     hovertemplate. Added to the figure AFTER the selection overlay, so
-    within the shared WebGL canvas the MCC ring draws on top of both
+    within the shared WebGL canvas the consensus tree ring draws on top of both
     the data points and the (also Scattergl) selection ring."""
     return go.Scattergl(
         x=xs, y=ys,
@@ -208,31 +210,31 @@ def _mcc_overlay_trace(xs, ys, customdata):
         marker=dict(
             size=14,
             color="rgba(0,0,0,0)",
-            line=dict(color=MCC_OVERLAY_COLOR, width=3.0),
+            line=dict(color=CONSENSUS_TREE_OVERLAY_COLOR, width=3.0),
         ),
         customdata=customdata,
-        hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>MCC</extra>",
+        hoverinfo="skip",  # ring disabled — no hover on the invisible overlay
         showlegend=False,
         selected=dict(marker=dict(opacity=1)),
         unselected=dict(marker=dict(opacity=1)),
     )
 
 
-def _mcc_panels_data(df, mcc_entries, x, y, z):
-    """Per-panel x / y / customdata for the 3 MCC-overlay traces.
+def _consensus_tree_panels_data(df, consensus_tree_entries, x, y, z):
+    """Per-panel x / y / customdata for the 3 consensus-tree-overlay traces.
 
-    *mcc_entries* is a pre-filtered list of registry entries (already
+    *consensus_tree_entries* is a pre-filtered list of registry entries (already
     matching this run + matrix). For each entry we look up the
-    ``(treenum)`` of its MCC tree in *df* and emit one point per panel.
-    customdata[1] holds the registered MCC name so hover reads
-    "Tree #N: <RF_001_Within_runA_MCC_2>".
+    ``(treenum)`` of its consensus tree in *df* and emit one point per panel.
+    customdata[1] holds the registered consensus tree name so hover reads
+    "Tree #N: <RF_001_Within_runA_consensus_tree_2>".
     """
-    if not mcc_entries:
+    if not consensus_tree_entries:
         return [_empty_panel(), _empty_panel(), _empty_panel()]
 
     treenum_to_name = {}
-    for e in mcc_entries:
-        mt = e.get("mcc_tree") or {}
+    for e in consensus_tree_entries:
+        mt = e.get("consensus_tree") or {}
         t = mt.get("treenum")
         if t is None:
             continue
@@ -258,7 +260,7 @@ def _mcc_panels_data(df, mcc_entries, x, y, z):
 def _make_within_run_figure(df, x, y, z, show_lines=True,
                             selected_treenums=None, treenum_range=None,
                             color_gradient=True, dragmode="zoom",
-                            axis_ranges=None, mcc_entries=None):
+                            axis_ranges=None, consensus_tree_entries=None):
     """Build the 3-panel within-run figure with a fixed 12-trace shape::
 
         0  panel (x,y)  out-of-range  (lightgrey, hover-disabled)
@@ -270,9 +272,9 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
         6  panel (x,y)  selection overlay   (red outline)
         7  panel (x,z)  selection overlay
         8  panel (y,z)  selection overlay
-        9  panel (x,y)  MCC overlay         (neon-green outline)
-        10 panel (x,z)  MCC overlay
-        11 panel (y,z)  MCC overlay
+        9  panel (x,y)  consensus tree overlay         (neon-green outline)
+        10 panel (x,z)  consensus tree overlay
+        11 panel (y,z)  consensus tree overlay
 
     Empty data is emitted as ``[]`` rather than dropping the trace so the
     count stays constant — that's what lets the patch callbacks rewrite
@@ -350,9 +352,9 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
         fig.add_trace(_selection_overlay_trace(d["x"], d["y"], d["customdata"]),
                       row=row, col=col)
 
-    mcc_data = _mcc_panels_data(df, mcc_entries or [], x, y, z)
-    for (_, _, row, col, _), d in zip(panels, mcc_data):
-        fig.add_trace(_mcc_overlay_trace(d["x"], d["y"], d["customdata"]),
+    consensus_tree_data = _consensus_tree_panels_data(df, consensus_tree_entries or [], x, y, z)
+    for (_, _, row, col, _), d in zip(panels, consensus_tree_data):
+        fig.add_trace(_consensus_tree_overlay_trace(d["x"], d["y"], d["customdata"]),
                       row=row, col=col)
 
     fig.update_layout(
@@ -448,11 +450,11 @@ def register_within_run_callbacks():
         Input("within-run-result-select", "value"),
         Input("within-run-run-select", "value"),
         State("mds-result-store", "data"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def load_result_for_visualization(selected_key, selected_run, results,
-                                      mcc_registry):
+                                      consensus_tree_registry):
         result = _get_active_result(selected_key, results)
         if result is None or not selected_run:
             return (no_update,) * 17
@@ -471,13 +473,13 @@ def register_within_run_callbacks():
                   "label": str(max(1, round(n * i / 10)))}
                  for i in range(11)]
 
-        mcc_entries = _filter_mccs_for_within(
-            mcc_registry, results, selected_key, selected_run)
+        consensus_tree_entries = _filter_consensus_trees_for_within(
+            consensus_tree_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, mdscols[0], mdscols[1], z_default,
             treenum_range=[1, n],
             axis_ranges=axis_ranges,
-            mcc_entries=mcc_entries,
+            consensus_tree_entries=consensus_tree_entries,
         )
 
         info = dmc.Group([
@@ -694,7 +696,7 @@ def register_within_run_callbacks():
     @callback(
         Output("within-run-selection-info", "children"),
         Output("within-run-export-trees", "disabled"),
-        Output("within-run-view-mcc", "disabled"),
+        Output("within-run-view-consensus-tree", "disabled"),
         Input("within-run-selected-trees-store", "data"),
     )
     def update_selection_info(selected):
@@ -772,34 +774,34 @@ def register_within_run_callbacks():
                                 message=f"Exported {len(matched)} trees to {path}",
                                 color="green", action="show", autoClose=4000, id=notif_id())
 
-    # ------ View MCC tree — thin submit handler ------
-    # Mirrors the Between-run shape — see callbacks/mcc_compute.py for
+    # ------ View consensus tree — thin submit handler ------
+    # Mirrors the Between-run shape — see callbacks/consensus_tree_compute.py for
     # the shared dispatch + polling code, and callbacks/treespace.py
     # for the parallel implementation.
     @callback(
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
-        Output("within-run-view-mcc", "disabled", allow_duplicate=True),
-        # MCC polling uses its own interval (see navbar.py).
-        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
+        Output("within-run-view-consensus-tree", "disabled", allow_duplicate=True),
+        # consensus tree polling uses its own interval (see navbar.py).
+        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
-        Input("within-run-view-mcc", "n_clicks"),
+        Input("within-run-view-consensus-tree", "n_clicks"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-result-select", "value"),
         State("within-run-run-select", "value"),
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def view_mcc_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
+    def view_consensus_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
-        from . import mcc_compute
+        from . import consensus_tree_compute
 
         if not n_clicks or not selected_treenums:
             return no_update, no_update, no_update, no_update
 
         def _err(msg, autoclose=5000):
             return (False, False, no_update, dmc.Notification(
-                title="MCC Error", message=msg,
+                title="Consensus tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
             ))
@@ -837,55 +839,47 @@ def register_within_run_callbacks():
             rec["line_offset"] = int(rec["line_offset"])
             rec["line_length"] = int(rec["line_length"])
 
-        # Within-run mode: the MCC always lives inside ``selected_run``
+        # Within-run mode: the consensus tree always lives inside ``selected_run``
         # so the (group, treenum) lookup is the run itself + this df's
         # treenum.
-        mcc_coord_by_tree_name = {
+        consensus_tree_coord_by_tree_name = {
             row["tree"]: (selected_run, int(row["treenum"]))
             for _, row in df_run.iterrows()
         }
 
-        mcc_compute.submit_mcc_job(
+        consensus_tree_compute.submit_consensus_tree_job(
             matched_records=matched_records,
             source_distmat=source_distmat,
             mode="Within",
             selection=[[selected_run, int(t)] for t in selected_treenums],
             run=selected_run,
-            mcc_coord_by_tree_name=mcc_coord_by_tree_name,
-            store_target="within-run-view-mcc-store",
+            consensus_tree_coord_by_tree_name=consensus_tree_coord_by_tree_name,
+            store_target="within-run-view-consensus-tree-store",
         )
 
         return True, True, False, no_update
 
     # The per-tab clientside ``window.open`` that used to live here is
     # gone; see the parallel note in ``treespace.py``. The
-    # ``within-run-view-mcc-store`` is now consumed by
-    # ``forward_compute_to_modal`` in ``callbacks/rename_mcc.py``,
+    # ``within-run-view-consensus-tree-store`` is now consumed by
+    # ``forward_compute_to_modal`` in ``callbacks/rename_consensus_tree.py``,
     # which opens the shared rename modal so the user can name the
-    # freshly computed MCC before PearTree opens.
+    # freshly computed consensus tree before PearTree opens.
 
-    # ------ export PDF ------
-    @callback(
+    # ------ export SVG ------
+    # Rendered client-side by ``assets/export_svg.js`` (window.ttExportSvg):
+    # Plotly.toImage in the live webview -> save via the pywebview
+    # ``save_download`` bridge. This deliberately avoids Kaleido, whose Chrome
+    # subprocess re-launched the app inside the Briefcase bundle and never
+    # produced a file — see the header of ``export_svg.js``.
+    clientside_callback(
+        "function(n){return (n && window.ttExportSvg)"
+        " ? window.ttExportSvg('within-run-graph', 'within_run.svg')"
+        " : window.dash_clientside.no_update;}",
         Output("notifications-container", "children", allow_duplicate=True),
         Input("within-run-export-pdf", "n_clicks"),
-        State("within-run-graph", "figure"),
         prevent_initial_call=True,
     )
-    def export_within_run_pdf(n_clicks, fig_dict):
-        from ..logger import add_log, notif_id
-        if not n_clicks or not fig_dict:
-            return no_update
-        from ._helpers import _save_file_dialog
-        path = _save_file_dialog(default_filename="within_run.pdf")
-        if not path:
-            return no_update
-        fig = go.Figure(fig_dict)
-        fig.update_layout(template=get_template())
-        fig.write_image(path, width=1800, height=500, scale=2)
-        add_log(f"Exported within-run plot to {path}")
-        return dmc.Notification(title="PDF Exported", message=f"Saved to {path}",
-                                color="green", action="show", autoClose=3000,
-                                id=notif_id())
 
     # ------ main figure rebuild — selection / show_lines / color_gradient
     # are States; each has its own targeted callback below. ------
@@ -902,12 +896,12 @@ def register_within_run_callbacks():
         State("within-run-run-select", "value"),
         State("mds-result-store", "data"),
         State("within-run-dragmode", "value"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def auto_update_plot(dim_x, dim_y, dim_z, treenum_range,
                          color_gradient, show_lines, selected, selected_key,
-                         selected_run, results, dragmode, mcc_registry):
+                         selected_run, results, dragmode, consensus_tree_registry):
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not selected_run or not all([dim_x, dim_y, dim_z]):
             return no_update
@@ -926,8 +920,8 @@ def register_within_run_callbacks():
         )
         fig_axis_ranges = axis_ranges if dim_triggered else None
 
-        mcc_entries = _filter_mccs_for_within(
-            mcc_registry, results, selected_key, selected_run)
+        consensus_tree_entries = _filter_consensus_trees_for_within(
+            consensus_tree_registry, results, selected_key, selected_run)
         return _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -935,7 +929,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=fig_axis_ranges,
-            mcc_entries=mcc_entries,
+            consensus_tree_entries=consensus_tree_entries,
         )
 
     # ------ selection store change → patch only the last 3 traces ------
@@ -990,10 +984,10 @@ def register_within_run_callbacks():
             patch["data"][idx]["customdata"] = d["customdata"]
         return patch
 
-    # ------ MCC registry change → patch only the green overlays ------
+    # ------ consensus tree registry change → patch only the green overlays ------
     @callback(
         Output("within-run-graph", "figure", allow_duplicate=True),
-        Input("mcc-registry-store", "data"),
+        Input("consensus-tree-registry-store", "data"),
         State("within-run-graph", "figure"),
         State("within-run-dim-x", "value"),
         State("within-run-dim-y", "value"),
@@ -1003,7 +997,7 @@ def register_within_run_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def update_mcc_overlay(mcc_registry, current_fig, dim_x, dim_y, dim_z,
+    def update_consensus_tree_overlay(consensus_tree_registry, current_fig, dim_x, dim_y, dim_z,
                            selected_key, selected_run, results):
         if not current_fig:
             return no_update
@@ -1019,11 +1013,11 @@ def register_within_run_callbacks():
         if df_run is None:
             return no_update
 
-        mcc_entries = _filter_mccs_for_within(
-            mcc_registry, results, selected_key, selected_run)
-        mcc_data = _mcc_panels_data(df_run, mcc_entries, dim_x, dim_y, dim_z)
+        consensus_tree_entries = _filter_consensus_trees_for_within(
+            consensus_tree_registry, results, selected_key, selected_run)
+        consensus_tree_data = _consensus_tree_panels_data(df_run, consensus_tree_entries, dim_x, dim_y, dim_z)
         patch = Patch()
-        for offset, d in zip(MCC_OVERLAY_OFFSETS, mcc_data):
+        for offset, d in zip(CONSENSUS_TREE_OVERLAY_OFFSETS, consensus_tree_data):
             idx = n_traces + offset
             patch["data"][idx]["x"] = d["x"]
             patch["data"][idx]["y"] = d["y"]
@@ -1051,13 +1045,13 @@ def register_within_run_callbacks():
         State("within-run-run-select", "value"),
         State("mds-result-store", "data"),
         State("within-run-dragmode", "value"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def update_color_gradient(color_gradient, current_fig,
                               dim_x, dim_y, dim_z, treenum_range, show_lines,
                               selected, selected_key, selected_run,
-                              results, dragmode, mcc_registry):
+                              results, dragmode, consensus_tree_registry):
         if (not current_fig or not all([dim_x, dim_y, dim_z])
                 or not selected_run):
             return no_update
@@ -1080,8 +1074,8 @@ def register_within_run_callbacks():
             if rng is not None:
                 user_ranges[axis_key] = rng
 
-        mcc_entries = _filter_mccs_for_within(
-            mcc_registry, results, selected_key, selected_run)
+        consensus_tree_entries = _filter_consensus_trees_for_within(
+            consensus_tree_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -1089,7 +1083,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=axis_ranges,  # global extent — user_ranges may override
-            mcc_entries=mcc_entries,
+            consensus_tree_entries=consensus_tree_entries,
         )
         for axis_key, rng in user_ranges.items():
             getattr(fig.layout, axis_key).range = rng
@@ -1136,12 +1130,12 @@ def register_within_run_callbacks():
         State("mds-result-store", "data"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-dragmode", "value"),
-        State("mcc-registry-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def reset_axes(n_clicks, dim_x, dim_y, dim_z, treenum_range,
                    show_lines, color_gradient, selected_key, selected_run,
-                   results, selected, dragmode, mcc_registry):
+                   results, selected, dragmode, consensus_tree_registry):
         mds_result = _get_active_result(selected_key, results)
         if (not n_clicks or not mds_result or not selected_run
                 or not all([dim_x, dim_y, dim_z])):
@@ -1151,8 +1145,8 @@ def register_within_run_callbacks():
             return no_update
         selected_set = set(selected) if selected else None
 
-        mcc_entries = _filter_mccs_for_within(
-            mcc_registry, results, selected_key, selected_run)
+        consensus_tree_entries = _filter_consensus_trees_for_within(
+            consensus_tree_registry, results, selected_key, selected_run)
         fig = _make_within_run_figure(
             df_run, dim_x, dim_y, dim_z, show_lines,
             selected_treenums=selected_set,
@@ -1160,7 +1154,7 @@ def register_within_run_callbacks():
             color_gradient=color_gradient,
             dragmode=dragmode or "zoom",
             axis_ranges=axis_ranges,
-            mcc_entries=mcc_entries,
+            consensus_tree_entries=consensus_tree_entries,
         )
         # Force a fresh uirevision so reset *does* throw away the user's zoom.
         fig.update_layout(uirevision=f"reset-{n_clicks}")

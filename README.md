@@ -5,7 +5,7 @@ A desktop app for exploring posterior tree distributions from
 directly, compute pairwise Robinson–Foulds distances with a fast Rust
 core, and visualise convergence interactively — between-run mixing in
 tree space, within-run trajectories, RF traces, pseudo-ESS, and
-Maximum Clade Credibility (MCC) tree summaries.
+consensus tree summaries.
 
 ---
 

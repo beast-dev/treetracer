@@ -1,6 +1,6 @@
 [project]
 name = "treetracer"
-version = "0.9rc1"
+version = "0.95rc"
 description = "An app to visualize phylogenetic tree topology convergence"
 readme = "README.md"
 authors = [
@@ -18,7 +18,6 @@ dependencies = [
     "psutil>=7.0.0",
     "numpy",
     "scipy",
-    "kaleido",
     "pywebview>=6.1",
 ]
 
@@ -39,7 +38,7 @@ packages = ["src/treetracer"]
 
 # Test-only dependencies. Install with: ``uv sync --group test``.
 # ``arviz`` and ``dendropy`` are reference implementations used to
-# cross-check TreeTracer's ESS / RF / MCC math; they are NOT imported
+# cross-check TreeTracer's ESS / RF / consensus tree math; they are NOT imported
 # by anything under ``src/treetracer`` at runtime.
 [dependency-groups]
 test = [
@@ -76,7 +75,7 @@ package = [
 [tool.briefcase]
 project_name = "TreeTracer"
 bundle = "community.beast"
-version = "0.9rc1"
+version = "0.95rc"
 url = "https://github.com/beast-dev/treetracer"
 license = "GPL-3.0-or-later"
 author = "Sam Hong"
@@ -107,7 +106,6 @@ requires = [
     "psutil>=7.0.0",
     "numpy",
     "scipy",
-    "kaleido",
     "pywebview>=6.1",
 ]
 

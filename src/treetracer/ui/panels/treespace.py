@@ -1,6 +1,6 @@
 """Between-run Analysis tab panel: MDS result selector, dim selectors,
 selection tools, the 3D scatter + three 2D projections, plus the
-per-tab MCC registry table."""
+per-tab consensus tree registry table."""
 
 import dash_mantine_components as dmc
 from dash import dcc, html
@@ -13,9 +13,9 @@ from ..widgets import stop_button
 def _add_treespace_panel():
     """Build the Between-run Analysis tab panel content."""
     return html.Div([
-        # MCC-compute loading overlay. Visible=True flipped on by
-        # ``view_mcc_tree`` (click handler), back to False by
-        # ``mcc_compute.poll_mcc_completion``. Position relative on the
+        # consensus-tree-compute loading overlay. Visible=True flipped on by
+        # ``view_consensus_tree`` (click handler), back to False by
+        # ``consensus_tree_compute.poll_consensus_tree_completion``. Position relative on the
         # wrapping Div lets the overlay sit on top.
         dmc.LoadingOverlay(
             id="treespace-loading-overlay",
@@ -24,9 +24,9 @@ def _add_treespace_panel():
             overlayProps={"radius": "sm", "blur": 2},
             loaderProps={"size": "lg", "type": "dots",
                          "children": dmc.Stack(
-                             [dmc.Text("Computing MCC tree…",
+                             [dmc.Text("Computing consensus tree…",
                                        size="sm", c="dimmed"),
-                              stop_button("mcc-treespace")],
+                              stop_button("consensus-treespace")],
                              align="center", gap="xs", mt="sm")},
         ),
         dmc.Stack([
@@ -155,8 +155,8 @@ def _add_treespace_panel():
                 ),
                 dmc.Tooltip(
                     dmc.Button(
-                        html.Span("View MCC", className="tt-analysis-action-text"),
-                        id="treespace-view-mcc",
+                        html.Span("View consensus tree", className="tt-analysis-action-text"),
+                        id="treespace-view-consensus-tree",
                         variant="filled", color="violet", size="xs",
                         disabled=True,
                         leftSection=icon("tabler:tree", size=14),
@@ -165,24 +165,24 @@ def _add_treespace_panel():
                             "inner": "tt-analysis-action-inner",
                             "section": "tt-analysis-action-section",
                         },
-                        **{"aria-label": "View MCC tree"},
+                        **{"aria-label": "View consensus tree"},
                     ),
-                    label="View MCC tree",
+                    label="View consensus tree",
                 ),
                 dmc.Tooltip(
                     dmc.Button(
                         html.Span("Export", className="tt-analysis-action-text"),
                         id="treespace-export-pdf",
                         variant="light", size="xs",
-                        leftSection=icon("tabler:pdf", size=20),
+                        leftSection=icon("tabler:download", size=20),
                         className="tt-analysis-collapse-button",
                         classNames={
                             "inner": "tt-analysis-action-inner",
                             "section": "tt-analysis-action-section",
                         },
-                        **{"aria-label": "Export PDF"},
+                        **{"aria-label": "Export SVG"},
                     ),
-                    label="Export PDF",
+                    label="Export SVG",
                 ),
             ], align="center", gap="sm", wrap="nowrap",
                 id="treespace-controls-paper",
@@ -192,16 +192,16 @@ def _add_treespace_panel():
             dcc.Store(id="treespace-selected-trees-store",
                       storage_type="memory"),
             # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
-            # populated by the View-MCC handler with {"uuid", "name"}.
-            dcc.Store(id="treespace-view-mcc-store", storage_type="memory"),
+            # populated by the View-consensus-tree handler with {"uuid", "name"}.
+            dcc.Store(id="treespace-view-consensus-tree-store", storage_type="memory"),
 
-            # Per-tab MCC registry list. Hidden when no MCCs match the
+            # Per-tab consensus tree registry list. Hidden when no consensus trees match the
             # currently-selected MDS result. Rendered by
-            # ``render_mcc_list`` in callbacks/treespace.py.
+            # ``render_consensus_tree_list`` in callbacks/treespace.py.
             dmc.Paper(
-                html.Div(id="treespace-mcc-list"),
+                html.Div(id="treespace-consensus-tree-list"),
                 withBorder=True, p="xs", radius="sm",
-                id="treespace-mcc-list-paper",
+                id="treespace-consensus-tree-list-paper",
                 style={"display": "none"},
             ),
 
@@ -215,7 +215,10 @@ def _add_treespace_panel():
                     "No MDS result selected. Compute an MDS in the Compute tab."
                 ),
                 style={"height": "calc(100vh - 320px)"},
-                config={"doubleClick": False},
+                # Hide Plotly's modebar — its toolbar overlaps the legend
+                # when many files are loaded, and the zoom/pan/export
+                # interactions are already exposed via the tab's buttons.
+                config={"doubleClick": False, "displayModeBar": False},
             ),
         ], gap="xs"),
     ], style={"padding": "10px", "position": "relative"})

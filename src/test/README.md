@@ -14,7 +14,7 @@ uv sync --group test
 bash run_tests.sh
 
 # Pytest passthrough
-bash run_tests.sh -k mcc -v
+bash run_tests.sh -k consensus tree -v
 ```
 
 ## Layout
@@ -27,12 +27,12 @@ bash run_tests.sh -k mcc -v
 | `test_ess.py` | `effective_sample_size` vs AR(1) closed form + arviz cross-check (iid, AR(2), MA(5), heavy-tail, multimodal). |
 | `test_pseudo_ess.py` | `compute_pseudo_ess` shape, n-cap, rank-norm bound, row-order sensitivity. |
 | `test_pcoa.py` | `compute_mds` Procrustes-equivalent to scipy on synthetic Euclidean + real RF. |
-| `test_state_registry.py` | distmat index, MCC cache, MCC registry, LRU eviction, cascade clears. |
-| `test_translate_remap.py` | `_build_canonical_remaps` for cross-source MCC export. |
+| `test_state_registry.py` | distmat index, consensus tree cache, consensus tree registry, LRU eviction, cascade clears. |
+| `test_translate_remap.py` | `_build_canonical_remaps` for cross-source consensus tree export. |
 | `test_file_io.py` | NEXUS → DB → byte-offset re-read round-trip, translate map round-trip, metadata extraction. |
 | `test_rf_matrix.py` | rapidtrees pairwise RF matrix element-wise vs DendroPy rooted-clade sym-diff (50 trees / 1225 pairs). |
 | `test_rf_trace.py` | `compute_rf_trace_data` first/last reference, error paths. |
-| `test_mcc.py` | `compute_mcc_index` algorithm match + full pipeline (rapidtrees → presence → MCC vs DendroPy MCC) + runner-up discrimination check. |
+| `test_consensus_tree.py` | `compute_consensus_tree_index` algorithm match + full pipeline (rapidtrees → presence → consensus tree vs DendroPy consensus tree) + runner-up discrimination check. |
 
 ## Markers
 

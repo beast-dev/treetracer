@@ -1,5 +1,5 @@
 """Within-run Analysis tab panel: per-run scatter with playback, gradient
-coloring, range slider, and the within-run MCC registry table."""
+coloring, range slider, and the within-run consensus tree registry table."""
 
 import dash_mantine_components as dmc
 from dash import dcc, html
@@ -12,9 +12,9 @@ from ..widgets import stop_button
 def _add_within_run_panel():
     """Build the Within-run Analysis tab panel content (visualization only)."""
     return html.Div([
-        # MCC-compute loading overlay — see treespace panel for the
-        # full pattern. Toggled by ``view_mcc_tree`` (on) and
-        # ``mcc_compute.poll_mcc_completion`` (off).
+        # consensus-tree-compute loading overlay — see treespace panel for the
+        # full pattern. Toggled by ``view_consensus_tree`` (on) and
+        # ``consensus_tree_compute.poll_consensus_tree_completion`` (off).
         dmc.LoadingOverlay(
             id="within-run-loading-overlay",
             visible=False,
@@ -22,9 +22,9 @@ def _add_within_run_panel():
             overlayProps={"radius": "sm", "blur": 2},
             loaderProps={"size": "lg", "type": "dots",
                          "children": dmc.Stack(
-                             [dmc.Text("Computing MCC tree…",
+                             [dmc.Text("Computing consensus tree…",
                                        size="sm", c="dimmed"),
-                              stop_button("mcc-within")],
+                              stop_button("consensus-tree-within")],
                              align="center", gap="xs", mt="sm")},
         ),
         dmc.Stack([
@@ -168,8 +168,8 @@ def _add_within_run_panel():
                 ),
                 dmc.Tooltip(
                     dmc.Button(
-                        html.Span("View MCC", className="tt-analysis-action-text"),
-                        id="within-run-view-mcc",
+                        html.Span("View consensus tree", className="tt-analysis-action-text"),
+                        id="within-run-view-consensus-tree",
                         variant="filled", color="violet", size="xs",
                         disabled=True,
                         leftSection=icon("tabler:tree", size=14),
@@ -178,24 +178,24 @@ def _add_within_run_panel():
                             "inner": "tt-analysis-action-inner",
                             "section": "tt-analysis-action-section",
                         },
-                        **{"aria-label": "View MCC tree"},
+                        **{"aria-label": "View consensus tree"},
                     ),
-                    label="View MCC tree",
+                    label="View consensus tree",
                 ),
                 dmc.Tooltip(
                     dmc.Button(
                         html.Span("Export", className="tt-analysis-action-text"),
                         id="within-run-export-pdf",
                         variant="light", size="xs",
-                        leftSection=icon("tabler:pdf", size=20),
+                        leftSection=icon("tabler:download", size=20),
                         className="tt-analysis-collapse-button",
                         classNames={
                             "inner": "tt-analysis-action-inner",
                             "section": "tt-analysis-action-section",
                         },
-                        **{"aria-label": "Export PDF"},
+                        **{"aria-label": "Export SVG"},
                     ),
-                    label="Export PDF",
+                    label="Export SVG",
                 ),
             ], align="center", gap="sm", wrap="nowrap",
                id="within-run-controls-paper",
@@ -205,16 +205,16 @@ def _add_within_run_panel():
             # Hidden stores
             dcc.Store(id="within-run-selected-trees-store", storage_type="memory"),
             # Drives the clientside ``window.open(/peartree/<uid>)`` callback;
-            # populated by the View-MCC handler with {"uuid", "name"}.
-            dcc.Store(id="within-run-view-mcc-store", storage_type="memory"),
+            # populated by the View-consensus-tree handler with {"uuid", "name"}.
+            dcc.Store(id="within-run-view-consensus-tree-store", storage_type="memory"),
             dcc.Interval(id="within-run-anim-interval", interval=300, disabled=True),
 
-            # Per-tab MCC registry list (hidden when nothing to show).
-            # Rendered by ``render_mcc_list`` in callbacks/within_run.py.
+            # Per-tab consensus tree registry list (hidden when nothing to show).
+            # Rendered by ``render_consensus_tree_list`` in callbacks/within_run.py.
             dmc.Paper(
-                html.Div(id="within-run-mcc-list"),
+                html.Div(id="within-run-consensus-tree-list"),
                 withBorder=True, p="xs", radius="sm",
-                id="within-run-mcc-list-paper",
+                id="within-run-consensus-tree-list-paper",
                 style={"display": "none"},
             ),
 
@@ -226,7 +226,10 @@ def _add_within_run_panel():
                     "No MDS result selected. Compute an MDS in the Compute tab."
                 ),
                 style={"height": "calc(100vh - 320px)"},
-                config={"doubleClick": False},
+                # Hide Plotly's modebar — its toolbar overlaps the legend
+                # when many files are loaded, and the zoom/pan/export
+                # interactions are already exposed via the tab's buttons.
+                config={"doubleClick": False, "displayModeBar": False},
             ),
         ], gap="xs"),
     ], style={"padding": "10px", "position": "relative"})

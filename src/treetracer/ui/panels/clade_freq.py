@@ -1,8 +1,8 @@
 """Clade Frequency Comparison panel — the scatter + tanglegram pair that
-sits inside the Clade Exploration tab once two MCC trees are picked.
+sits inside the Clade Exploration tab once two consensus trees are picked.
 
-The controls (two MCC dropdowns, Compare button) live in the
-``clade-mcc-paper`` block in the Clade Exploration panel; this module
+The controls (two consensus tree dropdowns, Compare button) live in the
+``clade-consensus-tree-paper`` block in the Clade Exploration panel; this module
 defines only the output surface.
 """
 
@@ -13,8 +13,8 @@ from dash import dcc, html
 def _add_clade_freq_panel():
     """Output paper for the Clade Frequency Comparison feature.
 
-    The CONTROLS — two MCC-tree dropdowns and the Compare button —
-    live in ``clade-mcc-paper`` (immediately under the MCC table
+    The CONTROLS — two consensus-tree dropdowns and the Compare button —
+    live in ``clade-consensus-tree-paper`` (immediately under the consensus tree table
     they pull from). This paper is just the output surface: the
     scatter, the two sliders that re-shape it, and the tanglegram
     below.
@@ -30,7 +30,7 @@ def _add_clade_freq_panel():
         dmc.Group([
             dmc.Title("Clade Frequency Comparison", order=5),
             dmc.Badge(
-                "select two MCC trees above and click Compare",
+                "select two consensus trees above and click Compare",
                 variant="light", size="sm",
             ),
         ], gap="sm", align="center"),
@@ -68,7 +68,7 @@ def _add_clade_freq_panel():
         # dcc.Graph so ``dash.Patch`` can update only the dynamic
         # traces (highlight markers + connectors) on each click —
         # the branches and grey-tips skeleton stays put. The
-        # tanglegram-pair-store tracks which MCC pair is currently
+        # tanglegram-pair-store tracks which consensus tree pair is currently
         # rendered so the callback knows when a full rebuild is
         # required (different uids) vs a Patch-only update.
         # Title lives in its own ``position: sticky`` div above the
@@ -112,7 +112,7 @@ def _add_clade_freq_panel():
                             "paper_bgcolor": "rgba(0,0,0,0)",
                             "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
                             "annotations": [{
-                                "text": "Select two MCC trees and click "
+                                "text": "Select two consensus trees and click "
                                         "<b>Compare Clade Frequencies</b>,"
                                         " then click a dot in the scatter "
                                         "above to draw the tanglegram.",

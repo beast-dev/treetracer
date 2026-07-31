@@ -1,8 +1,8 @@
 """Midpoint rooting for newick trees.
 
-Used by ``mcc/_subprocess_worker.py`` when the source distmat was
+Used by ``consensus tree/_subprocess_worker.py`` when the source distmat was
 computed with ``is_rooted=False`` (MrBayes / RevBayes unrooted output).
-The MCC algorithm picks the best tree from the posterior in a
+The consensus tree algorithm picks the best tree from the posterior in a
 rooting-agnostic way; we then need to root the chosen tree somewhere
 sensible for display. Midpoint rooting is the standard default —
 roots on the centre of the diameter (longest leaf-to-leaf path), which

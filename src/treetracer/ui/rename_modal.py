@@ -1,18 +1,18 @@
-"""The MCC rename modal — single dialog driven from three places.
+"""The consensus tree rename modal — single dialog driven from three places.
 
-The user can rename an MCC tree from:
+The user can rename a consensus tree from:
 
 * The first View click on an entry whose ``name_user_set`` is still
   False — the click opens this modal prefilled with the auto-name
   instead of going straight to PearTree.
-* The pencil icon on each MCC list row, for any-time edits.
-* Right after a fresh ``View MCC`` → compute completes (the new entry
+* The pencil icon on each consensus tree list row, for any-time edits.
+* Right after a fresh ``View consensus tree`` → compute completes (the new entry
   is by definition name-default, so the modal opens automatically with
   ``after = 'view'`` to chain the open after Save).
 
 Three small stores live alongside the modal:
 
-* ``mcc-rename-state`` — drives WHEN the modal opens, what to prefill,
+* ``consensus-tree-rename-state`` — drives WHEN the modal opens, what to prefill,
   and what to do on Save. Shape::
 
       {uuid: str, name: str, after: "view" | None, n: int}
@@ -21,14 +21,14 @@ Three small stores live alongside the modal:
   key is just a nonce so repeat triggers (same uuid, same after) still
   count as data changes for Dash.
 
-* ``mcc-peartree-open-store`` — the single sink that opens the
+* ``consensus-tree-peartree-open-store`` — the single sink that opens the
   PearTree viewer. One clientside callback (in
-  ``callbacks/rename_mcc.py``) reads this and does the
+  ``callbacks/rename_consensus_tree.py``) reads this and does the
   ``window.open`` (or ``pywebview.api.open_peartree`` on desktop).
   Replaces the three duplicate clientside callbacks that previously
-  lived in ``mcc_list.py``, ``treespace.py``, ``within_run.py``.
+  lived in ``consensus_tree_list.py``, ``treespace.py``, ``within_run.py``.
 
-* ``mcc-rename-focus-sink`` — a hidden div that absorbs the
+* ``consensus-tree-rename-focus-sink`` — a hidden div that absorbs the
   no-update return of the open-focus helper clientside callback (we
   don't want to overwrite any real component's prop just to fire JS).
 """
@@ -40,8 +40,8 @@ from dash import dcc, html
 def _add_rename_modal():
     return html.Div([
         dmc.Modal(
-            id="mcc-rename-modal",
-            title="Name this MCC tree",
+            id="consensus-tree-rename-modal",
+            title="Name this consensus tree",
             centered=True,
             size="sm",
             # Above any other dmc.Modal in the app (only one exists
@@ -57,11 +57,11 @@ def _add_rename_modal():
             children=[
                 dmc.Stack([
                     dmc.TextInput(
-                        id="mcc-rename-input",
+                        id="consensus-tree-rename-input",
                         label="Name",
                         description=(
                             "Used in the PearTree window title, the "
-                            "MCC list, and Compare dropdowns."
+                            "consensus tree list, and Compare dropdowns."
                         ),
                         placeholder="e.g. run3_burn10",
                         value="",
@@ -69,13 +69,13 @@ def _add_rename_modal():
                         # DMC 2.4's TextInput doesn't expose
                         # ``maxLength`` or ``autoFocus`` as props.
                         # Length is enforced server-side by
-                        # ``state.rename_mcc`` (≤ 80 chars), and focus
+                        # ``state.rename_consensus_tree`` (≤ 80 chars), and focus
                         # is dropped into the input on every open by
                         # the clientside helper in
-                        # ``callbacks/rename_mcc.py``.
+                        # ``callbacks/rename_consensus_tree.py``.
                     ),
                     html.Div(
-                        id="mcc-rename-error",
+                        id="consensus-tree-rename-error",
                         style={
                             "color": "#c92a2a",
                             "fontSize": "12px",
@@ -87,7 +87,7 @@ def _add_rename_modal():
                     dmc.Group([
                         dmc.Button(
                             "Cancel",
-                            id="mcc-rename-cancel",
+                            id="consensus-tree-rename-cancel",
                             variant="default",
                             size="sm",
                         ),
@@ -96,7 +96,7 @@ def _add_rename_modal():
                             # "Save & View" when ``after == 'view'``,
                             # plain "Save" for pencil-rename.
                             "Save",
-                            id="mcc-rename-save",
+                            id="consensus-tree-rename-save",
                             variant="filled",
                             color="blue",
                             size="sm",
@@ -106,8 +106,8 @@ def _add_rename_modal():
             ],
         ),
         # ── State + dispatch stores ──────────────────────────────────
-        dcc.Store(id="mcc-rename-state"),
-        dcc.Store(id="mcc-peartree-open-store"),
+        dcc.Store(id="consensus-tree-rename-state"),
+        dcc.Store(id="consensus-tree-peartree-open-store"),
         # Hidden no-update sink for the focus + Enter-wiring helper.
-        html.Div(id="mcc-rename-focus-sink", style={"display": "none"}),
+        html.Div(id="consensus-tree-rename-focus-sink", style={"display": "none"}),
     ])

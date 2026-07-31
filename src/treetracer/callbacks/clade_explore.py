@@ -1,10 +1,10 @@
-"""Clade Exploration tab — MCC-tree clade-frequency comparison.
+"""Clade Exploration tab — consensus-tree clade-frequency comparison.
 
 Split out of ``callbacks/diagnostics.py``: the clade-frequency scatter
 + tanglegram is exploratory phylogenetics, not a convergence
 diagnostic, so it lives in its own tab and its own module. This module
-owns the tab's RF-matrix selector, the per-matrix MCC table, the
-two-MCC Compare workflow, and the scatter / tanglegram rendering.
+owns the tab's RF-matrix selector, the per-matrix consensus tree table, the
+two-consensus-tree Compare workflow, and the scatter / tanglegram rendering.
 """
 
 import functools
@@ -28,8 +28,8 @@ from ..plot_utils import retheme_figure
 # integer ``split_id`` (the row index in the DataFrame produced by
 # ``compute_clade_frequencies``); this dict maps that id to a
 # ``(source_distmat, column_j, split_key)`` triple so the click
-# handler can both resolve the clade's tip names AND check MCC
-# membership via ``column_j in cols_in_mcc`` (the rapidtrees-encoded
+# handler can both resolve the clade's tip names AND check consensus tree
+# membership via ``column_j in cols_in_consensus_tree`` (the rapidtrees-encoded
 # rooted-clade column index in that distmat's snapshot). Rebuilt on
 # every Compare click.
 #
@@ -41,23 +41,23 @@ _split_resolution: dict[int, tuple[str, int, tuple]] = {}
 # ---------------------------------------------------------------------------
 # Tanglegram caches
 # ---------------------------------------------------------------------------
-# Re-parsing the MCC NEXUS bytes on every scatter click was the dominant
+# Re-parsing the consensus tree NEXUS bytes on every scatter click was the dominant
 # cost of ``draw_tanglegram`` for big trees (~280 taxa = 100s of ms per
 # click). These two caches plus a deterministic trace layout in the
 # tanglegram figure let the callback Patch only the dynamic traces
-# (highlight markers + connectors) when the MCC pair hasn't changed.
+# (highlight markers + connectors) when the consensus tree pair hasn't changed.
 
 
 @functools.lru_cache(maxsize=64)
-def _get_parsed_mcc(uid):
-    """Parse the cached NEXUS for an MCC uuid into a laid-out Node tree.
+def _get_parsed_consensus_tree(uid):
+    """Parse the cached NEXUS for a consensus tree uuid into a laid-out Node tree.
 
     Cached so repeat clicks on a tanglegram don't re-parse the same
-    NEXUS file. Keyed on uuid — when an MCC is dropped from the LRU
-    cache its uuid is recycled, but since the cached_mcc_tree key
+    NEXUS file. Keyed on uuid — when a consensus tree is dropped from the LRU
+    cache its uuid is recycled, but since the cached_consensus_tree key
     space is random-tokens, false hits are impossibly rare.
     """
-    nexus = state.get_cached_mcc_tree(uid)
+    nexus = state.get_cached_consensus_tree(uid)
     if nexus is None:
         return None
     root, _translate = parse_nexus(nexus)
@@ -148,8 +148,8 @@ def _get_tanglegram_layout(uid1, uid2):
         yspan1, yspan2  id(node) -> (y_lo, y_hi) per tree, for O(depth)
                         MRCA descent
     """
-    root1 = _get_parsed_mcc(uid1)
-    root2 = _get_parsed_mcc(uid2)
+    root1 = _get_parsed_consensus_tree(uid1)
+    root2 = _get_parsed_consensus_tree(uid2)
     if root1 is None or root2 is None:
         return None
 
@@ -446,7 +446,7 @@ def _tanglegram_title_children(label1, label2, highlight,
     The title lives outside the figure so it doesn't scroll off the
     top of the viewport when the user expands the tree (the figure
     can grow to tens of thousands of pixels tall). Returns a list of
-    ``html.Span`` elements — the MCC label whose tree contains the
+    ``html.Span`` elements — the consensus tree label whose tree contains the
     clade is drawn green, the other in default colour, and the
     middle segment shows the clade size.
     """
@@ -496,7 +496,7 @@ def _tanglegram_placeholder_fig():
             "paper_bgcolor": "white",
             "margin": {"l": 0, "r": 0, "t": 0, "b": 0},
             "annotations": [{
-                "text": "Select two MCC trees and click "
+                "text": "Select two consensus trees and click "
                         "<b>Compare Clade Frequencies</b>,"
                         " then click a dot in the scatter "
                         "above to draw the tanglegram.",
@@ -516,10 +516,10 @@ def clear_clade_freq_caches():
 
     Called from ``sidebar.clear_uploads`` so a Clear-data click
     actually wipes the bipartition→tip-set decode, the parsed-NEXUS
-    LRU, and the click→split lookup table — they're keyed on MCC
-    uuids that are about to disappear from ``state._mcc_cache``.
+    LRU, and the click→split lookup table — they're keyed on consensus tree
+    uuids that are about to disappear from ``state._consensus_tree_cache``.
     """
-    _get_parsed_mcc.cache_clear()
+    _get_parsed_consensus_tree.cache_clear()
     _get_tanglegram_layout.cache_clear()
     _split_resolution.clear()
 
@@ -565,7 +565,7 @@ def _build_scatter_fig(df_plot, label1, label2):
         # it some Plotly versions drop customdata or pass it as a flat
         # array, which breaks the click→tanglegram resolution below.
         customdata=df_plot[
-            ["split_id", "clade_size", "mcc_membership"]
+            ["split_id", "clade_size", "consensus_tree_membership"]
         ].values.tolist(),
         hovertemplate=(
             "<b>Clade (%{customdata[1]} tips)</b><br>"
@@ -622,8 +622,8 @@ def register_clade_explore_callbacks():
 
     # ─── Clade Exploration RF Matrix selector ──────────────────────────
     # The tab's own matrix dropdown — clade-frequency comparison only
-    # makes sense between MCCs computed from the same RF matrix, so the
-    # MCC table and the Compare dropdowns below all condition on it.
+    # makes sense between consensus trees computed from the same RF matrix, so the
+    # consensus tree table and the Compare dropdowns below all condition on it.
     # Mirrors the Diagnostics tab's selector; both are fed by the
     # shared ``distmat-store``.
     @callback(
@@ -662,55 +662,55 @@ def register_clade_explore_callbacks():
         ], gap="xs")
         return options, new_value, info
 
-    # ─── MCC trees registered for the selected matrix ──────────────────
-    # Lists the MCC trees registered against the currently-selected RF
+    # ─── consensus trees registered for the selected matrix ──────────────────
+    # Lists the consensus trees registered against the currently-selected RF
     # matrix, split into "Between-runs" and "Within-run" sub-tables.
-    # Hidden when no MCCs match the active matrix.
+    # Hidden when no consensus trees match the active matrix.
     @callback(
-        Output("clade-mcc-title", "children"),
-        Output("clade-mcc-list", "children"),
-        Output("clade-mcc-paper", "style"),
-        Input("mcc-registry-store", "data"),
+        Output("clade-consensus-tree-title", "children"),
+        Output("clade-consensus-tree-list", "children"),
+        Output("clade-consensus-tree-paper", "style"),
+        Input("consensus-tree-registry-store", "data"),
         Input("clade-distmat-select", "value"),
     )
-    def render_clade_mcc_panel(registry, selected_matrix):
-        from .mcc_list import _table_for
+    def render_clade_consensus_tree_panel(registry, selected_matrix):
+        from .consensus_tree_list import _table_for
         if not registry or not selected_matrix:
             return html.Div(), html.Div(), {"display": "none"}
         matched = [e for e in registry
                    if e.get("source_distmat") == selected_matrix]
         if not matched:
             return html.Div(), html.Div(), {"display": "none"}
-        title = dmc.Title(f"MCC trees for {selected_matrix}", order=5)
+        title = dmc.Title(f"Consensus trees for {selected_matrix}", order=5)
         table = _table_for(matched, show_mode=True, source="clade")
         return title, table, {}
 
-    # ------ Empty-state notice: visible only while the MCC registry is
-    # wholly empty, hidden as soon as any MCC exists. Registry-only (not
-    # matrix-scoped), unlike ``render_clade_mcc_panel`` above.
+    # ------ Empty-state notice: visible only while the consensus tree registry is
+    # wholly empty, hidden as soon as any consensus tree exists. Registry-only (not
+    # matrix-scoped), unlike ``render_clade_consensus_tree_panel`` above.
 
     @callback(
-        Output("clade-mcc-empty-paper", "style"),
-        Input("mcc-registry-store", "data"),
+        Output("clade-consensus-tree-empty-paper", "style"),
+        Input("consensus-tree-registry-store", "data"),
     )
-    def toggle_clade_mcc_empty_state(registry):
+    def toggle_clade_consensus_tree_empty_state(registry):
         # Visible branch keeps textAlign so the rewrite doesn't drop the
         # centering baked into the Paper's style prop.
         return {"display": "none"} if registry else {"textAlign": "center"}
 
-    # ------ Hide the Clade Frequency panel when the MCC registry is
-    # empty (covers the "user deleted every MCC" case — the other two
+    # ------ Hide the Clade Frequency panel when the consensus tree registry is
+    # empty (covers the "user deleted every consensus tree" case — the other two
     # writers, Compare-button success and Clear-Data, handle the show
     # and full-reset paths respectively). ``no_update`` when there are
-    # still MCCs so we never fight the Compare path that just opened
+    # still consensus trees so we never fight the Compare path that just opened
     # the panel.
 
     @callback(
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
-        Input("mcc-registry-store", "data"),
+        Input("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
-    def hide_clade_freq_when_no_mccs(registry):
+    def hide_clade_freq_when_no_consensus_trees(registry):
         if registry:
             return no_update
         return {"display": "none"}
@@ -718,26 +718,26 @@ def register_clade_explore_callbacks():
     # ------ Clade Frequency Comparison: populate dropdowns ------
 
     @callback(
-        Output("clade-freq-mcc-select-1", "data"),
-        Output("clade-freq-mcc-select-1", "disabled"),
-        Output("clade-freq-mcc-select-1", "value", allow_duplicate=True),
-        Output("clade-freq-mcc-select-2", "data"),
-        Output("clade-freq-mcc-select-2", "disabled"),
-        Output("clade-freq-mcc-select-2", "value", allow_duplicate=True),
-        Input("mcc-registry-store", "data"),
+        Output("clade-freq-consensus-tree-select-1", "data"),
+        Output("clade-freq-consensus-tree-select-1", "disabled"),
+        Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
+        Output("clade-freq-consensus-tree-select-2", "data"),
+        Output("clade-freq-consensus-tree-select-2", "disabled"),
+        Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
+        Input("consensus-tree-registry-store", "data"),
         Input("clade-distmat-select", "value"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
         prevent_initial_call=True,
     )
-    def populate_mcc_selects(registry, selected_matrix, sel1, sel2):
-        """Rebuild the MCC-tree dropdown options whenever a new MCC is
+    def populate_consensus_tree_selects(registry, selected_matrix, sel1, sel2):
+        """Rebuild the consensus-tree dropdown options whenever a new consensus tree is
         saved OR the active distmat changes.
 
         **Filtered by the active distmat**: clade-frequency comparison
-        only makes sense between MCCs computed from the SAME RF matrix
+        only makes sense between consensus trees computed from the SAME RF matrix
         (= same trees, same column basis in the rooted-clade presence
-        table). Showing MCCs from other matrices in the dropdowns would
+        table). Showing consensus trees from other matrices in the dropdowns would
         let the user pick a meaningless cross-matrix pair, so we
         restrict each dropdown's options to ``e["source_distmat"] ==
         selected_matrix``.
@@ -798,7 +798,7 @@ def register_clade_explore_callbacks():
         patch["data"][0]["x"] = df_plot["freq_1"].tolist()
         patch["data"][0]["y"] = df_plot["freq_2"].tolist()
         patch["data"][0]["customdata"] = (
-            df_plot[["split_id", "clade_size", "mcc_membership"]].values.tolist()
+            df_plot[["split_id", "clade_size", "consensus_tree_membership"]].values.tolist()
         )
         patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
         return patch
@@ -807,8 +807,8 @@ def register_clade_explore_callbacks():
 
     @callback(
         Output("clade-freq-compare-button", "disabled"),
-        Input("clade-freq-mcc-select-1", "value"),
-        Input("clade-freq-mcc-select-2", "value"),
+        Input("clade-freq-consensus-tree-select-1", "value"),
+        Input("clade-freq-consensus-tree-select-2", "value"),
     )
     def toggle_compare_button(uid1, uid2):
         """Enable the Compare button only when both dropdowns have a selection."""
@@ -843,18 +843,18 @@ def register_clade_explore_callbacks():
         # Compare. Cleared by the sidebar's Clear-data flow.
         Output("clade-freq-output-paper", "style"),
         Input("clade-freq-compare-button", "n_clicks"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
         State("clade-freq-min-clade-size", "value"),
         prevent_initial_call=True,
     )
     def compute_and_plot_clade_frequencies(n_clicks, uid1, uid2, min_clade_size):
-        """Compute clade frequencies for the two selected MCC groups and
+        """Compute clade frequencies for the two selected consensus tree groups and
         render a scatter plot (freq group 1 vs freq group 2).
 
         Each dot is one bipartition observed in either group. Dot colour
         encodes clade_size — the number of tips in the monophyletic
-        descendant side of the bipartition in the MCC tree(s) that
+        descendant side of the bipartition in the consensus tree(s) that
         contain it (so it matches what the tanglegram highlights when
         the dot is clicked). Clicking a dot triggers the tanglegram
         callback.
@@ -862,12 +862,12 @@ def register_clade_explore_callbacks():
         if not uid1 or not uid2:
             return no_update, no_update, no_update
 
-        entry1 = state.get_mcc_registry_entry(uid1)
-        entry2 = state.get_mcc_registry_entry(uid2)
+        entry1 = state.get_consensus_tree_registry_entry(uid1)
+        entry2 = state.get_consensus_tree_registry_entry(uid2)
 
         if entry1 is None or entry2 is None:
             return dmc.Text(
-                "One or both selected MCC trees are no longer available. "
+                "One or both selected consensus trees are no longer available. "
                 "Please recompute them.",
                 c="red", size="sm",
             ), no_update, no_update
@@ -881,20 +881,20 @@ def register_clade_explore_callbacks():
             ), no_update, no_update
 
         # Annotate every rooted clade with whether it's present in
-        # MCC 1 / MCC 2. The dropdowns in ``populate_mcc_selects``
+        # consensus tree 1 / consensus tree 2. The dropdowns in ``populate_consensus_tree_selects``
         # restrict choices to the active distmat, so by construction
         # ``entry1.source_distmat == entry2.source_distmat`` and both
-        # ``cols_in_mcc`` lists are in the same column basis as the
+        # ``cols_in_consensus_tree`` lists are in the same column basis as the
         # DataFrame's ``column_j`` — a pure int-in-set check.
         src1 = entry1["source_distmat"]
-        cols_in_mcc_1 = entry1.get("cols_in_mcc") or []
-        cols_in_mcc_2 = entry2.get("cols_in_mcc") or []
-        df["in_mcc_1"] = df["column_j"].isin(set(cols_in_mcc_1))
-        df["in_mcc_2"] = df["column_j"].isin(set(cols_in_mcc_2))
+        cols_in_consensus_tree_1 = entry1.get("cols_in_consensus_tree") or []
+        cols_in_consensus_tree_2 = entry2.get("cols_in_consensus_tree") or []
+        df["in_consensus_tree_1"] = df["column_j"].isin(set(cols_in_consensus_tree_1))
+        df["in_consensus_tree_2"] = df["column_j"].isin(set(cols_in_consensus_tree_2))
 
         # Show only clades that are present in at least one of the two
-        # MCCs — keeps the tanglegram meaningful when the user clicks.
-        df = df[df["in_mcc_1"] | df["in_mcc_2"]].reset_index(drop=True)
+        # consensus trees — keeps the tanglegram meaningful when the user clicks.
+        df = df[df["in_consensus_tree_1"] | df["in_consensus_tree_2"]].reset_index(drop=True)
 
         # No clade-size re-stamping in rooted mode: each rapidtrees
         # column is already a rooted clade with one specific descendant
@@ -904,7 +904,7 @@ def register_clade_explore_callbacks():
         if df.empty:
             return dmc.Text(
                 "None of the bipartitions observed in the two groups "
-                "is a clade of either MCC tree — nothing to plot.",
+                "is a clade of either consensus tree — nothing to plot.",
                 c="dimmed", size="sm",
             ), no_update, no_update
 
@@ -915,14 +915,14 @@ def register_clade_explore_callbacks():
         label1_h = entry1["name"]
         label2_h = entry2["name"]
         membership_labels = []
-        for in1, in2 in zip(df["in_mcc_1"], df["in_mcc_2"]):
+        for in1, in2 in zip(df["in_consensus_tree_1"], df["in_consensus_tree_2"]):
             if in1 and in2:
-                membership_labels.append("both MCC trees")
+                membership_labels.append("both consensus trees")
             elif in1:
                 membership_labels.append(f"{label1_h} only")
             else:
                 membership_labels.append(f"{label2_h} only")
-        df["mcc_membership"] = membership_labels
+        df["consensus_tree_membership"] = membership_labels
 
         # Integer row id replaces the old fragile comma-joined string.
         # The click-handler + tanglegram callbacks resolve split_id to
@@ -932,8 +932,8 @@ def register_clade_explore_callbacks():
         # Refresh the click-resolution table: split_id → (distmat,
         # column_j, split_key). ``column_j`` is the rapidtrees-encoded
         # rooted-clade column index in the snapshot; the click handler
-        # uses it for the in_1/in_2 check against each MCC's
-        # ``cols_in_mcc``. ``split_key`` is the descendant-set tuple
+        # uses it for the in_1/in_2 check against each consensus tree's
+        # ``cols_in_consensus_tree``. ``split_key`` is the descendant-set tuple
         # of leaf indices, used only to resolve tip names for the
         # highlight overlay.
         _split_resolution.clear()
@@ -949,13 +949,13 @@ def register_clade_explore_callbacks():
 
         # Serialise for the slider callback. split_key is a tuple[int]
         # — not JSON-serialisable, so it stays server-side and we only
-        # ship the integer id through the browser. The in_mcc_1/
-        # in_mcc_2 booleans ride along so any future filter or
+        # ship the integer id through the browser. The in_consensus_tree_1/
+        # in_consensus_tree_2 booleans ride along so any future filter or
         # colour-coding callback can consume them without re-running
         # the clade-membership check.
         store_data = df[[
             "split_id", "freq_1", "freq_2", "clade_size",
-            "in_mcc_1", "in_mcc_2", "mcc_membership",
+            "in_consensus_tree_1", "in_consensus_tree_2", "consensus_tree_membership",
         ]].to_dict("records")
 
         min_size = int(min_clade_size or 2)
@@ -1044,19 +1044,19 @@ def register_clade_explore_callbacks():
         Output("clade-freq-tanglegram-pair-store", "data"),
         Output("clade-freq-tanglegram-title", "children"),
         Input("clade-freq-click-store", "data"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
         State("tanglegram-yscale-slider", "value"),
         State("clade-freq-tanglegram-pair-store", "data"),
         State("tanglegram-complement-toggle", "checked"),
         prevent_initial_call=True,
     )
     def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair, complement_on):
-        """Draw a tanglegram of the two MCC trees when a clade dot is clicked.
+        """Draw a tanglegram of the two consensus trees when a clade dot is clicked.
 
         Two render paths:
 
-        * **First click on a new MCC pair** — build the full figure
+        * **First click on a new consensus tree pair** — build the full figure
           (11 traces: static skeleton for both trees + dynamic overlays
           for the MRCA subtree, the highlight, the connectors, the MRCA
           node markers, and the green complement tips/connectors).
@@ -1095,25 +1095,25 @@ def register_clade_explore_callbacks():
             return no_update, no_update, no_update
         leaf_names = canonical["leaf_names"]
 
-        # Single highlight (same on both trees): MCC1 and MCC2 are
+        # Single highlight (same on both trees): consensus tree 1 and consensus tree 2 are
         # both anchored to ``src`` (the Compare-clade dropdowns
         # filter to the active distmat), so a column in the rooted
         # presence table represents the same descendant set in both.
         highlight = {leaf_names[i] for i in split_key}
 
-        # Containment is an O(1) ``column_j ∈ cols_in_mcc`` check
+        # Containment is an O(1) ``column_j ∈ cols_in_consensus_tree`` check
         # straight off the registry entries.
-        entry1 = state.get_mcc_registry_entry(uid1)
-        entry2 = state.get_mcc_registry_entry(uid2)
-        cols1 = set(entry1.get("cols_in_mcc") or []) if entry1 else set()
-        cols2 = set(entry2.get("cols_in_mcc") or []) if entry2 else set()
+        entry1 = state.get_consensus_tree_registry_entry(uid1)
+        entry2 = state.get_consensus_tree_registry_entry(uid2)
+        cols1 = set(entry1.get("cols_in_consensus_tree") or []) if entry1 else set()
+        cols2 = set(entry2.get("cols_in_consensus_tree") or []) if entry2 else set()
         in_1 = column_j in cols1
         in_2 = column_j in cols2
 
         # ── Look up (or build) the static tanglegram layout ────────────────
         layout = _get_tanglegram_layout(uid1, uid2)
         if layout is None:
-            # MCC NEXUS bytes evicted from cache; user must recompute.
+            # consensus tree NEXUS bytes evicted from cache; user must recompute.
             return no_update, no_update, no_update
 
         tips1 = layout["tips1"]
@@ -1258,8 +1258,8 @@ def register_clade_explore_callbacks():
     @callback(
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
         Input("tanglegram-yscale-slider", "value"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
         prevent_initial_call=True,
     )
     def update_tanglegram_height(px_per_tip, uid1, uid2):
@@ -1268,7 +1268,7 @@ def register_clade_explore_callbacks():
         ``layout.height`` so the 11-trace figure doesn't get rebuilt
         on every slider drag tick.
 
-        No-ops when no MCC pair is selected yet (slider has nothing
+        No-ops when no consensus tree pair is selected yet (slider has nothing
         to resize against) or when the layout cache is cold (no
         click has rendered the tanglegram yet).
         """
@@ -1287,8 +1287,8 @@ def register_clade_explore_callbacks():
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
         Input("tanglegram-complement-toggle", "checked"),
         State("clade-freq-click-store", "data"),
-        State("clade-freq-mcc-select-1", "value"),
-        State("clade-freq-mcc-select-2", "value"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
         prevent_initial_call=True,
     )
     def toggle_complement_highlights(checked, click_data, uid1, uid2):

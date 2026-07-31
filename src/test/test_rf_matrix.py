@@ -9,7 +9,7 @@ each tree's per-internal-node descendant tip-label set — same thing
 rapidtrees computes when ``rooted=True``. The helper that builds
 those clade sets lives in ``conftest.py`` (`rooted_clade_set`).
 
-The RF matrix is the upstream input to PCoA, pseudo-ESS, and MCC, so
+The RF matrix is the upstream input to PCoA, pseudo-ESS, and consensus tree, so
 any rapidtrees / DendroPy disagreement here ripples through everything
 downstream.
 

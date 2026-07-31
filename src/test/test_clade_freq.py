@@ -3,7 +3,7 @@
 Backed by the 100-tree ``test.trees`` CI fixture: parsed via
 ``conftest.py``'s session fixtures, rapidtrees-encoded (rooted clades
 since the production switch to ``rooted=True``), then fed two
-synthetic MCC registry entries that split the fixture in half.
+synthetic consensus tree registry entries that split the fixture in half.
 
 What's covered:
 
@@ -39,7 +39,7 @@ def _register_fixture_and_build_entries(
     rapidtrees_full,
 ):
     """Register the fixture's RF matrix + snapshot under
-    ``state.RF_CF`` and return two MCC registry entries that
+    ``state.RF_CF`` and return two consensus tree registry entries that
     split the 100 trees into the first 50 and the last 50.
 
     The snapshot file is the only one rapidtrees writes on the
@@ -90,22 +90,22 @@ def _register_fixture_and_build_entries(
 
     counts_1 = presence[:half].sum(axis=0).astype(np.int32)
     counts_2 = presence[half:].sum(axis=0).astype(np.int32)
-    cols_in_mcc_1 = sorted(np.flatnonzero(counts_1).tolist())
-    cols_in_mcc_2 = sorted(np.flatnonzero(counts_2).tolist())
+    cols_in_consensus_tree_1 = sorted(np.flatnonzero(counts_1).tolist())
+    cols_in_consensus_tree_2 = sorted(np.flatnonzero(counts_2).tolist())
 
     entry1 = {
         "source_distmat": "RF_CF",
         "tree_names": list(names[:half]),
         "n_trees": half,
         "counts": counts_1,
-        "cols_in_mcc": cols_in_mcc_1,
+        "cols_in_consensus_tree": cols_in_consensus_tree_1,
     }
     entry2 = {
         "source_distmat": "RF_CF",
         "tree_names": list(names[half:]),
         "n_trees": n_total - half,
         "counts": counts_2,
-        "cols_in_mcc": cols_in_mcc_2,
+        "cols_in_consensus_tree": cols_in_consensus_tree_2,
     }
     return entry1, entry2, presence
 
@@ -178,13 +178,13 @@ def test_frequencies_round_trip_against_presence(
 
 
 def test_raises_on_cross_distmat():
-    """The UI filters MCC dropdowns to the active distmat so this
+    """The UI filters consensus tree dropdowns to the active distmat so this
     can't happen via the app — but the function-level invariant
     is what stops a programmer-error from silently producing
     nonsense by merging columns from two different bases."""
     entry1 = {"source_distmat": "RF_A", "tree_names": [], "n_trees": 1,
-              "counts": np.zeros(1, dtype=np.int32), "cols_in_mcc": []}
+              "counts": np.zeros(1, dtype=np.int32), "cols_in_consensus_tree": []}
     entry2 = {"source_distmat": "RF_B", "tree_names": [], "n_trees": 1,
-              "counts": np.zeros(1, dtype=np.int32), "cols_in_mcc": []}
+              "counts": np.zeros(1, dtype=np.int32), "cols_in_consensus_tree": []}
     with pytest.raises(ValueError, match="different RF matrices"):
         compute_clade_frequencies(entry1, entry2)

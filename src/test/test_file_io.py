@@ -2,7 +2,7 @@
 
 ``process_nexus_trees_streaming`` reads a NEXUS file, stores per-tree
 byte offsets in a ``TreeManagerPandas``, and registers the
-preamble + translate map for later export. The MCC export, the LnP
+preamble + translate map for later export. The consensus tree export, the LnP
 trace, and several other features depend on this lossless. Bytes-on-
 disk semantics make this fragile around CRLF line endings (handled by
 the ``.gitattributes *.trees binary`` declaration in this repo) and
@@ -94,7 +94,7 @@ def test_metadata_traces_yield_lnP(db_with_fixture):
 @pytest.mark.integration
 def test_preamble_captured(db_with_fixture):
     """The byte-exact preamble (taxa block + translate) is stored on
-    the manager so MCC export can reuse it verbatim."""
+    the manager so consensus tree export can reuse it verbatim."""
     preamble = db_with_fixture._source_preambles.get("test.trees")
     assert preamble is not None
     assert isinstance(preamble, (bytes, bytearray))

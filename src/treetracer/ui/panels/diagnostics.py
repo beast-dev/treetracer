@@ -1,7 +1,7 @@
 """Diagnostics tab panel: log-posterior trace, RF-to-reference trace,
 and Pseudo-ESS — the MCMC-convergence diagnostics.
 
-The MCC clade-frequency comparison that used to live here now has its
+The consensus tree clade-frequency comparison that used to live here now has its
 own tab — see ui/panels/clade_explore.py."""
 
 import dash_mantine_components as dmc
@@ -77,7 +77,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export", id="export-lnl-trace-button", variant="light",
                                size="xs", disabled=True,
-                               leftSection=icon("tabler:pdf", size=20)),
+                               leftSection=icon("tabler:download", size=20)),
                     # ``flex-end`` lines every control on the row's
                     # bottom edge. The Burnin ``NumberInput`` has a
                     # stacked label and is therefore taller than the
@@ -133,7 +133,7 @@ def _add_diagnostics_panel():
                     ),
                     dmc.Button("Export", id="export-rf-trace-button", variant="light",
                                size="xs", disabled=True,
-                               leftSection=icon("tabler:pdf", size=20)),
+                               leftSection=icon("tabler:download", size=20)),
                     # Bottom-align (see Log-Posterior Trace) so the
                     # labeled Burnin input doesn't drift above the row.
                 ], align="flex-end", gap="md"),
@@ -150,7 +150,7 @@ def _add_diagnostics_panel():
             # computes Lanfear-style pseudo-ESS for each.
             dmc.Paper([
                 dmc.Group([
-                    dmc.Title("Pseudo-ESS", order=5),
+                    dmc.Title("Tree-ESS", order=5),
                     dmc.NumberInput(
                         id="ess-burnin-input",
                         label="Burn-in (trees)",
@@ -170,7 +170,7 @@ def _add_diagnostics_panel():
                         w=140,
                     ),
                     dmc.Button(
-                        "Compute Pseudo-ESS",
+                        "Compute Tree-ESS",
                         id="compute-pseudo-ess-button",
                         variant="filled",
                         color="green",

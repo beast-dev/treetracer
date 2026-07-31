@@ -2,7 +2,7 @@
 
 Used from ``__init__.py``'s ``_run_persistent_worker`` dispatcher
 AND from the per-job worker entry points
-(``rf/_subprocess_worker.py``, ``mcc/_subprocess_worker.py``, etc.)
+(``rf/_subprocess_worker.py``, ``consensus tree/_subprocess_worker.py``, etc.)
 so a stuck worker can be diagnosed by reading one file post-mortem
 instead of poking at process state with a debugger.
 

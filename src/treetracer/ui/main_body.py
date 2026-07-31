@@ -21,14 +21,14 @@ def _add_about_modal():
         children=[
             dmc.Stack(
                 [
-                    dmc.Title("TreeTracer v0.0-DEMO", order=3),
+                    dmc.Title("TreeTracer v0.95rc", order=3),
                     dmc.Text(
                         "TreeTracer is a diagnostic tool used to visualize convergence of tree topologies"
                     ),
                     dmc.Title("Citation", order=4),
                     dmc.Text("To cite TreeTracer, please use the following citation:"),
                     dmc.Blockquote(
-                        children=[dmc.Text("Treetracer Full citation", fs="italic")]
+                        children=[dmc.Text("TBD", fs="italic")]
                     ),
                 ],
             )
@@ -153,7 +153,7 @@ def add_main_body():
                     dmc.TabsTab("Between-run Analysis", value="treespace"),
                     dmc.TabsTab("Within-run Analysis", value="within-run"),
                     dmc.TabsTab("Diagnostics", value="diagnostics"),
-                    dmc.TabsTab("Clade Exploration", value="clade-explore"),
+                    dmc.TabsTab("Compare Consensus", value="clade-explore"),
                 ],
                 grow=True,
                 bd="1px solid var(--mantine-color-default-border)",
@@ -272,8 +272,8 @@ def add_main_body():
         _add_about_modal(),
         _add_export_drawer(),
         # Shared rename modal — opens on first View, on the pencil
-        # icon in MCC tables, and right after View MCC → compute
+        # icon in consensus tree tables, and right after View consensus tree → compute
         # completes. See ui/rename_modal.py for layout and
-        # callbacks/rename_mcc.py for the lifecycle.
+        # callbacks/rename_consensus_tree.py for the lifecycle.
         _add_rename_modal(),
     ])

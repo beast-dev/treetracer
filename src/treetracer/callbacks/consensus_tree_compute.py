@@ -1,26 +1,26 @@
-"""Shared MCC compute dispatch + polling.
+"""Shared consensus tree compute dispatch + polling.
 
 Both the Between-run (``treespace``) and Within-run (``within_run``)
-tabs have a "View MCC" button. They used to each call
-``mcc.assemble_mcc_nexus`` synchronously inside the click callback,
+tabs have a "View consensus tree" button. They used to each call
+``consensus_tree.assemble_consensus_tree_nexus`` synchronously inside the click callback,
 which blocked the Dash request thread for hundreds of ms (or a few
 seconds on big presence matrices) with no visual feedback.
 
 This module factors out the shared pieces so both tabs:
 
-* Click → enqueue an MCC compute job on the persistent worker, show a
-  loading overlay over the active tab, disable the View MCC button.
+* Click → enqueue a consensus tree compute job on the persistent worker, show a
+  loading overlay over the active tab, disable the View consensus tree button.
 * Wait → ``compute-poll-interval`` ticks at 100 ms; this module's
-  ``poll_mcc_completion`` runs once per tick. When the future is done,
-  it caches the NEXUS bytes, calls ``state.register_mcc(...)``, fans
-  out the result to the right ``*-view-mcc-store`` (which triggers the
+  ``poll_consensus_tree_completion`` runs once per tick. When the future is done,
+  it caches the NEXUS bytes, calls ``state.register_consensus_tree(...)``, fans
+  out the result to the right ``*-view-consensus-tree-store`` (which triggers the
   per-tab clientside ``window.open(/peartree/<uid>)`` callback), and
   dismisses the loading overlay.
 
-The per-tab callbacks ``view_mcc_tree`` in ``treespace.py`` and
+The per-tab callbacks ``view_consensus_tree`` in ``treespace.py`` and
 ``within_run.py`` shrink to ~30 lines each — they're only responsible
 for validating input, building ``matched_records`` + tab-specific
-metadata, and calling ``submit_mcc_job`` here.
+metadata, and calling ``submit_consensus_tree_job`` here.
 """
 
 from __future__ import annotations
@@ -33,47 +33,47 @@ from dash import Input, Output, State, callback, no_update
 
 from .. import state as _state
 from ..logger import add_log, notif_id
-from ..mcc import extract_log_posterior
+from ..consensus_tree import extract_log_posterior
 from . import persistent_worker
 from .compute import _get_executor
 
 
 # ── Module state ───────────────────────────────────────────────────────
-# A single in-flight MCC job at a time. ``_mcc_meta`` carries the
+# A single in-flight consensus tree job at a time. ``_consensus_tree_meta`` carries the
 # tab-specific context the polling callback needs to finalise the
-# registry entry and route the result to the right view-mcc-store.
+# registry entry and route the result to the right view-consensus-tree-store.
 
-_mcc_future: Optional[Future] = None
-_mcc_meta: Dict[str, Any] = {}
+_consensus_tree_future: Optional[Future] = None
+_consensus_tree_meta: Dict[str, Any] = {}
 
 
 def reset() -> None:
-    """Interrupt any in-flight MCC compute. Called by the sidebar's
+    """Interrupt any in-flight consensus tree compute. Called by the sidebar's
     Clear-Data callback so the persistent worker isn't still
     processing a stale request after the DB is wiped.
 
     ``Future.cancel()`` only drops a not-yet-started future — it can't
     stop a job already running in the worker. ``cancel_current_job()``
     kills the worker, which actually interrupts the compute."""
-    global _mcc_future, _mcc_meta
+    global _consensus_tree_future, _consensus_tree_meta
     persistent_worker.cancel_current_job()
-    if _mcc_future is not None:
-        _mcc_future.cancel()
-    _mcc_future = None
-    _mcc_meta = {}
+    if _consensus_tree_future is not None:
+        _consensus_tree_future.cancel()
+    _consensus_tree_future = None
+    _consensus_tree_meta = {}
 
 
-def submit_mcc_job(
+def submit_consensus_tree_job(
     *,
     matched_records: list,
     source_distmat: str,
     mode: str,
     selection: list,
     run: Optional[str],
-    mcc_coord_by_tree_name: Dict[str, tuple],
+    consensus_tree_coord_by_tree_name: Dict[str, tuple],
     store_target: str,
 ) -> None:
-    """Enqueue an MCC compute job. Called by both tab callbacks.
+    """Enqueue a consensus tree compute job. Called by both tab callbacks.
 
     Args:
         matched_records: per-tree dicts (``name``, ``file_source``,
@@ -83,18 +83,18 @@ def submit_mcc_job(
         mode: ``"Between"`` or ``"Within"`` — propagated into the
             registry entry's mode field and the per-tab labelling.
         selection: serialisable representation of the user's selection,
-            stored on the registry entry so the MCC list table can
+            stored on the registry entry so the consensus tree list table can
             re-create the orange selection ring.
         run: the run/group name for Within mode, else ``None``.
-        mcc_coord_by_tree_name: ``{tree_name: (group, treenum)}`` —
+        consensus_tree_coord_by_tree_name: ``{tree_name: (group, treenum)}`` —
             consulted by the polling callback to populate
-            ``mcc_tree.treenum`` (used to put the green ring on the
-            MCC's MDS dot).
-        store_target: ``"treespace-view-mcc-store"`` or
-            ``"within-run-view-mcc-store"`` — tells the polling
+            ``consensus_tree.treenum`` (used to put the green ring on the
+            consensus tree's MDS dot).
+        store_target: ``"treespace-view-consensus-tree-store"`` or
+            ``"within-run-view-consensus-tree-store"`` — tells the polling
             callback which tab's clientside ``window.open`` to fire.
     """
-    global _mcc_future, _mcc_meta
+    global _consensus_tree_future, _consensus_tree_meta
 
     tree_service = _get_tree_service()
     db_manager = tree_service.db_manager
@@ -120,29 +120,29 @@ def submit_mcc_job(
         if fs in getattr(db_manager, "_source_preambles", {})
     }
 
-    _mcc_meta = {
+    _consensus_tree_meta = {
         "mode": mode,
         "run": run,
         "source_distmat": source_distmat,
         "selection": selection,
         "tree_names": [r["name"] for r in matched_records],
-        "mcc_coord_by_tree_name": mcc_coord_by_tree_name,
+        "consensus_tree_coord_by_tree_name": consensus_tree_coord_by_tree_name,
         "store_target": store_target,
     }
 
     # Lift the rooting flag off the distmat registry. Defaults to True
     # for pre-feature distmats; the worker decides based on this whether
-    # to midpoint-root the chosen MCC newick before display.
+    # to midpoint-root the chosen consensus tree newick before display.
     distmat_is_rooted = _state.get_distmat_is_rooted(source_distmat)
 
     add_log(
-        f"[MCC/{mode}] Dispatching to persistent worker "
+        f"[consensus tree/{mode}] Dispatching to persistent worker "
         f"({len(matched_records)} trees, source {source_distmat}, "
         f"{'rooted' if distmat_is_rooted else 'unrooted+midpoint-root'} mode)..."
     )
-    _mcc_future = _get_executor().submit(
+    _consensus_tree_future = _get_executor().submit(
         persistent_worker.submit_job,
-        "compute_mcc",
+        "compute_consensus_tree",
         matched_records=matched_records,
         source_distmat=source_distmat,
         snapshots_path=str(snapshots_path),
@@ -161,27 +161,27 @@ def _get_tree_service():
     return get_tree_service()
 
 
-def register_mcc_compute_callbacks():
+def register_consensus_tree_compute_callbacks():
     @callback(
-        # View-mcc-stores: only one fires per completion (based on mode).
-        Output("treespace-view-mcc-store", "data", allow_duplicate=True),
-        Output("within-run-view-mcc-store", "data", allow_duplicate=True),
+        # View-consensus-tree-stores: only one fires per completion (based on mode).
+        Output("treespace-view-consensus-tree-store", "data", allow_duplicate=True),
+        Output("within-run-view-consensus-tree-store", "data", allow_duplicate=True),
         # Registry — shared by both tabs.
-        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Output("consensus-tree-registry-store", "data", allow_duplicate=True),
         # Loading overlays — flipped off on both tabs so we don't leave
         # a stale overlay on whichever tab the user might have switched
         # away from mid-compute.
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
-        # View MCC buttons — re-enabled on completion.
-        Output("treespace-view-mcc", "disabled", allow_duplicate=True),
-        Output("within-run-view-mcc", "disabled", allow_duplicate=True),
+        # View consensus tree buttons — re-enabled on completion.
+        Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
+        Output("within-run-view-consensus-tree", "disabled", allow_duplicate=True),
         # Selection-ring stores — cleared so the orange "selected"
         # marker drops off the MDS view once the compute returns.
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
-        # Notification + the MCC-only poll interval. This callback polls
-        # ``mcc-poll-interval`` rather than the shared
+        # Notification + the consensus-tree-only poll interval. This callback polls
+        # ``consensus-tree-poll-interval`` rather than the shared
         # ``compute-poll-interval`` so it does NOT share an Input — and
         # therefore an allow_duplicate disambiguation hash — with the
         # RF/MDS ``poll_completion`` callback. Sharing the input made
@@ -190,18 +190,18 @@ def register_mcc_compute_callbacks():
         # tokens, which the dash-renderer rejects as duplicates. The hash
         # is derived from the Input signature (see dash/_utils.py).
         Output("notifications-container", "children", allow_duplicate=True),
-        Output("mcc-poll-interval", "disabled", allow_duplicate=True),
-        Input("mcc-poll-interval", "n_intervals"),
+        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
+        Input("consensus-tree-poll-interval", "n_intervals"),
         prevent_initial_call=True,
     )
-    def poll_mcc_completion(_n):
-        global _mcc_future
-        if _mcc_future is None or not _mcc_future.done():
+    def poll_consensus_tree_completion(_n):
+        global _consensus_tree_future
+        if _consensus_tree_future is None or not _consensus_tree_future.done():
             return (no_update,) * 11
 
-        future = _mcc_future
-        meta = _mcc_meta
-        _mcc_future = None  # consume the future before any further IO
+        future = _consensus_tree_future
+        meta = _consensus_tree_meta
+        _consensus_tree_future = None  # consume the future before any further IO
 
         mode = meta.get("mode", "Between")
         store_target = meta.get("store_target")
@@ -210,12 +210,15 @@ def register_mcc_compute_callbacks():
         out_treespace_store = no_update
         out_within_store = no_update
         out_registry = no_update
-        # Always dismiss BOTH overlays + re-enable BOTH buttons on
-        # completion. Cheap, and the user might have switched tabs.
+        # Dismiss BOTH overlays on completion (cheap, and the user might
+        # have switched tabs mid-compute). The View buttons, though, are
+        # scoped to the originating tab in the success path below —
+        # enabling both here lights up the OTHER tab's View button for a
+        # consensus tree it can't show (the cross-tab leak bug).
         out_treespace_overlay = False
         out_within_overlay = False
-        out_treespace_btn = False
-        out_within_btn = False
+        out_treespace_btn = no_update
+        out_within_btn = no_update
         out_treespace_sel = no_update
         out_within_sel = no_update
 
@@ -225,17 +228,17 @@ def register_mcc_compute_callbacks():
             # User Stop — dismiss the overlays + re-enable the buttons
             # (already set above). The cancel callback showed the
             # notification, so don't stack another one here.
-            add_log("MCC computation cancelled by user.", "WARNING")
+            add_log("consensus tree computation cancelled by user.", "WARNING")
             return (out_treespace_store, out_within_store, out_registry,
                     out_treespace_overlay, out_within_overlay,
                     out_treespace_btn, out_within_btn,
                     out_treespace_sel, out_within_sel,
                     no_update, True)
         except Exception as e:
-            msg = f"MCC computation failed: {e}"
+            msg = f"Consensus tree computation failed: {e}"
             add_log(msg, "ERROR")
             notif = dmc.Notification(
-                title="MCC Error", message=str(e),
+                title="Consensus tree Error", message=str(e),
                 color="red", action="show", autoClose=6000, id=notif_id(),
             )
             return (out_treespace_store, out_within_store, out_registry,
@@ -249,7 +252,7 @@ def register_mcc_compute_callbacks():
             sample = ", ".join(missing[:5])
             more = "…" if len(missing) > 5 else ""
             notif = dmc.Notification(
-                title="MCC Error",
+                title="Consensus tree Error",
                 message=(
                     f"Cannot align translate tables: taxa [{sample}{more}] "
                     "are present in some selected runs but not in the "
@@ -264,66 +267,69 @@ def register_mcc_compute_callbacks():
                     notif, True)
 
         nexus_bytes = result["nexus_bytes"]
-        mcc_row = result["mcc_row"]
-        mcc_tree_name = mcc_row["name"]
+        consensus_tree_row = result["consensus_tree_row"]
+        consensus_tree_name = consensus_tree_row["name"]
         log_clade_cred = result["log_clade_credibility"]
 
-        uid = _state.cache_mcc_tree(nexus_bytes)
+        uid = _state.cache_consensus_tree(nexus_bytes)
 
-        # MCC's (group, treenum) for the green-ring positioning.
-        coord = meta.get("mcc_coord_by_tree_name", {}).get(mcc_tree_name)
+        # consensus tree's (group, treenum) for the green-ring positioning.
+        coord = meta.get("consensus_tree_coord_by_tree_name", {}).get(consensus_tree_name)
         if coord is not None:
-            mcc_group, mcc_treenum = coord
+            consensus_tree_group, consensus_treenum = coord
         else:
-            mcc_group, mcc_treenum = None, None
+            consensus_tree_group, consensus_treenum = None, None
 
-        entry = _state.register_mcc(
+        entry = _state.register_consensus_tree(
             source_distmat=meta["source_distmat"],
             mode=mode,
             run=meta.get("run"),
             uuid=uid,
-            mcc_tree={
-                "group": mcc_group,
-                "treenum": mcc_treenum,
-                "tree_name": mcc_tree_name,
+            consensus_tree={
+                "group": consensus_tree_group,
+                "treenum": consensus_treenum,
+                "tree_name": consensus_tree_name,
             },
             selection=meta["selection"],
             log_clade_credibility=(None if log_clade_cred is None
                                    else float(log_clade_cred)),
-            mcc_log_posterior=extract_log_posterior(mcc_row),
+            consensus_tree_log_posterior=extract_log_posterior(consensus_tree_row),
             tree_names=meta["tree_names"],
             counts=result["counts"],
-            cols_in_mcc=result["cols_in_mcc"],
+            cols_in_consensus_tree=result["cols_in_consensus_tree"],
         )
         registered_name = entry["name"]
         add_log(
-            f"Cached MCC tree '{mcc_tree_name}' (from {len(meta['tree_names'])} selected) "
+            f"Cached consensus tree '{consensus_tree_name}' (from {len(meta['tree_names'])} selected) "
             f"as {uid}; registered as {registered_name}"
         )
         # The rename modal opens next (see ``forward_compute_to_modal``
-        # in ``callbacks/rename_mcc.py``); PearTree only opens once the
+        # in ``callbacks/rename_consensus_tree.py``); PearTree only opens once the
         # user clicks Save in the modal. Don't promise "opening in
         # PearTree" here — the modal title makes the next step obvious.
         notif = dmc.Notification(
-            title="MCC Tree Ready",
+            title="Consensus Tree Ready",
             message=(
-                f"MCC tree {registered_name} computed from "
+                f"Consensus tree {registered_name} computed from "
                 f"{len(meta['tree_names'])} selected trees."
             ),
             color="green", action="show", autoClose=3000, id=notif_id(),
         )
 
-        # Route the {uuid, name} payload to the originating tab's
-        # view-mcc-store. The OTHER tab's store stays untouched.
+        # Route the {uuid, name} payload — and enable the View button —
+        # for the originating tab only. The OTHER tab's store and button
+        # stay untouched (no_update) so each tab governs its own state.
         payload = {"uuid": uid, "name": registered_name}
-        if store_target == "treespace-view-mcc-store":
+        if store_target == "treespace-view-consensus-tree-store":
             out_treespace_store = payload
             out_treespace_sel = []
+            out_treespace_btn = False
         else:
             out_within_store = payload
             out_within_sel = []
+            out_within_btn = False
 
-        out_registry = _state.get_mcc_registry()
+        out_registry = _state.get_consensus_tree_registry()
 
         return (out_treespace_store, out_within_store, out_registry,
                 out_treespace_overlay, out_within_overlay,

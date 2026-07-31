@@ -4,7 +4,7 @@ import os
 
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
-from ..state import clear_all_distmats, clear_all_mds_results, clear_all_mcc_trees
+from ..state import clear_all_distmats, clear_all_mds_results, clear_all_consensus_trees
 from ..plot_utils import placeholder_fig
 from .clade_explore import clear_clade_freq_caches, _tanglegram_placeholder_fig
 from ._helpers import _open_file_dialog
@@ -556,7 +556,7 @@ def register_sidebar_callbacks():
         return stored_summaries, no_update, notification
 
     # Callback to remove a single loaded file (its trees + sidebar card).
-    # Computed RF / MDS / MCC results are intentionally left intact —
+    # Computed RF / MDS / consensus tree results are intentionally left intact —
     # they're self-contained snapshots; "Clear Data" is the wipe-all path.
     @callback(
         Output("tree-offset-store", "data", allow_duplicate=True),
@@ -621,18 +621,18 @@ def register_sidebar_callbacks():
         Output("within-run-graph", "figure", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Output("pseudo-ess-output", "children", allow_duplicate=True),
-        Output("mcc-registry-store", "data", allow_duplicate=True),
+        Output("consensus-tree-registry-store", "data", allow_duplicate=True),
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         # Clade Frequency Comparison surface — scatter, tanglegram,
-        # the three stores backing them, and both MCC dropdown values.
+        # the three stores backing them, and both consensus tree dropdown values.
         Output("clade-freq-plot", "children", allow_duplicate=True),
         Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
         Output("clade-freq-tanglegram-title", "children", allow_duplicate=True),
         Output("clade-freq-data-store", "data", allow_duplicate=True),
         Output("clade-freq-click-store", "data", allow_duplicate=True),
         Output("clade-freq-tanglegram-pair-store", "data", allow_duplicate=True),
-        Output("clade-freq-mcc-select-1", "value", allow_duplicate=True),
-        Output("clade-freq-mcc-select-2", "value", allow_duplicate=True),
+        Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
+        Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
@@ -644,18 +644,18 @@ def register_sidebar_callbacks():
             # into the DB we're about to wipe, and we don't want the
             # poll callbacks to write results based on stale state.
             try:
-                from . import mcc_compute, pseudo_ess_compute
-                mcc_compute.reset()
+                from . import consensus_tree_compute, pseudo_ess_compute
+                consensus_tree_compute.reset()
                 pseudo_ess_compute.reset()
             except Exception:
                 pass
             # Clear all server-side distance matrices from disk
             clear_all_distmats()
             clear_all_mds_results()
-            clear_all_mcc_trees()
+            clear_all_consensus_trees()
             # Wipe the in-process clade-freq caches (parsed NEXUS
             # trees, tanglegram layouts, click→split lookup). They're
-            # keyed on MCC uuids that no longer exist after the calls
+            # keyed on consensus tree uuids that no longer exist after the calls
             # above and would otherwise return stale data.
             try:
                 clear_clade_freq_caches()
@@ -706,7 +706,7 @@ def register_sidebar_callbacks():
                 ),
                 [],              # within-run-selected-trees-store
                 html.Div(),      # pseudo-ess-output
-                [],              # mcc-registry-store
+                [],              # consensus-tree-registry-store
                 [],              # treespace-selected-trees-store
                 html.Div(),      # clade-freq-plot (scatter)
                 # tanglegram placeholder fig — kept in sync with the
@@ -717,8 +717,8 @@ def register_sidebar_callbacks():
                 None,            # clade-freq-data-store
                 None,            # clade-freq-click-store
                 None,            # clade-freq-tanglegram-pair-store
-                None,            # clade-freq-mcc-select-1.value
-                None,            # clade-freq-mcc-select-2.value
+                None,            # clade-freq-consensus-tree-select-1.value
+                None,            # clade-freq-consensus-tree-select-2.value
                 {"display": "none"},  # clade-freq-output-paper.style
             )
         return (no_update,) * 33

@@ -1,9 +1,9 @@
-"""Maximum Clade Credibility (MCC) tree, computed from rapidtrees' presence
+"""Maximum Clade Credibility (consensus tree) tree, computed from rapidtrees' presence
 matrix without round-tripping through dendropy.
 
 The interned-snapshot representation that ``rapidtrees`` already writes
 alongside every RF computation gives us, per tree, a uint8 bitvector of
-which bipartitions it contains. Standard MCC reduces to "from the input
+which bipartitions it contains. Standard consensus tree reduces to "from the input
 set, pick the tree whose splits have the highest log-product of clade
 frequencies (= fraction of input trees containing that split)". With a
 presence matrix in hand this is one numpy reduction.
@@ -24,8 +24,8 @@ from ._canonical_remap import (
 )
 
 
-def compute_mcc_index(presence_subset: np.ndarray) -> tuple[int, float]:
-    """Pick the MCC tree from a presence matrix.
+def compute_consensus_tree_index(presence_subset: np.ndarray) -> tuple[int, float]:
+    """Pick the consensus tree from a presence matrix.
 
     Args:
         presence_subset: uint8 ``(n_trees, n_splits)`` array. ``[i, j] = 1``
@@ -140,8 +140,8 @@ def _inject_tree_annotation(line: str, key: str, value: str) -> str:
     return f"{prefix}{sep}[&{new_kv}] {suffix}"
 
 
-def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
-    """Pick the MCC tree from the user's selection.
+def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distmat):
+    """Pick the consensus tree from the user's selection.
 
     Args:
         matched_rows: DataFrame of selected rows from
@@ -154,12 +154,12 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
             and the canonical row ordering.
 
     Returns:
-        ``(mcc_row, mcc_newick_line, log_clade_credibility, counts, cols_in_mcc, missing_taxa)``:
-            * ``mcc_row`` — the matched DB row for the MCC tree (a pandas
+        ``(consensus_tree_row, consensus_tree_newick_line, log_clade_credibility, counts, cols_in_consensus_tree, missing_taxa)``:
+            * ``consensus_tree_row`` — the matched DB row for the consensus tree (a pandas
               Series). ``None`` when ``missing_taxa`` is non-empty.
-            * ``mcc_newick_line`` — the full ``tree NAME = …;`` line read
+            * ``consensus_tree_newick_line`` — the full ``tree NAME = …;`` line read
               from disk, with integer labels remapped to the canonical
-              translate when the MCC tree came from a non-canonical
+              translate when the consensus tree came from a non-canonical
               source. ``None`` when ``missing_taxa`` is non-empty.
             * ``log_clade_credibility`` — sum of ``log(P(split))`` for
               the chosen tree's splits. ``None`` when ``missing_taxa``
@@ -170,14 +170,14 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
               callers so ``compute_clade_frequencies`` skips the
               row-sum work at compare time. ``None`` when ``missing_taxa``
               is non-empty.
-            * ``cols_in_mcc`` — frozenset of presence-matrix column
-              indices that appear in the chosen MCC tree itself. These
-              are the interned bipartition IDs of the MCC's clades and
+            * ``cols_in_consensus_tree`` — frozenset of presence-matrix column
+              indices that appear in the chosen consensus tree itself. These
+              are the interned bipartition IDs of the consensus tree's clades and
               feed the Clade Frequency Comparison membership filter.
               ``None`` when ``missing_taxa`` is non-empty.
             * ``missing_taxa`` — set of taxa present in some non-canonical
               source but absent from the canonical translate. Non-empty
-              means MCC could not be computed; caller should bail and
+              means consensus tree could not be computed; caller should bail and
               surface the names to the user.
     """
     if len(matched_rows) == 0:
@@ -200,31 +200,31 @@ def compute_mcc_for_selection(matched_rows, db_manager, source_distmat):
 
     selected_idx = [name_to_idx[n] for n in matched_rows["name"]]
     presence_sub = presence[selected_idx]             # (n_sel, n_splits)
-    mcc_local, log_clade_cred = compute_mcc_index(presence_sub)
-    mcc_row = matched_rows.iloc[mcc_local]
+    consensus_tree_local, log_clade_cred = compute_consensus_tree_index(presence_sub)
+    consensus_tree_row = matched_rows.iloc[consensus_tree_local]
 
-    # Column-sum is the per-MCC sufficient statistic for the Clade
+    # Column-sum is the per-consensus-tree sufficient statistic for the Clade
     # Frequency Comparison feature — pre-compute here while we already
     # have ``presence_sub`` in scope, and stash on the registry entry.
     counts = presence_sub.sum(axis=0).astype(np.int32)
-    cols_in_mcc = frozenset(np.flatnonzero(presence_sub[mcc_local]).tolist())
+    cols_in_consensus_tree = frozenset(np.flatnonzero(presence_sub[consensus_tree_local]).tolist())
 
     line = db_manager._read_newick(
-        mcc_row["file_source"],
-        int(mcc_row["line_offset"]),
-        int(mcc_row["line_length"]),
+        consensus_tree_row["file_source"],
+        int(consensus_tree_row["line_offset"]),
+        int(consensus_tree_row["line_length"]),
     )
     if isinstance(line, bytes):
         line = line.decode("utf-8")
-    line = _substitute_newick_labels(line, remaps.get(mcc_row["file_source"], {}))
+    line = _substitute_newick_labels(line, remaps.get(consensus_tree_row["file_source"], {}))
     line = _inject_tree_annotation(line, "lnCladeCred",
                                    format(log_clade_cred, ".4f"))
 
-    return mcc_row, line, log_clade_cred, counts, cols_in_mcc, set()
+    return consensus_tree_row, line, log_clade_cred, counts, cols_in_consensus_tree, set()
 
 
-def extract_log_posterior(mcc_row) -> float | None:
-    """Pull a log-posterior scalar for an MCC row, or ``None``.
+def extract_log_posterior(consensus_tree_row) -> float | None:
+    """Pull a log-posterior scalar for a consensus tree row, or ``None``.
 
     BEAST commonly writes ``lnP`` (log of joint up to the prior) on
     every tree; MrBayes writes ``posterior`` / ``joint``. This helper
@@ -233,9 +233,9 @@ def extract_log_posterior(mcc_row) -> float | None:
     fields (``lnL`` / ``loglikelihood``) are not consulted — they're
     a different quantity.
     """
-    if mcc_row is None:
+    if consensus_tree_row is None:
         return None
-    meta = mcc_row.get("metadata") if hasattr(mcc_row, "get") else None
+    meta = consensus_tree_row.get("metadata") if hasattr(consensus_tree_row, "get") else None
     if isinstance(meta, str):
         import json
         try:
@@ -253,39 +253,39 @@ def extract_log_posterior(mcc_row) -> float | None:
     return None
 
 
-def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
-    """Compute the MCC tree from *matched_rows* and assemble the full NEXUS
+def assemble_consensus_tree_nexus(matched_rows, db_manager, source_distmat):
+    """Compute the consensus tree from *matched_rows* and assemble the full NEXUS
     bytes ready to write to disk or hand to a peartree window.
 
-    The NEXUS layout matches what the original ``Export MCC`` callback
+    The NEXUS layout matches what the original ``Export consensus tree`` callback
     used to write directly:
 
         <canonical source's preamble — #NEXUS, taxa block, begin trees;,
          Translate { … };>
-        <mcc_line, with original tree name + lnCladeCred annotation>
+        <consensus_tree_line, with original tree name + lnCladeCred annotation>
         End;
 
-    Returns ``(nexus_bytes, mcc_row, log_clade_credibility, counts, cols_in_mcc, missing_taxa)``:
+    Returns ``(nexus_bytes, consensus_tree_row, log_clade_credibility, counts, cols_in_consensus_tree, missing_taxa)``:
         * ``nexus_bytes`` — bytes of the assembled NEXUS file. ``None``
           when ``missing_taxa`` is non-empty.
-        * ``mcc_row`` — the matched DB row of the chosen MCC tree
+        * ``consensus_tree_row`` — the matched DB row of the chosen consensus tree
           (Series, contains ``name`` and source columns). ``None``
           when ``missing_taxa`` is non-empty.
         * ``log_clade_credibility`` — score of the chosen tree.
           ``None`` when ``missing_taxa`` is non-empty.
         * ``counts`` — per-bipartition presence column-sum over the
-          selection (np.int32). Forwarded from ``compute_mcc_for_selection``
+          selection (np.int32). Forwarded from ``compute_consensus_tree_for_selection``
           so callers can stash it on the registry entry. ``None`` when
           ``missing_taxa`` is non-empty.
-        * ``cols_in_mcc`` — frozenset of presence-matrix column indices
-          that appear in the chosen MCC tree itself. Forwarded from
-          ``compute_mcc_for_selection``. ``None`` when ``missing_taxa``
+        * ``cols_in_consensus_tree`` — frozenset of presence-matrix column indices
+          that appear in the chosen consensus tree itself. Forwarded from
+          ``compute_consensus_tree_for_selection``. ``None`` when ``missing_taxa``
           is non-empty.
         * ``missing_taxa`` — set of taxa missing from the canonical
           translate (caller surfaces this as an export error).
     """
-    (mcc_row, mcc_line, log_clade_cred, counts,
-     cols_in_mcc, missing_taxa) = compute_mcc_for_selection(
+    (consensus_tree_row, consensus_tree_line, log_clade_cred, counts,
+     cols_in_consensus_tree, missing_taxa) = compute_consensus_tree_for_selection(
         matched_rows, db_manager, source_distmat,
     )
     if missing_taxa:
@@ -296,6 +296,6 @@ def assemble_mcc_nexus(matched_rows, db_manager, source_distmat):
         db_manager._source_preambles.get(canonical_source)
         or b"#NEXUS\n\nbegin trees;\n"
     )
-    body = mcc_line if mcc_line.endswith("\n") else mcc_line + "\n"
+    body = consensus_tree_line if consensus_tree_line.endswith("\n") else consensus_tree_line + "\n"
     nexus_bytes = canonical_preamble + body.encode("utf-8") + b"End;\n"
-    return nexus_bytes, mcc_row, log_clade_cred, counts, cols_in_mcc, set()
+    return nexus_bytes, consensus_tree_row, log_clade_cred, counts, cols_in_consensus_tree, set()

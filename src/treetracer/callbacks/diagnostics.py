@@ -1,4 +1,4 @@
-from dash import dcc, html, callback, Input, Output, State, no_update, ctx, ALL
+from dash import dcc, html, callback, clientside_callback, Input, Output, State, no_update, ctx, ALL
 import dash_mantine_components as dmc
 import plotly.express as px
 import plotly.graph_objects as go
@@ -439,57 +439,28 @@ def register_diagnostics_callbacks():
         fig = _build_rf_trace_fig(trace_df, ref_group or "", ref_position or "last", burnin)
         return dcc.Graph(id="rf-trace-graph", figure=fig, config={"displayModeBar": False})
 
-    # ------ EXPORT DIAGNOSTICS PLOTS AS PDF ------
-
-    @callback(
+    # ------ EXPORT DIAGNOSTICS PLOTS AS SVG ------
+    # Client-side render (window.ttExportSvg in assets/export_svg.js) saved via
+    # the pywebview ``save_download`` bridge — no Kaleido/Chrome subprocess,
+    # which re-launched the app and produced no file inside the Briefcase
+    # bundle. These traces are 2D, so the exported SVG is fully vector.
+    clientside_callback(
+        "function(n){return (n && window.ttExportSvg)"
+        " ? window.ttExportSvg('lnl-trace-graph', 'lnP_trace.svg')"
+        " : window.dash_clientside.no_update;}",
         Output("notifications-container", "children", allow_duplicate=True),
         Input("export-lnl-trace-button", "n_clicks"),
-        State("lnl-trace-graph", "figure"),
         prevent_initial_call=True,
     )
-    def export_lnl_trace_pdf(n_clicks, fig_dict):
-        if not n_clicks or not fig_dict:
-            return no_update
-        path = _save_file_dialog(default_filename="lnP_trace.pdf")
-        if not path:
-            return no_update
-        fig = go.Figure(fig_dict)
-        fig.update_layout(template=get_template())
-        fig.write_image(path, width=1200, height=400, scale=2)
-        add_log(f"Exported lnP trace plot to {path}")
-        return dmc.Notification(
-            title="lnP Trace Exported",
-            message=f"Saved to {path}",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id=notif_id(),
-        )
 
-    @callback(
+    clientside_callback(
+        "function(n){return (n && window.ttExportSvg)"
+        " ? window.ttExportSvg('rf-trace-graph', 'rf_trace.svg')"
+        " : window.dash_clientside.no_update;}",
         Output("notifications-container", "children", allow_duplicate=True),
         Input("export-rf-trace-button", "n_clicks"),
-        State("rf-trace-graph", "figure"),
         prevent_initial_call=True,
     )
-    def export_rf_trace_pdf(n_clicks, fig_dict):
-        if not n_clicks or not fig_dict:
-            return no_update
-        path = _save_file_dialog(default_filename="rf_trace.pdf")
-        if not path:
-            return no_update
-        fig = go.Figure(fig_dict)
-        fig.update_layout(template=get_template())
-        fig.write_image(path, width=1200, height=400, scale=2)
-        add_log(f"Exported RF trace plot to {path}")
-        return dmc.Notification(
-            title="RF Trace Exported",
-            message=f"Saved to {path}",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id=notif_id(),
-        )
 
     # ─── Shared Diagnostics RF Matrix selector ─────────────────────────
     # One dropdown at the top of the tab feeds every section below.

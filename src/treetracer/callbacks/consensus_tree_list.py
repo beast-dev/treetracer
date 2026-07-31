@@ -1,9 +1,9 @@
-"""Per-tab MCC list rendering plus the shared View / Delete actions.
+"""Per-tab consensus tree list rendering plus the shared View / Delete actions.
 
 The Between-runs and Within-run tabs each show a small ``dmc.Table`` of
-the MCC trees registered for the currently-visible MDS view. The rows
+the consensus trees registered for the currently-visible MDS view. The rows
 have View and Delete buttons; both feed into a single
-``mcc-registry-action-store`` so the downstream behaviour
+``consensus-tree-registry-action-store`` so the downstream behaviour
 (open peartree, drop the entry) lives in one place per action — not
 duplicated across tabs.
 """
@@ -27,11 +27,11 @@ from ..icons import icon
 from .. import state
 
 
-_VIEW_BTN = {"type": "mcc-row-view"}
-_DELETE_BTN = {"type": "mcc-row-delete"}
-# Rename pencil — clicks are handled in callbacks/rename_mcc.py
+_VIEW_BTN = {"type": "consensus-tree-row-view"}
+_DELETE_BTN = {"type": "consensus-tree-row-delete"}
+# Rename pencil — clicks are handled in callbacks/rename_consensus_tree.py
 # (``open_modal_from_pencil``), not by the View/Delete action store.
-_RENAME_BTN = {"type": "mcc-row-rename"}
+_RENAME_BTN = {"type": "consensus-tree-row-rename"}
 
 
 def _uses_compact_registry_table(*, show_mode, source):
@@ -41,7 +41,7 @@ def _uses_compact_registry_table(*, show_mode, source):
 def _row_action_button(*, kind, name, source, color, icon_name,
                        disabled=False, title=""):
     # ``source`` disambiguates buttons that share a ``name`` across
-    # different MCC tables (e.g. the same Between-mode MCC appears in
+    # different consensus tree tables (e.g. the same Between-mode consensus tree appears in
     # the treespace tab AND the diagnostics tab). Without it, Dash
     # treats the two ActionIcons as duplicate components and silently
     # routes clicks to only one of them, leaving the other table's
@@ -68,21 +68,21 @@ def _entry_summary_row(entry, *, show_mode=False, source):
     both kinds share one table.
 
     The log-clade-credibility is intentionally dropped: it's not
-    comparable across rows because each MCC is computed against a
+    comparable across rows because each consensus tree is computed against a
     different denominator (the size of the user's selection).
     """
     name = entry.get("name", "")
     n_sel = len(entry.get("selection") or [])
-    mt = entry.get("mcc_tree") or {}
-    mcc_run = mt.get("group") or "—"
+    mt = entry.get("consensus_tree") or {}
+    consensus_tree_run = mt.get("group") or "—"
     treenum = mt.get("treenum")
     treenum_text = "—" if treenum is None else str(int(treenum))
-    lnp = entry.get("mcc_log_posterior")
+    lnp = entry.get("consensus_tree_log_posterior")
     try:
         lnp_text = "—" if lnp is None else f"{float(lnp):.3f}"
     except (TypeError, ValueError):
         lnp_text = "—"
-    cached = state.has_cached_mcc_tree(entry.get("uuid", ""))
+    cached = state.has_cached_consensus_tree(entry.get("uuid", ""))
     compact_table = _uses_compact_registry_table(
         show_mode=show_mode,
         source=source,
@@ -91,22 +91,22 @@ def _entry_summary_row(entry, *, show_mode=False, source):
         name_cell = dmc.TableTd(
             html.Div(
                 name,
-                className="tt-mcc-cell-ellipsis tt-mcc-name-text",
+                className="tt-consensus-tree-cell-ellipsis tt-consensus-tree-name-text",
                 title=name,
             ),
-            className="tt-mcc-name-col",
+            className="tt-consensus-tree-name-col",
         )
     else:
         name_cell = dmc.TableTd(name, style={"fontFamily": "monospace"})
 
     cells = [name_cell]
     if show_mode:
-        mode_cell_props = {"className": "tt-mcc-mode-col"} if compact_table else {}
+        mode_cell_props = {"className": "tt-consensus-tree-mode-col"} if compact_table else {}
         cells.append(dmc.TableTd(entry.get("mode") or "—", **mode_cell_props))
 
     action_group = dmc.Group([
         _row_action_button(
-            kind="mcc-row-rename",
+            kind="consensus-tree-row-rename",
             name=name,
             source=source,
             color="blue",
@@ -114,17 +114,17 @@ def _entry_summary_row(entry, *, show_mode=False, source):
             title="Rename",
         ),
         _row_action_button(
-            kind="mcc-row-view",
+            kind="consensus-tree-row-view",
             name=name,
             source=source,
             color="violet",
             icon_name="tabler:tree",
             disabled=not cached,
             title=("View in PearTree" if cached
-                   else "MCC was evicted; recompute to view"),
+                   else "consensus tree was evicted; recompute to view"),
         ),
         _row_action_button(
-            kind="mcc-row-delete",
+            kind="consensus-tree-row-delete",
             name=name,
             source=source,
             color="red",
@@ -133,23 +133,47 @@ def _entry_summary_row(entry, *, show_mode=False, source):
         ),
     ], gap=4)
 
+    # "Selected" cell: the input-tree count, plus (only in the tabs that
+    # actually have an MDS plot — Between/Within, not Clade Exploration) a
+    # small select icon that re-selects this consensus tree's exact input
+    # trees in the plot. Handled by ``select_consensus_tree_input_trees``.
+    if source in ("treespace", "within"):
+        selected_body = dmc.Group(
+            [
+                _row_action_button(
+                    kind="consensus-tree-row-select",
+                    name=name,
+                    source=source,
+                    color="teal",
+                    icon_name="tabler:select",
+                    title="Select this consensus tree's input trees in the MDS plot",
+                ),
+                html.Span(f"{n_sel}"),
+            ],
+            # Button first, then the count ("[select] 909"). Left-aligned so
+            # every row's select button lines up at the column's left edge.
+            gap=6, wrap="nowrap", align="center",
+        )
+    else:
+        selected_body = f"{n_sel}"
+
     if compact_table:
         cells.extend([
             dmc.TableTd(
-                html.Div(mcc_run, className="tt-mcc-cell-ellipsis", title=mcc_run),
-                className="tt-mcc-run-col",
+                html.Div(consensus_tree_run, className="tt-consensus-tree-cell-ellipsis", title=consensus_tree_run),
+                className="tt-consensus-tree-run-col",
             ),
-            dmc.TableTd(treenum_text, className="tt-mcc-tree-col"),
-            dmc.TableTd(lnp_text, className="tt-mcc-lnp-col"),
-            dmc.TableTd(f"{n_sel}", className="tt-mcc-selected-col"),
-            dmc.TableTd(action_group, className="tt-mcc-actions-col"),
+            dmc.TableTd(treenum_text, className="tt-consensus-tree-col"),
+            dmc.TableTd(lnp_text, className="tt-consensus-tree-lnp-col"),
+            dmc.TableTd(selected_body, className="tt-consensus-tree-selected-col"),
+            dmc.TableTd(action_group, className="tt-consensus-tree-actions-col"),
         ])
     else:
         cells.extend([
-            dmc.TableTd(mcc_run),
+            dmc.TableTd(consensus_tree_run),
             dmc.TableTd(treenum_text),
             dmc.TableTd(lnp_text),
-            dmc.TableTd(f"{n_sel}"),
+            dmc.TableTd(selected_body),
             dmc.TableTd(action_group),
         ])
     return dmc.TableTr(cells)
@@ -165,15 +189,15 @@ def _table_for(entries, *, show_mode=False, source):
         source=source,
     )
     if compact_table:
-        headers = [dmc.TableTh("Name", className="tt-mcc-name-col")]
+        headers = [dmc.TableTh("Name", className="tt-consensus-tree-name-col")]
         if show_mode:
-            headers.append(dmc.TableTh("Mode", className="tt-mcc-mode-col"))
+            headers.append(dmc.TableTh("Mode", className="tt-consensus-tree-mode-col"))
         headers.extend([
-            dmc.TableTh("Run", className="tt-mcc-run-col"),
-            dmc.TableTh("Tree #", className="tt-mcc-tree-col"),
-            dmc.TableTh("lnP", className="tt-mcc-lnp-col"),
-            dmc.TableTh("Selected", className="tt-mcc-selected-col"),
-            dmc.TableTh("", className="tt-mcc-actions-col"),
+            dmc.TableTh("Run", className="tt-consensus-tree-run-col"),
+            dmc.TableTh("Tree #", className="tt-consensus-tree-col"),
+            dmc.TableTh("lnP", className="tt-consensus-tree-lnp-col"),
+            dmc.TableTh("Selected", className="tt-consensus-tree-selected-col"),
+            dmc.TableTh("", className="tt-consensus-tree-actions-col"),
         ])
     else:
         headers = [dmc.TableTh("Name")]
@@ -188,9 +212,9 @@ def _table_for(entries, *, show_mode=False, source):
         ])
     table_props = {}
     if compact_table:
-        table_class = "tt-mcc-registry-table"
+        table_class = "tt-consensus-tree-registry-table"
         if show_mode:
-            table_class += " tt-mcc-registry-table-with-mode"
+            table_class += " tt-consensus-tree-registry-table-with-mode"
         table_props = {
             "layout": "fixed",
             "className": table_class,
@@ -207,7 +231,7 @@ def _table_for(entries, *, show_mode=False, source):
 
 
 def _filter_for_treespace(registry, selected_key, results):
-    """Between tab list: MCCs matching the active MDS result's
+    """Between tab list: consensus trees matching the active MDS result's
     ``source_distmat`` AND ``mode == 'Between'``."""
     if not registry or not selected_key or not results or selected_key not in results:
         return []
@@ -234,16 +258,16 @@ def _filter_for_within(registry, selected_key, selected_run, results):
             and e.get("run") == selected_run]
 
 
-def register_mcc_list_callbacks():
+def register_consensus_tree_list_callbacks():
     # Between-runs tab list
     @callback(
-        Output("treespace-mcc-list", "children"),
-        Output("treespace-mcc-list-paper", "style"),
-        Input("mcc-registry-store", "data"),
+        Output("treespace-consensus-tree-list", "children"),
+        Output("treespace-consensus-tree-list-paper", "style"),
+        Input("consensus-tree-registry-store", "data"),
         Input("treespace-result-select", "value"),
         State("mds-result-store", "data"),
     )
-    def render_treespace_mcc_list(registry, selected_key, results):
+    def render_treespace_consensus_tree_list(registry, selected_key, results):
         entries = _filter_for_treespace(registry, selected_key, results)
         if not entries:
             return html.Div(), {"display": "none"}
@@ -251,14 +275,14 @@ def register_mcc_list_callbacks():
 
     # Within-run tab list
     @callback(
-        Output("within-run-mcc-list", "children"),
-        Output("within-run-mcc-list-paper", "style"),
-        Input("mcc-registry-store", "data"),
+        Output("within-run-consensus-tree-list", "children"),
+        Output("within-run-consensus-tree-list-paper", "style"),
+        Input("consensus-tree-registry-store", "data"),
         Input("within-run-result-select", "value"),
         Input("within-run-run-select", "value"),
         State("mds-result-store", "data"),
     )
-    def render_within_run_mcc_list(registry, selected_key, selected_run,
+    def render_within_run_consensus_tree_list(registry, selected_key, selected_run,
                                    results):
         entries = _filter_for_within(registry, selected_key, selected_run,
                                      results)
@@ -268,10 +292,10 @@ def register_mcc_list_callbacks():
 
     # Pattern-matching: any row View / Delete click → action store
     @callback(
-        Output("mcc-registry-action-store", "data", allow_duplicate=True),
-        Input({"type": "mcc-row-view",   "name": ALL, "source": ALL}, "n_clicks"),
-        Input({"type": "mcc-row-delete", "name": ALL, "source": ALL}, "n_clicks"),
-        State("mcc-registry-store", "data"),
+        Output("consensus-tree-registry-action-store", "data", allow_duplicate=True),
+        Input({"type": "consensus-tree-row-view",   "name": ALL, "source": ALL}, "n_clicks"),
+        Input({"type": "consensus-tree-row-delete", "name": ALL, "source": ALL}, "n_clicks"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def emit_row_action(view_clicks, delete_clicks, registry):
@@ -284,7 +308,7 @@ def register_mcc_list_callbacks():
         triggered_prop = (callback_context.triggered or [{}])[0].get("value")
         if not triggered_prop:
             return no_update
-        action = "view" if triggered.get("type") == "mcc-row-view" else "delete"
+        action = "view" if triggered.get("type") == "consensus-tree-row-view" else "delete"
         name = triggered.get("name")
         uuid = ""
         for e in registry or []:
@@ -301,11 +325,45 @@ def register_mcc_list_callbacks():
             "n": (callback_context.triggered or [{}])[0].get("value"),
         }
 
+    # Row "select" icon → re-select this consensus tree's exact input trees
+    # in the tab's MDS plot. Writing the tab's selected-trees-store both
+    # clears the current selection AND re-selects it (which redraws the red
+    # overlay rings via the existing selection-store consumer). ``selection``
+    # is stored as [[group, treenum], ...]; the treespace store takes that
+    # verbatim, the within store takes bare treenums. Only Between/Within
+    # rows carry this button (the Clade tab has no MDS plot).
+    @callback(
+        Output("treespace-selected-trees-store", "data", allow_duplicate=True),
+        Output("within-run-selected-trees-store", "data", allow_duplicate=True),
+        Input({"type": "consensus-tree-row-select", "name": ALL, "source": ALL}, "n_clicks"),
+        State("consensus-tree-registry-store", "data"),
+        prevent_initial_call=True,
+    )
+    def select_consensus_tree_input_trees(_clicks, registry):
+        triggered = callback_context.triggered_id
+        if not triggered or not isinstance(triggered, dict):
+            return no_update, no_update
+        # Pattern-matching buttons restamp on every render → n_clicks is
+        # None for fresh buttons; bail so the initial render doesn't fire.
+        if not (callback_context.triggered or [{}])[0].get("value"):
+            return no_update, no_update
+        name = triggered.get("name")
+        source = triggered.get("source")
+        entry = next((e for e in (registry or []) if e.get("name") == name), None)
+        if entry is None:
+            return no_update, no_update
+        selection = entry.get("selection") or []   # [[group, treenum], ...]
+        if source == "treespace":
+            return selection, no_update
+        if source == "within":
+            return no_update, [int(t) for _g, t in selection]
+        return no_update, no_update
+
     # Server-side delete handler — runs whenever the action store says
     # so. View actions are handled clientside (next callback below).
     @callback(
-        Output("mcc-registry-store", "data", allow_duplicate=True),
-        Input("mcc-registry-action-store", "data"),
+        Output("consensus-tree-registry-store", "data", allow_duplicate=True),
+        Input("consensus-tree-registry-action-store", "data"),
         prevent_initial_call=True,
     )
     def handle_delete_action(payload):
@@ -314,20 +372,20 @@ def register_mcc_list_callbacks():
         name = payload.get("name")
         if not name:
             return no_update
-        state.delete_mcc(name)
-        return state.get_mcc_registry()
+        state.delete_consensus_tree(name)
+        return state.get_consensus_tree_registry()
 
     # Server-side View dispatcher: if the entry has been renamed by
     # the user (``name_user_set`` is True), open PearTree directly via
-    # the shared ``mcc-peartree-open-store`` sink. Otherwise open the
-    # rename modal first via ``mcc-rename-state``; the modal's Save
+    # the shared ``consensus-tree-peartree-open-store`` sink. Otherwise open the
+    # rename modal first via ``consensus-tree-rename-state``; the modal's Save
     # handler chains the open after rename. Single clientside
-    # ``window.open`` lives in ``callbacks/rename_mcc.py``.
+    # ``window.open`` lives in ``callbacks/rename_consensus_tree.py``.
     @callback(
-        Output("mcc-peartree-open-store", "data", allow_duplicate=True),
-        Output("mcc-rename-state", "data", allow_duplicate=True),
-        Input("mcc-registry-action-store", "data"),
-        State("mcc-registry-store", "data"),
+        Output("consensus-tree-peartree-open-store", "data", allow_duplicate=True),
+        Output("consensus-tree-rename-state", "data", allow_duplicate=True),
+        Input("consensus-tree-registry-action-store", "data"),
+        State("consensus-tree-registry-store", "data"),
         prevent_initial_call=True,
     )
     def dispatch_view_action(payload, registry):

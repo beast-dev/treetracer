@@ -35,19 +35,19 @@ def test_app_imports_and_registers_callbacks():
 
 def test_between_run_trailing_overlay_invariant():
     """Between-run figure has exactly 8 trailing overlays
-    (4 selection + 4 MCC). The patch callbacks address them by fixed
+    (4 selection + 4 consensus tree). The patch callbacks address them by fixed
     negative offsets, so changing this count without updating the
-    callbacks silently breaks selection/MCC rendering."""
+    callbacks silently breaks selection/consensus tree rendering."""
     from treetracer.plot_utils import (
-        N_SELECTION_OVERLAYS, N_MCC_OVERLAYS, N_TRAILING_OVERLAYS,
+        N_SELECTION_OVERLAYS, N_CONSENSUS_TREE_OVERLAYS, N_TRAILING_OVERLAYS,
         add_trace_multiplot_interleaved, make_plot_grid,
     )
     assert N_SELECTION_OVERLAYS == 4
-    assert N_MCC_OVERLAYS == 4
+    assert N_CONSENSUS_TREE_OVERLAYS == 4
     assert N_TRAILING_OVERLAYS == 8
 
     # Build a tiny figure and assert the last 8 traces are the overlay
-    # bundles named "selection" and "mcc".
+    # bundles named "selection" and "consensus tree".
     df = pd.DataFrame({
         "group": ["a", "a", "b", "b"],
         "treenum": [1, 2, 1, 2],
@@ -64,20 +64,20 @@ def test_between_run_trailing_overlay_invariant():
         show_lines=False,
     )
     trailing = [tr.name for tr in fig.data[-N_TRAILING_OVERLAYS:]]
-    assert trailing == ["selection"] * 4 + ["mcc"] * 4, trailing
+    assert trailing == ["selection"] * 4 + ["consensus tree"] * 4, trailing
 
 
 def test_within_run_trace_count_invariant():
     """Within-run figure has exactly 12 traces:
-    3 panels × {out-of-range, in-range} + 3 selection + 3 MCC overlays.
+    3 panels × {out-of-range, in-range} + 3 selection + 3 consensus tree overlays.
     The patch callbacks bail if ``len(fig.data) != N_TRACES``."""
     from treetracer.callbacks.within_run import (
-        N_TRACES, SELECTION_OVERLAY_OFFSETS, MCC_OVERLAY_OFFSETS,
+        N_TRACES, SELECTION_OVERLAY_OFFSETS, CONSENSUS_TREE_OVERLAY_OFFSETS,
         _make_within_run_figure,
     )
     assert N_TRACES == 12
     assert SELECTION_OVERLAY_OFFSETS == (-6, -5, -4)
-    assert MCC_OVERLAY_OFFSETS == (-3, -2, -1)
+    assert CONSENSUS_TREE_OVERLAY_OFFSETS == (-3, -2, -1)
 
     df = pd.DataFrame({
         "group": ["runA"] * 5,

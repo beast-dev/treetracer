@@ -73,7 +73,11 @@ _OVERLAY_STYLES = {
         "hover": "Tree #%{customdata[0]}: %{customdata[1]}<extra>selected</extra>",
     },
     "consensus tree": {
-        "color": "#39ff14",   # neon green
+        # Consensus-tree rings disabled for now: planned future consensus
+        # trees won't correspond to an existing MDS point, so a ring has
+        # nowhere meaningful to sit. Alpha 0 hides both the 3D and 2D rings
+        # (they share this one colour); restore "#39ff14" to re-enable.
+        "color": "rgba(57,255,20,0)",   # neon green #39ff14 at alpha 0 = hidden
         # 3D ring needs to be substantially bigger than the selection
         # ring — Scatter3d ``circle-open`` strokes scale with size, not
         # with line.width, so size IS the visual weight.
@@ -94,6 +98,11 @@ def _add_overlay_bundle(fig, panels_2d, *, kind):
     can address them by fixed negative offsets.
     """
     style = _OVERLAY_STYLES[kind]
+    # Consensus-tree rings are disabled (see _OVERLAY_STYLES) — skip their
+    # hover so the now-invisible ring can't pop a phantom tooltip. The
+    # selection (red) overlay keeps its normal hover.
+    hover = ({"hoverinfo": "skip"} if kind == "consensus tree"
+             else {"hovertemplate": style["hover"]})
     # Scatter3d ignores ``marker.line.width`` for visible thickness, so
     # both 3D overlays use the ``circle-open`` symbol (the marker colour
     # *is* the ring) and lean on size for prominence. The consensus tree ring is
@@ -106,7 +115,7 @@ def _add_overlay_bundle(fig, panels_2d, *, kind):
             marker=dict(size=style["size3d"], color=style["color"],
                         symbol="circle-open"),
             customdata=[],
-            hovertemplate=style["hover"],
+            **hover,
             showlegend=False,
             name=style["name"],
         ),
@@ -131,7 +140,7 @@ def _add_overlay_bundle(fig, panels_2d, *, kind):
                               width=style["line2d_width"]),
                 ),
                 customdata=[],
-                hovertemplate=style["hover"],
+                **hover,
                 showlegend=False,
                 # Pin both states to opacity 1 so Plotly's box-select
                 # selectedpoints stamping doesn't fade overlay circles.

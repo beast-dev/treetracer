@@ -41,7 +41,9 @@ TREETRACER_BLUE = "#228be6"
 N_TRACES = 12
 SELECTION_OVERLAY_OFFSETS = (-6, -5, -4)
 CONSENSUS_TREE_OVERLAY_OFFSETS = (-3, -2, -1)
-CONSENSUS_TREE_OVERLAY_COLOR = "#39ff14"
+# Consensus-tree ring disabled for now — alpha 0 hides it. Restore
+# "#39ff14" (neon green) to re-enable the within-run ring overlay.
+CONSENSUS_TREE_OVERLAY_COLOR = "rgba(57,255,20,0)"
 
 
 def _get_active_result(selected_key, results_index):
@@ -211,7 +213,7 @@ def _consensus_tree_overlay_trace(xs, ys, customdata):
             line=dict(color=CONSENSUS_TREE_OVERLAY_COLOR, width=3.0),
         ),
         customdata=customdata,
-        hovertemplate="Tree #%{customdata[0]}: %{customdata[1]}<extra>consensus tree</extra>",
+        hoverinfo="skip",  # ring disabled — no hover on the invisible overlay
         showlegend=False,
         selected=dict(marker=dict(opacity=1)),
         unselected=dict(marker=dict(opacity=1)),

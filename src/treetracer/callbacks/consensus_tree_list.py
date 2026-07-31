@@ -140,7 +140,6 @@ def _entry_summary_row(entry, *, show_mode=False, source):
     if source in ("treespace", "within"):
         selected_body = dmc.Group(
             [
-                html.Span(f"{n_sel}"),
                 _row_action_button(
                     kind="consensus-tree-row-select",
                     name=name,
@@ -149,8 +148,11 @@ def _entry_summary_row(entry, *, show_mode=False, source):
                     icon_name="tabler:select",
                     title="Select this consensus tree's input trees in the MDS plot",
                 ),
+                html.Span(f"{n_sel}"),
             ],
-            gap=4, wrap="nowrap", align="center",
+            # Button first, then the count ("[select] 909"). Left-aligned so
+            # every row's select button lines up at the column's left edge.
+            gap=6, wrap="nowrap", align="center",
         )
     else:
         selected_body = f"{n_sel}"

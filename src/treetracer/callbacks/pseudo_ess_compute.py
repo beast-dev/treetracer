@@ -125,9 +125,7 @@ def _build_result_table(results: List[Dict[str, Any]]):
             dmc.TableTd(str(r["n_trees"])),
             dmc.TableTd(r["burnin_label"]),
             _ess_cell(r.get("min")),
-            _ess_cell(r.get("q1")),
             _ess_cell(r.get("q2")),
-            _ess_cell(r.get("q3")),
             _ess_cell(r.get("max")),
             dmc.TableTd(str(r.get("n_refs_used", 0))),
         ]))
@@ -140,9 +138,7 @@ def _build_result_table(results: List[Dict[str, Any]]):
                     dmc.TableTh("Trees"),
                     dmc.TableTh("Burn-in"),
                     dmc.TableTh("Min"),
-                    dmc.TableTh("Q1"),
-                    dmc.TableTh("Q2 (median)"),
-                    dmc.TableTh("Q3"),
+                    dmc.TableTh("Median"),
                     dmc.TableTh("Max"),
                     dmc.TableTh("# refs"),
                 ])

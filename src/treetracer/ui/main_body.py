@@ -21,14 +21,14 @@ def _add_about_modal():
         children=[
             dmc.Stack(
                 [
-                    dmc.Title("TreeTracer v0.0-DEMO", order=3),
+                    dmc.Title("TreeTracer v0.95rc", order=3),
                     dmc.Text(
                         "TreeTracer is a diagnostic tool used to visualize convergence of tree topologies"
                     ),
                     dmc.Title("Citation", order=4),
                     dmc.Text("To cite TreeTracer, please use the following citation:"),
                     dmc.Blockquote(
-                        children=[dmc.Text("Treetracer Full citation", fs="italic")]
+                        children=[dmc.Text("TBD", fs="italic")]
                     ),
                 ],
             )

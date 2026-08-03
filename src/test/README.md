@@ -24,6 +24,13 @@ bash run_tests.sh -k consensus tree -v
 | `conftest.py` | Session fixtures: NEXUS parse, rapidtrees presence, DendroPy parse. |
 | `test.trees` | 100-tree BEAST fixture (5 MB). The CI integration anchor. |
 | `test_app_smoke.py` | App imports, callback registration, figure-layout invariants. |
+| `test_background_jobs.py` | Thread-safe job-state transitions, exactly-once finalization, sticky terminal delivery, atomic retry leases, acknowledgement, cancellation, and reset. |
+| `test_compute_job_lifecycle.py` | RF/MDS lifecycle integration, generation checks, wildcard dynamic progress outputs, and poll-piggybacked receipt acknowledgement. |
+| `test_managed_compute_jobs.py` | Pseudo-ESS and consensus managed-job finalization and replay behavior. |
+| `test_managed_analysis_jobs.py` | RF Trace and clade-comparison worker/finalizer/cache behavior. |
+| `test_worker_protocol.py` | Framed socket messages, EOF/truncation handling, and heartbeat/result ordering. |
+| `test_persistent_worker_watchdog.py` | Missing-heartbeat and hard-runtime bounds, protocol validation, configuration, and worker replacement. |
+| `test_terminal_delivery_faults.py` | Deterministic terminal-event, terminal-UI/receipt, settling-response-loss, paced-retry, and stale-generation scenarios. |
 | `test_ess.py` | `effective_sample_size` vs AR(1) closed form + arviz cross-check (iid, AR(2), MA(5), heavy-tail, multimodal). |
 | `test_pseudo_ess.py` | `compute_pseudo_ess` shape, n-cap, rank-norm bound, row-order sensitivity. |
 | `test_pcoa.py` | `compute_mds` Procrustes-equivalent to scipy on synthetic Euclidean + real RF. |

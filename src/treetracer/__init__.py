@@ -5,10 +5,10 @@ Two execution modes, branching on the env var
 
 1. **Worker mode** (env var set) — re-entrant subprocess invocation
    from ``callbacks/persistent_worker.py``. Skips all GUI imports and
-   enters a request loop reading length-prefixed pickle frames from
-   stdin, dispatching to one of the registered worker functions, and
-   writing the result back to stdout. Lives for the lifetime of the
-   parent app.
+   enters a request loop reading length-prefixed pickle frames from a
+   localhost socket, dispatching to one of the registered worker functions,
+   and returning heartbeat/result frames on that socket. Lives for the
+   lifetime of the parent app.
 
    The persistent design avoids paying ~1.5 s of Python interpreter
    boot + import on every Compute RF / View consensus tree click — the boot is
@@ -43,12 +43,19 @@ def _run_persistent_worker() -> int:
     shared worker log (``treetracer._worker_log``) so a stuck worker
     can be diagnosed post-mortem by reading one file.
     """
-    import pickle
+    import math
     import socket
-    import struct
     import traceback
+    from collections.abc import Mapping
 
     from ._worker_log import log as wlog, get_log_path
+    from .worker_protocol import (
+        HeartbeatEmitter,
+        WorkerConnectionClosed,
+        WorkerProtocolError,
+        receive_message,
+        send_message,
+    )
 
     wlog("entered _run_persistent_worker")
     # Surface the log path on stderr too. The parent's stderr drainer
@@ -85,38 +92,63 @@ def _run_persistent_worker() -> int:
         return 1
     wlog("connected; entering recv loop")
 
-    def _recv_exactly(n: int) -> bytes:
-        data = b""
-        while len(data) < n:
-            chunk = sock.recv(n - len(data))
-            if not chunk:
-                return b""  # EOF — parent closed; loop will return
-            data += chunk
-        return data
+    heartbeat_interval_raw = os.environ.get(
+        "TREETRACER_WORKER_HEARTBEAT_INTERVAL_S",
+        "2",
+    )
+    try:
+        heartbeat_interval_s = float(heartbeat_interval_raw)
+        if not math.isfinite(heartbeat_interval_s) or heartbeat_interval_s <= 0:
+            raise ValueError
+    except ValueError:
+        heartbeat_interval_s = 2.0
+        wlog(
+            "invalid TREETRACER_WORKER_HEARTBEAT_INTERVAL_S="
+            f"{heartbeat_interval_raw!r}; using 2s"
+        )
 
     while True:
-        wlog("waiting for next request header (4-byte size)")
-        size_bytes = _recv_exactly(4)
-        if not size_bytes:
+        wlog("waiting for next request frame")
+        try:
+            request = receive_message(sock)
+        except WorkerConnectionClosed:
             wlog("EOF on socket; clean shutdown")
             try:
                 sock.close()
             except OSError:
                 pass
             return 0
-        (size,) = struct.unpack("<I", size_bytes)
-        wlog(f"got request header; body size={size}")
-        request_bytes = _recv_exactly(size)
-        if len(request_bytes) != size:
-            wlog(f"FATAL: short recv on request body ({len(request_bytes)}/{size})")
-            sys.stderr.write("persistent worker: short recv on request body\n")
+        except (OSError, WorkerProtocolError) as exc:
+            wlog(
+                "FATAL: request receive failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
             return 1
-        try:
-            request = pickle.loads(request_bytes)
-            job = request["job"]
-            kwargs = request["kwargs"]
-            wlog(f"unpickled job={job!r}, kwarg keys={sorted(kwargs.keys())}")
 
+        job = request.get("job")
+        kwargs = request.get("kwargs")
+        if not isinstance(job, str) or not isinstance(kwargs, Mapping):
+            wlog("FATAL: request is missing string job or mapping kwargs")
+            return 1
+        kwargs = dict(kwargs)
+        wlog(f"received job={job!r}, kwarg keys={sorted(kwargs.keys())}")
+
+        heartbeat = HeartbeatEmitter(
+            sock,
+            job,
+            interval_s=heartbeat_interval_s,
+            log=wlog,
+        )
+        try:
+            heartbeat.start()
+        except OSError as exc:
+            wlog(
+                "FATAL: initial heartbeat failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return 1
+
+        try:
             if job == "compute_rf":
                 wlog("importing compute_rf_worker_entry")
                 from .rf._subprocess_worker import compute_rf_worker_entry
@@ -135,6 +167,20 @@ def _run_persistent_worker() -> int:
                 wlog("calling compute_pseudo_ess_worker_entry")
                 result = compute_pseudo_ess_worker_entry(**kwargs)
                 wlog("compute_pseudo_ess_worker_entry returned")
+            elif job == "compute_rf_trace":
+                wlog("importing compute_rf_trace_worker_entry")
+                from .ess._rf_trace_worker import compute_rf_trace_worker_entry
+                wlog("calling compute_rf_trace_worker_entry")
+                result = compute_rf_trace_worker_entry(**kwargs)
+                wlog("compute_rf_trace_worker_entry returned")
+            elif job == "compute_clade_frequencies":
+                wlog("importing compute_clade_frequencies_worker_entry")
+                from .clade_freq._subprocess_worker import (
+                    compute_clade_frequencies_worker_entry,
+                )
+                wlog("calling compute_clade_frequencies_worker_entry")
+                result = compute_clade_frequencies_worker_entry(**kwargs)
+                wlog("compute_clade_frequencies_worker_entry returned")
             elif job == "compute_mds":
                 # MDS doesn't need a dedicated worker wrapper — the
                 # ``rf._worker.compute_mds_worker`` function is already
@@ -148,25 +194,23 @@ def _run_persistent_worker() -> int:
             else:
                 wlog(f"FATAL: unknown job {job!r}")
                 raise RuntimeError(f"Unknown job: {job!r}")
-            response = {"ok": True, "result": result}
+            response = {"type": "result", "ok": True, "result": result}
             wlog("job succeeded; serialising response")
         except BaseException as e:  # noqa: BLE001 — defensive: one bad
             # job must not crash the worker.
             wlog(f"job raised: {type(e).__name__}: {e}")
             response = {
+                "type": "result",
                 "ok": False,
                 "error": f"{type(e).__name__}: {e}",
                 "traceback": traceback.format_exc(),
             }
+        finally:
+            heartbeat.stop()
 
-        response_bytes = pickle.dumps(response)
-        wlog(f"sending response; size={len(response_bytes)}")
-        # sendall loops internally on short sends — guaranteed to send
-        # all bytes or raise OSError. The length prefix lets the
-        # parent know exactly how many bytes to recv.
+        wlog("sending result response")
         try:
-            sock.sendall(struct.pack("<I", len(response_bytes)))
-            sock.sendall(response_bytes)
+            send_message(sock, response, lock=heartbeat.send_lock)
         except OSError as e:
             wlog(f"FATAL: sendall failed: {type(e).__name__}: {e}")
             return 1

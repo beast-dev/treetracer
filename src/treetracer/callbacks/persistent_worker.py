@@ -31,18 +31,15 @@ subprocesses):
 Wire protocol (parent ↔ worker, framed identically on the socket):
 
     request:  [4-byte LE length N][N bytes pickle.dumps({
-                  "job": "compute_rf" | "compute_consensus_tree",
+                  "job": "compute_rf" | "compute_consensus_tree" | ...,
                   "kwargs": {...},
               })]
-    response: [4-byte LE length M][M bytes pickle.dumps({
-                  "ok": True, "result": ...
-              }) | pickle.dumps({
-                  "ok": False, "error": str, "traceback": str
-              })]
+    heartbeat: [frame containing {"type": "heartbeat", ...}]
+    response:  [frame containing {"type": "result", "ok": bool, ...}]
 
-The wire is synchronous: every request gets exactly one response,
-in order. ``submit_job`` is serialised via ``_lock`` so concurrent
-callbacks don't corrupt the stream.
+The wire is synchronous: every request gets zero or more heartbeat frames and
+then exactly one result frame. ``submit_job`` is serialised via ``_lock`` so
+concurrent callbacks don't corrupt the stream.
 
 Bootstrap (parent → worker rendezvous):
 
@@ -64,18 +61,28 @@ interrupt a running job is to kill the worker process.
 ``cancel_current_job`` does exactly that. The kill makes ``submit_job``'s
 blocking ``recv`` return EOF; it then raises ``JobCancelled``. A fresh
 worker is spawned immediately so the next compute stays warm.
+
+Watchdog:
+
+The worker emits a tiny heartbeat every two seconds from a daemon thread. The
+parent treats a prolonged heartbeat gap as an unresponsive worker, kills it,
+starts a replacement, and raises a normal compute exception. ``JobManager``
+then delivers that failure through the same sticky terminal protocol as every
+other result. A generous per-operation maximum runtime is a final safety net
+for a compute function that remains able to heartbeat but never returns.
 """
 
 from __future__ import annotations
 
 import collections
+import math
 import os
-import pickle
 import socket
-import struct
 import subprocess
 import sys
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
@@ -85,13 +92,21 @@ from typing import Any, Dict
 # parent-side entries are tagged ``[parent]`` so an interleaved
 # timestamp-sorted view shows the IPC handshake clearly.
 from .._worker_log import log as _wlog
+from ..worker_protocol import (
+    WorkerConnectionClosed,
+    WorkerProtocolError,
+    receive_message,
+    send_message,
+)
 
 
 _worker_proc: subprocess.Popen | None = None
 _worker_sock: socket.socket | None = None  # connected to current worker
 _lock = threading.Lock()
+_job_state_lock = threading.Lock()
 
-# Cancellation state. ``_current_job`` is the name of the job whose
+# Cancellation state, protected by ``_job_state_lock``. ``_current_job`` is
+# the name of the job whose
 # response ``submit_job`` is currently blocked on (``None`` when the
 # worker is idle); ``_cancelled`` is set by ``cancel_current_job`` so
 # ``submit_job`` can tell a user Stop apart from a genuine crash.
@@ -103,6 +118,131 @@ _cancelled: bool = False
 # tail reflects the currently-live process's diagnostic output, not a
 # previous one's.
 _stderr_drainer: "_StderrDrainer | None" = None
+
+
+_DEFAULT_HEARTBEAT_INTERVAL_S = 2.0
+_DEFAULT_HEARTBEAT_TIMEOUT_S = 120.0
+_DEFAULT_MAX_RUNTIME_BY_JOB_S = {
+    # RF, MDS, and Pseudo-ESS can scale quadratically and legitimately run for
+    # hours on older machines. The ceilings are intentionally conservative.
+    "compute_rf": 12 * 60 * 60,
+    "compute_mds": 6 * 60 * 60,
+    "compute_pseudo_ess": 6 * 60 * 60,
+    # These operations work on a selection, row, or selected clade columns.
+    "compute_consensus_tree": 2 * 60 * 60,
+    "compute_rf_trace": 60 * 60,
+    "compute_clade_frequencies": 60 * 60,
+}
+_DEFAULT_MAX_RUNTIME_S = 6 * 60 * 60
+
+
+@dataclass(frozen=True, slots=True)
+class WatchdogPolicy:
+    """Resolved health limits for one worker request.
+
+    ``None`` disables the corresponding limit. Environment overrides accept
+    seconds; setting a value to ``0`` disables that limit deliberately.
+    """
+
+    heartbeat_timeout_s: float | None
+    max_runtime_s: float | None
+
+
+class WorkerUnresponsive(RuntimeError):
+    """Base class for worker failures detected by the parent watchdog."""
+
+
+class WorkerHeartbeatTimeout(WorkerUnresponsive):
+    """No complete heartbeat or result frame arrived within the health limit."""
+
+
+class WorkerRuntimeExceeded(WorkerUnresponsive):
+    """A job exceeded its configured maximum runtime while still heartbeating."""
+
+
+def watchdog_policy(
+    job_name: str,
+    *,
+    max_runtime_s: float | None = None,
+) -> WatchdogPolicy:
+    """Resolve defaults and environment overrides for ``job_name``.
+
+    Override precedence for maximum runtime is: explicit argument, per-job
+    environment variable, global environment variable, built-in default.
+    For example, RF can be overridden with
+    ``TREETRACER_WORKER_MAX_RUNTIME_COMPUTE_RF_S``.
+    """
+
+    heartbeat_interval = _heartbeat_interval_s()
+    heartbeat_timeout = _duration_from_env(
+        "TREETRACER_WORKER_HEARTBEAT_TIMEOUT_S",
+        _DEFAULT_HEARTBEAT_TIMEOUT_S,
+    )
+    if (
+        heartbeat_timeout is not None
+        and heartbeat_timeout < heartbeat_interval * 3
+    ):
+        adjusted = heartbeat_interval * 3
+        _wlog(
+            "[parent] heartbeat timeout is shorter than three worker "
+            f"intervals; using {adjusted:g}s"
+        )
+        heartbeat_timeout = adjusted
+    if max_runtime_s is None:
+        per_job_name = (
+            "TREETRACER_WORKER_MAX_RUNTIME_"
+            f"{str(job_name).upper()}_S"
+        )
+        default_runtime = _DEFAULT_MAX_RUNTIME_BY_JOB_S.get(
+            str(job_name),
+            _DEFAULT_MAX_RUNTIME_S,
+        )
+        if per_job_name in os.environ:
+            max_runtime = _duration_from_env(per_job_name, default_runtime)
+        else:
+            max_runtime = _duration_from_env(
+                "TREETRACER_WORKER_MAX_RUNTIME_S",
+                default_runtime,
+            )
+    else:
+        max_runtime = _normalise_duration(
+            max_runtime_s,
+            name="max_runtime_s",
+        )
+    return WatchdogPolicy(heartbeat_timeout, max_runtime)
+
+
+def _duration_from_env(name: str, default: float) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return float(default)
+    try:
+        return _normalise_duration(raw, name=name)
+    except (TypeError, ValueError):
+        _wlog(f"[parent] ignoring invalid {name}={raw!r}")
+        return float(default)
+
+
+def _heartbeat_interval_s() -> float:
+    name = "TREETRACER_WORKER_HEARTBEAT_INTERVAL_S"
+    raw = os.environ.get(name)
+    if raw is None:
+        return _DEFAULT_HEARTBEAT_INTERVAL_S
+    try:
+        interval = float(raw)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError
+        return interval
+    except (TypeError, ValueError):
+        _wlog(f"[parent] ignoring invalid {name}={raw!r}")
+        return _DEFAULT_HEARTBEAT_INTERVAL_S
+
+
+def _normalise_duration(value: Any, *, name: str) -> float | None:
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+    return None if seconds == 0 else seconds
 
 
 class _StderrDrainer:
@@ -166,7 +306,7 @@ class _StderrDrainer:
 
 class JobCancelled(RuntimeError):
     """Raised by ``submit_job`` when the worker was killed via
-    ``cancel_current_job()`` — lets the polling callbacks render a
+    ``cancel_current_job()`` — lets the managed terminal adapters render a
     user-requested Stop as a neutral "cancelled" state rather than a
     red error."""
 
@@ -218,6 +358,9 @@ def _spawn_worker() -> subprocess.Popen:
     env = os.environ.copy()
     env["TREETRACER_WORKER_MODE"] = "persistent"
     env["TREETRACER_WORKER_PORT"] = str(port)
+    env["TREETRACER_WORKER_HEARTBEAT_INTERVAL_S"] = str(
+        _heartbeat_interval_s()
+    )
     _wlog(f"[parent] _spawn_worker: argv={_worker_argv()!r}")
 
     # ── Spawn. Stdio is intentionally DEVNULL for stdin/stdout —
@@ -233,32 +376,48 @@ def _spawn_worker() -> subprocess.Popen:
     )
     _wlog(f"[parent] _spawn_worker: Popen returned; worker pid={proc.pid}")
 
+    # Drain immediately, including during rendezvous. A noisy import must not
+    # fill stderr and prevent the worker from ever reaching socket.connect().
+    _stderr_drainer = _StderrDrainer(proc.stderr)
+    _wlog("[parent] _spawn_worker: stderr drainer started")
+
     # ── Wait for the worker to connect back. Generous timeout because
     # Python startup in the bundle (especially on emulated Windows) can
     # take several seconds. If the worker dies before connecting we
     # surface stderr from its drainer so the user knows why.
-    listener.settimeout(_RENDEZVOUS_TIMEOUT_S)
+    listener.settimeout(0.25)
+    deadline = time.monotonic() + _RENDEZVOUS_TIMEOUT_S
     try:
-        sock, addr = listener.accept()
-    except socket.timeout:
-        # Kill the worker, salvage whatever it printed to stderr.
+        while True:
+            try:
+                sock, addr = listener.accept()
+                break
+            except socket.timeout:
+                if proc.poll() is not None:
+                    raise RuntimeError(
+                        "persistent worker exited before connecting "
+                        f"(exit {proc.returncode})"
+                    )
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "persistent worker did not connect within "
+                        f"{_RENDEZVOUS_TIMEOUT_S:.0f}s"
+                    )
+    except Exception as exc:
         try:
-            proc.kill()
+            if proc.poll() is None:
+                proc.kill()
         except OSError:
             pass
-        # Drainer might not even exist yet — read stderr directly,
-        # but bounded so we don't block forever.
-        stderr_tail = b""
         try:
-            if proc.stderr is not None:
-                stderr_tail = proc.stderr.read()
-        except OSError:
+            proc.wait(timeout=2.0)
+        except (OSError, subprocess.TimeoutExpired):
             pass
+        stderr_tail = _worker_stderr_tail()
         raise RuntimeError(
-            f"persistent worker did not connect within "
-            f"{_RENDEZVOUS_TIMEOUT_S:.0f}s. stderr tail: "
+            f"{exc}. stderr tail: "
             f"{stderr_tail.decode('utf-8', errors='replace')[-500:]}"
-        )
+        ) from exc
     finally:
         listener.close()
 
@@ -266,11 +425,6 @@ def _spawn_worker() -> subprocess.Popen:
     _worker_sock = sock
     _wlog(f"[parent] _spawn_worker: worker connected from {addr}")
 
-    # Fresh drainer per worker — the previous drainer (if any) is
-    # still draining the dead worker's stderr until that pipe EOFs;
-    # its daemon thread will exit on its own.
-    _stderr_drainer = _StderrDrainer(proc.stderr)
-    _wlog("[parent] _spawn_worker: stderr drainer started")
     return proc
 
 
@@ -286,11 +440,8 @@ def _worker_stderr_tail() -> bytes:
 
 def start() -> None:
     """Spawn the persistent worker subprocess if it isn't already
-    running. Returns immediately — the subprocess boots in the
-    background. The first ``submit_job`` call after this returns will
-    block on the worker reading from stdin, which is automatic — OS
-    pipe buffering covers any race between Popen returning and the
-    worker entering its read loop.
+    running. The application invokes this on a daemon startup thread; this
+    function returns after the worker completes its socket rendezvous.
     """
     global _worker_proc
     with _lock:
@@ -336,27 +487,108 @@ def cancel_current_job() -> bool:
     Safe to call from any thread. It deliberately does **not** acquire
     ``_lock``: the thread that called ``submit_job`` holds that lock for
     the whole job, so acquiring it here would block until the job
-    finished on its own — exactly what a Stop button must avoid. We only
-    read the ``_worker_proc`` reference (atomic) and signal it, both
-    thread-safe.
+    finished on its own — exactly what a Stop button must avoid. A separate,
+    tiny state lock closes the race between completion and cancellation without
+    waiting for worker IPC.
 
     The kill makes ``submit_job``'s blocking read return EOF; that call
     then raises ``JobCancelled`` and respawns a fresh worker.
     """
     global _cancelled
-    proc = _worker_proc  # atomic snapshot of the module global
-    if proc is None or proc.poll() is not None:
-        return False  # no live worker
-    if _current_job is None:
-        return False  # worker idle — nothing to interrupt
-    # Order matters: set the flag before the kill so submit_job sees it
-    # on the EOF the kill is about to cause.
-    _cancelled = True
+    with _job_state_lock:
+        proc = _worker_proc
+        if proc is None or proc.poll() is not None:
+            return False  # no live worker
+        if _current_job is None:
+            return False  # worker idle — nothing to interrupt
+        # Set the flag before the kill so submit_job sees it on the EOF the
+        # kill is about to cause.
+        _cancelled = True
     try:
         proc.kill()
     except OSError:
         pass  # already exited between the checks above and here
     return True
+
+
+def _begin_current_job(job_name: str) -> None:
+    global _current_job, _cancelled
+    with _job_state_lock:
+        _cancelled = False
+        _current_job = job_name
+
+
+def _finish_current_job() -> bool:
+    """Close the cancellation window and return whether Stop won it."""
+    global _current_job
+    with _job_state_lock:
+        was_cancelled = _cancelled
+        _current_job = None
+        return was_cancelled
+
+
+def _clear_current_job() -> None:
+    global _current_job
+    with _job_state_lock:
+        _current_job = None
+
+
+def _restart_worker_locked(reason: str) -> bool:
+    """Retire the current process/socket and warm a replacement.
+
+    ``submit_job`` and ``_ensure_running`` call this while holding ``_lock``.
+    The old socket is closed before the process is killed so no late frame can
+    be mistaken for a response from the replacement worker.
+    """
+    global _worker_proc, _worker_sock
+
+    old_proc = _worker_proc
+    old_sock = _worker_sock
+    _worker_proc = None
+    _worker_sock = None
+
+    if old_sock is not None:
+        try:
+            old_sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            old_sock.close()
+        except OSError:
+            pass
+
+    if old_proc is not None and old_proc.poll() is None:
+        try:
+            old_proc.kill()
+        except OSError:
+            pass
+        try:
+            old_proc.wait(timeout=2.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    _wlog(f"[parent] restarting persistent worker: {reason}")
+    try:
+        _worker_proc = _spawn_worker()
+    except Exception as exc:  # noqa: BLE001 — next submission retries startup
+        _worker_proc = None
+        _worker_sock = None
+        _wlog(
+            "[parent] worker restart failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return False
+    _wlog(f"[parent] worker restart complete; pid={_worker_proc.pid}")
+    return True
+
+
+def _recovery_message(restarted: bool) -> str:
+    if restarted:
+        return "The worker was restarted and is ready for another computation."
+    return (
+        "The worker could not be restarted immediately; TreeTracer will retry "
+        "startup on the next computation."
+    )
 
 
 def _ensure_running() -> subprocess.Popen:
@@ -375,117 +607,214 @@ def _ensure_running() -> subprocess.Popen:
                 f"restarting. stderr tail: "
                 f"{stderr_tail.decode('utf-8', errors='replace')[-500:]}\n"
             )
-        # Close the dead worker's socket before spawning a fresh one.
-        # ``_spawn_worker`` will install a new one alongside the new
-        # ``_worker_proc``.
-        if _worker_sock is not None:
-            try:
-                _worker_sock.close()
-            except OSError:
-                pass
-            _worker_sock = None
-        _worker_proc = _spawn_worker()
+        if not _restart_worker_locked("worker was not running"):
+            raise RuntimeError("persistent worker could not be restarted")
     return _worker_proc
 
 
-def submit_job(job_name: str, **kwargs: Any) -> Dict[str, Any]:
-    """Send a job to the persistent worker and block on its response.
+def _receive_worker_result(
+    sock: socket.socket,
+    job_name: str,
+    policy: WatchdogPolicy,
+    *,
+    started_at: float,
+) -> dict[str, Any]:
+    """Consume heartbeat frames until the job's result frame arrives."""
+    last_heartbeat_at = started_at
+    last_sequence = 0
 
-    The wait happens inside a ``subprocess`` pipe read, which releases
-    the GIL — so the parent's other threads (Dash callbacks, the
-    pywebview event loop on its native thread, etc.) stay responsive.
+    while True:
+        now = time.monotonic()
+        heartbeat_remaining = (
+            None
+            if policy.heartbeat_timeout_s is None
+            else policy.heartbeat_timeout_s - (now - last_heartbeat_at)
+        )
+        runtime_remaining = (
+            None
+            if policy.max_runtime_s is None
+            else policy.max_runtime_s - (now - started_at)
+        )
 
-    Args:
-        job_name: ``"compute_rf"`` or ``"compute_consensus_tree"`` — must match a
-            branch in ``__init__.py:_run_persistent_worker``.
-        **kwargs: forwarded to the worker function.
+        if runtime_remaining is not None and runtime_remaining <= 0:
+            raise WorkerRuntimeExceeded(
+                f"{job_name} exceeded its {policy.max_runtime_s:.0f}s "
+                "maximum runtime"
+            )
+        if heartbeat_remaining is not None and heartbeat_remaining <= 0:
+            raise WorkerHeartbeatTimeout(
+                f"persistent worker sent no heartbeat or result for "
+                f"{policy.heartbeat_timeout_s:.0f}s during {job_name}"
+            )
 
-    Returns the worker function's return value (unpickled). Raises
-    ``JobCancelled`` if the user stopped the job via
-    ``cancel_current_job``, or ``RuntimeError`` if the worker reported
-    an error or crashed.
+        waits = [
+            value
+            for value in (heartbeat_remaining, runtime_remaining)
+            if value is not None
+        ]
+        sock.settimeout(min(waits) if waits else None)
+        try:
+            message = receive_message(sock)
+        except socket.timeout as exc:
+            now = time.monotonic()
+            if (
+                policy.max_runtime_s is not None
+                and now - started_at >= policy.max_runtime_s
+            ):
+                raise WorkerRuntimeExceeded(
+                    f"{job_name} exceeded its {policy.max_runtime_s:.0f}s "
+                    "maximum runtime"
+                ) from exc
+            raise WorkerHeartbeatTimeout(
+                f"persistent worker sent no heartbeat or result for "
+                f"{policy.heartbeat_timeout_s:.0f}s during {job_name}"
+            ) from exc
+
+        message_type = message.get("type")
+        if message_type == "heartbeat":
+            if message.get("job") != job_name:
+                raise WorkerProtocolError(
+                    "heartbeat job mismatch: "
+                    f"expected {job_name!r}, got {message.get('job')!r}"
+                )
+            try:
+                sequence = int(message["sequence"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise WorkerProtocolError(
+                    "heartbeat is missing a valid sequence"
+                ) from exc
+            if sequence < 1:
+                raise WorkerProtocolError(
+                    f"heartbeat has invalid sequence {sequence}"
+                )
+            if sequence <= last_sequence:
+                raise WorkerProtocolError(
+                    "heartbeat sequence did not advance: "
+                    f"previous={last_sequence}, current={sequence}"
+                )
+            last_sequence = sequence
+            last_heartbeat_at = time.monotonic()
+            if sequence == 1 or sequence % 30 == 0:
+                _wlog(
+                    "[parent] worker heartbeat: "
+                    f"job={job_name!r}, sequence={sequence}, "
+                    f"elapsed={message.get('elapsed_s', '?')}s"
+                )
+            continue
+
+        # Accept an untyped result for one-version rolling compatibility with
+        # a worker started just before an application update.
+        if message_type in (None, "result"):
+            return message
+        raise WorkerProtocolError(
+            f"unexpected worker message type {message_type!r}"
+        )
+
+
+def submit_job(
+    job_name: str,
+    *,
+    max_runtime_s: float | None = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Send one job and wait for heartbeats followed by its result.
+
+    Socket waits release the GIL, so Dash and the desktop event loop remain
+    responsive. Missing heartbeats, a maximum-runtime breach, a corrupt frame,
+    or a dead connection retires the worker and warms a replacement before the
+    exception reaches ``JobManager``.
+
+    ``max_runtime_s`` overrides the environment/default ceiling for this call;
+    pass ``0`` to disable only the hard runtime ceiling. Heartbeat monitoring
+    remains independently configurable through
+    ``TREETRACER_WORKER_HEARTBEAT_TIMEOUT_S``.
     """
-    global _worker_proc, _worker_sock, _current_job, _cancelled
-    _wlog(f"[parent] submit_job called: job={job_name!r}, kwarg keys={sorted(kwargs.keys())}")
+    global _worker_sock
+
+    policy = watchdog_policy(job_name, max_runtime_s=max_runtime_s)
+    _wlog(
+        f"[parent] submit_job called: job={job_name!r}, "
+        f"kwarg keys={sorted(kwargs.keys())}, policy={policy}"
+    )
     with _lock:
         _wlog("[parent] submit_job: _lock acquired")
-        _cancelled = False
         proc = _ensure_running()
-        # _ensure_running guarantees _worker_sock is set alongside
-        # _worker_proc (both are populated by _spawn_worker).
         assert _worker_sock is not None
         sock = _worker_sock
-        _wlog(f"[parent] submit_job: worker pid={proc.pid}, alive={proc.poll() is None}")
+        _wlog(
+            f"[parent] submit_job: worker pid={proc.pid}, "
+            f"alive={proc.poll() is None}"
+        )
 
-        request_bytes = pickle.dumps({"job": job_name, "kwargs": kwargs})
-        _wlog(f"[parent] submit_job: pickled request; size={len(request_bytes)}")
-        # ``_current_job`` is the cancellation window: while it's set,
-        # cancel_current_job() may kill this worker.
-        _current_job = job_name
+        _begin_current_job(job_name)
+        started_at = time.monotonic()
         try:
-            _wlog("[parent] submit_job: sending 4-byte size header on socket")
-            sock.sendall(struct.pack("<I", len(request_bytes)))
-            _wlog(f"[parent] submit_job: sending {len(request_bytes)}-byte request body")
-            sock.sendall(request_bytes)
-            _wlog("[parent] submit_job: receiving 4-byte response size header")
-            size_bytes = _recv_exactly(sock, 4)
-            _wlog(f"[parent] submit_job: got response header; bytes={len(size_bytes)}")
-        except OSError as e:
-            # Socket broke mid-request — almost always because
-            # cancel_current_job() just killed the worker.
-            _wlog(f"[parent] submit_job: OSError during IPC: {type(e).__name__}: {e}")
-            size_bytes = b""
-        finally:
-            _current_job = None
-
-        if len(size_bytes) != 4:
-            # Worker died mid-job.
-            _wlog(f"[parent] submit_job: short/empty response header; cancelled={_cancelled}")
-            if _cancelled:
-                # User Stop. Respawn now, while we still hold _lock, so
-                # the next compute doesn't pay interpreter-boot latency.
-                try:
-                    _worker_proc = _spawn_worker()
-                except Exception:  # noqa: BLE001 — _ensure_running retries
-                    _worker_proc = None
-                raise JobCancelled(f"{job_name} cancelled by user")
-            # Genuine crash — surface stderr so we have something to
-            # debug with. ``_worker_stderr_tail`` reads from the
-            # background drainer; a direct ``proc.stderr.read()``
-            # here would block forever because the drainer owns it.
-            stderr_tail = _worker_stderr_tail()
-            raise RuntimeError(
-                f"persistent worker died during {job_name!r}: "
-                f"{stderr_tail.decode('utf-8', errors='replace')[-500:]}"
+            _wlog("[parent] submit_job: sending request frame")
+            send_message(sock, {"job": job_name, "kwargs": kwargs})
+            response = _receive_worker_result(
+                sock,
+                job_name,
+                policy,
+                started_at=started_at,
             )
-        (size,) = struct.unpack("<I", size_bytes)
-        _wlog(f"[parent] submit_job: response body size={size}; receiving body")
-        response_bytes = _recv_exactly(sock, size)
-        _wlog(f"[parent] submit_job: received response body; got {len(response_bytes)} bytes")
+            if not isinstance(response.get("ok"), bool):
+                raise WorkerProtocolError(
+                    "result is missing a boolean ok field"
+                )
+            if response["ok"] and "result" not in response:
+                raise WorkerProtocolError(
+                    "successful result has no result payload"
+                )
+        except (
+            OSError,
+            WorkerConnectionClosed,
+            WorkerProtocolError,
+            WorkerUnresponsive,
+        ) as exc:
+            was_cancelled = _finish_current_job()
+            stderr_tail = _worker_stderr_tail().decode(
+                "utf-8",
+                errors="replace",
+            )[-500:]
+            reason = (
+                f"user cancelled {job_name}"
+                if was_cancelled
+                else f"{type(exc).__name__} during {job_name}: {exc}"
+            )
+            restarted = _restart_worker_locked(reason)
+            recovery = _recovery_message(restarted)
+            if was_cancelled:
+                raise JobCancelled(
+                    f"{job_name} cancelled by user. {recovery}"
+                ) from exc
+            if isinstance(exc, WorkerUnresponsive):
+                raise type(exc)(f"{exc}. {recovery}") from exc
+            if isinstance(exc, WorkerProtocolError):
+                raise WorkerProtocolError(
+                    f"persistent worker protocol failed during {job_name}: "
+                    f"{exc}. {recovery}"
+                ) from exc
+            detail = f" stderr tail: {stderr_tail}" if stderr_tail else ""
+            raise RuntimeError(
+                f"persistent worker connection failed during {job_name}: "
+                f"{type(exc).__name__}: {exc}.{detail} {recovery}"
+            ) from exc
+        finally:
+            _clear_current_job()
+            try:
+                sock.settimeout(None)
+            except OSError:
+                pass
 
-    _wlog("[parent] submit_job: _lock released; unpickling response")
-    response = pickle.loads(response_bytes)
-    _wlog(f"[parent] submit_job: response unpickled; ok={response.get('ok', '?')}")
-    if not response.get("ok"):
+    _wlog(
+        "[parent] submit_job: result received; "
+        f"ok={response.get('ok', '?')}"
+    )
+    if not response["ok"]:
         raise RuntimeError(
-            response.get("error", "<unknown worker error>")
-            + "\n" + response.get("traceback", "")
+            str(response.get("error", "<unknown worker error>"))
+            + "\n"
+            + str(response.get("traceback", ""))
         )
     _wlog("[parent] submit_job: returning result to caller")
     return response["result"]
-
-
-def _recv_exactly(sock: socket.socket, n: int) -> bytes:
-    """``sock.recv(n)`` can return short reads (e.g. across TCP MSS
-    boundaries) — keep reading until we have N bytes or hit EOF.
-
-    Returns the bytes received (which may be fewer than ``n`` if the
-    peer closed the connection mid-frame; callers treat that as EOF).
-    """
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            return data
-        data += chunk
-    return data

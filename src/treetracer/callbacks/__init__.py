@@ -9,6 +9,7 @@ from .consensus_tree_compute import register_consensus_tree_compute_callbacks
 from .pseudo_ess_compute import register_pseudo_ess_compute_callbacks
 from .clade_explore import register_clade_explore_callbacks
 from .rename_consensus_tree import register_rename_consensus_tree_callbacks
+from .job_reconcile import register_job_reconciliation_callbacks
 
 
 def register_callbacks(app):
@@ -23,3 +24,6 @@ def register_callbacks(app):
     register_pseudo_ess_compute_callbacks()
     register_clade_explore_callbacks()
     register_rename_consensus_tree_callbacks()
+    # Register last so every feature's submit/presentation adapter is already
+    # present when the single global compute reconciler is added.
+    register_job_reconciliation_callbacks()

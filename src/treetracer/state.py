@@ -359,6 +359,52 @@ def clear_all_mds_results():
 
 
 # ---------------------------------------------------------------------------
+# Managed diagnostic/exploration result storage
+# ---------------------------------------------------------------------------
+# JobManager deliberately retains only small terminal references. These caches
+# own the larger render payloads produced by RF Trace and clade comparison so a
+# dropped browser response can be replayed without retaining worker results or
+# recomputing domain work. They are bounded independently because neither UI
+# needs unbounded history.
+
+_rf_trace_results = {}
+_clade_frequency_results = {}
+_MAX_ANALYSIS_RESULTS = 16
+
+
+def _store_bounded_result(cache, key, result):
+    if len(cache) >= _MAX_ANALYSIS_RESULTS and key not in cache:
+        del cache[next(iter(cache))]
+    cache[key] = result
+
+
+def store_rf_trace_result(key, result):
+    """Store one full RF-trace render payload under a managed-job key."""
+    _store_bounded_result(_rf_trace_results, key, result)
+
+
+def get_rf_trace_result(key):
+    """Return an RF-trace render payload, or ``None`` after eviction/reset."""
+    return _rf_trace_results.get(key)
+
+
+def store_clade_frequency_result(key, result):
+    """Store one clade-comparison render and split-resolution payload."""
+    _store_bounded_result(_clade_frequency_results, key, result)
+
+
+def get_clade_frequency_result(key):
+    """Return a clade-comparison payload, or ``None`` after eviction/reset."""
+    return _clade_frequency_results.get(key)
+
+
+def clear_all_analysis_results():
+    """Drop managed RF-trace and clade-comparison render payloads."""
+    _rf_trace_results.clear()
+    _clade_frequency_results.clear()
+
+
+# ---------------------------------------------------------------------------
 # In-memory consensus tree cache
 # ---------------------------------------------------------------------------
 # When the user clicks "View consensus tree" we compute the consensus tree NEXUS bytes once on the

@@ -9,8 +9,9 @@ or restructuring traces can't silently shift their offsets.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
-import pytest
 
 
 def test_app_imports_and_registers_callbacks():
@@ -31,6 +32,137 @@ def test_app_imports_and_registers_callbacks():
     )
     app.layout = ui.add_main_body()
     register_callbacks(app)
+
+
+def test_compute_interval_has_one_reconciliation_owner():
+    """No feature callback may independently poll or stop the shared timer."""
+    from dash import _callback
+
+    owners = set()
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        inputs = callback_data.get("inputs", [])
+        output = callback_data.get("output")
+        outputs = output if isinstance(output, list) else [output]
+        reads_interval = any(
+            item.get("id") == "compute-poll-interval" for item in inputs
+        )
+        writes_interval = any(
+            getattr(item, "component_id", None) == "compute-poll-interval"
+            for item in outputs
+        )
+        if not (reads_interval or writes_interval):
+            continue
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        owners.add(getattr(callback_fn, "__name__", ""))
+
+    assert owners == {"reconcile_compute_job"}
+
+
+def test_reconciler_piggybacks_receipts_as_state_without_an_ack_callback():
+    """Browser receipts settle through the one polling owner.
+
+    Keeping receipts as State avoids a receipt-triggered callback cycle while
+    removing the independently schedulable acknowledgement request that could
+    be starved by rapid terminal replays.
+    """
+    from dash import _callback
+
+    reconciler = None
+    callback_names = set()
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        name = getattr(callback_fn, "__name__", "")
+        callback_names.add(name)
+        if name == "reconcile_compute_job":
+            reconciler = callback_data
+
+    assert reconciler is not None
+    receipt_states = []
+    for state in reconciler.get("state", []):
+        component_id = state.get("id")
+        if not isinstance(component_id, str) or not component_id.startswith("{"):
+            continue
+        parsed = json.loads(component_id)
+        if parsed.get("type") == "compute-terminal-receipt":
+            receipt_states.append((parsed, state.get("property")))
+
+    assert receipt_states == [
+        (
+            {"kind": ["ALL"], "type": "compute-terminal-receipt"},
+            "data",
+        )
+    ]
+    assert "acknowledge_terminal_receipt" not in callback_names
+
+
+def test_reconciler_uses_wildcards_for_dynamic_progress_banners():
+    """RF and MDS banners never coexist, so concrete Outputs are unsafe.
+
+    Dash rejects the whole reconciler response when a concrete output names
+    the progress component belonging to the other, currently-unmounted banner.
+    """
+    from dash import _callback
+
+    reconciler_outputs = None
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        if getattr(callback_fn, "__name__", "") != "reconcile_compute_job":
+            continue
+        output = callback_data.get("output")
+        reconciler_outputs = output if isinstance(output, list) else [output]
+        break
+
+    assert reconciler_outputs is not None
+    component_ids = [item.component_id for item in reconciler_outputs]
+    concrete_progress_ids = {
+        "rf-progress-bar",
+        "rf-progress-label",
+        "mds-progress-bar",
+        "mds-progress-label",
+    }
+    assert not any(
+        isinstance(component_id, str)
+        and component_id in concrete_progress_ids
+        for component_id in component_ids
+    )
+    pattern_types = {
+        component_id.get("type")
+        for component_id in component_ids
+        if isinstance(component_id, dict)
+    }
+    assert {
+        "compute-progress-bar",
+        "compute-progress-label",
+    } <= pattern_types
+
+
+def test_every_compute_action_reads_the_shared_busy_gate():
+    """All entry points must become unavailable while the worker is owned."""
+    from dash import _callback
+
+    gated_outputs = set()
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        inputs = callback_data.get("inputs", [])
+        if not any(item.get("id") == "compute-busy-store" for item in inputs):
+            continue
+        output = callback_data.get("output")
+        outputs = output if isinstance(output, list) else [output]
+        gated_outputs.update(
+            getattr(item, "component_id", None) for item in outputs
+        )
+
+    assert {
+        "compute-rf-button",
+        "compute-mds-button",
+        "compute-rf-trace-button",
+        "compute-pseudo-ess-button",
+        "clade-freq-compare-button",
+        "treespace-view-consensus-tree",
+        "within-run-view-consensus-tree",
+    } <= gated_outputs
 
 
 def test_between_run_trailing_overlay_invariant():

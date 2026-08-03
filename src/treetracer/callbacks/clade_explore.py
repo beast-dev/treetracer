@@ -8,34 +8,30 @@ two-consensus-tree Compare workflow, and the scatter / tanglegram rendering.
 """
 
 import functools
+from dataclasses import dataclass
+from functools import partial
+from typing import Any
 
-from dash import (dcc, html, callback, Input, Output, State, no_update, Patch,
-                  clientside_callback)
+from dash import dcc, html, callback, Input, Output, State, no_update, Patch
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
 
 from .. import state
-from ..clade_freq import compute_clade_frequencies
+from ..background_jobs import JobBusyError, JobRef, JobState, job_manager
 from ..clade_freq.layout import parse_nexus, build_tree_traces, _collect_nodes
+from ..logger import add_log
 from ..theme import get_template, DARK_TEMPLATE
 from ..plot_utils import retheme_figure
-
-
-# Server-side resolution table for the Clade Frequency scatter →
-# tanglegram round-trip. The scatter's ``customdata`` carries an
-# integer ``split_id`` (the row index in the DataFrame produced by
-# ``compute_clade_frequencies``); this dict maps that id to a
-# ``(source_distmat, column_j, split_key)`` triple so the click
-# handler can both resolve the clade's tip names AND check consensus tree
-# membership via ``column_j in cols_in_consensus_tree`` (the rapidtrees-encoded
-# rooted-clade column index in that distmat's snapshot). Rebuilt on
-# every Compare click.
-#
-# Keeping the keys server-side avoids serialising tens of thousands
-# of tuples through the browser store on every click.
-_split_resolution: dict[int, tuple[str, int, tuple]] = {}
+from ..ui.widgets import stop_button
+from . import persistent_worker
+from .compute import _get_executor
+from .job_reconcile import (
+    is_compute_busy,
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -515,13 +511,12 @@ def clear_clade_freq_caches():
     Comparison feature.
 
     Called from ``sidebar.clear_uploads`` so a Clear-data click
-    actually wipes the bipartition→tip-set decode, the parsed-NEXUS
-    LRU, and the click→split lookup table — they're keyed on consensus tree
-    uuids that are about to disappear from ``state._consensus_tree_cache``.
+    actually wipes the parsed-NEXUS and layout LRUs. Managed comparison
+    payloads and their click-resolution maps live in ``state`` and are cleared
+    by ``state.clear_all_analysis_results`` in the same reset transaction.
     """
     _get_parsed_consensus_tree.cache_clear()
     _get_tanglegram_layout.cache_clear()
-    _split_resolution.clear()
 
 
 def _build_scatter_fig(df_plot, label1, label2):
@@ -610,6 +605,138 @@ def _build_scatter_fig(df_plot, label1, label2):
         clickmode="event",
     )
     return fig
+
+
+@dataclass(frozen=True, slots=True)
+class _CladeComparisonFinalizationContext:
+    source_distmat: str
+    uid_1: str
+    uid_2: str
+    label_1: str
+    label_2: str
+    consensus_columns_1: frozenset[int]
+    consensus_columns_2: frozenset[int]
+    min_clade_size: int
+
+
+def _cached_counts_for_columns(entry, columns):
+    """Return a compact count slice or ``None`` for the worker fallback."""
+    counts = entry.get("counts")
+    n_trees = int(entry.get("n_trees") or 0)
+    if counts is None or n_trees <= 0:
+        return None, 0
+    values = np.asarray(counts)
+    if values.ndim != 1:
+        raise ValueError("cached clade counts must be one-dimensional")
+    if columns and columns[-1] >= len(values):
+        raise ValueError("consensus-tree clade column is outside cached counts")
+    return values[columns].astype(np.int64, copy=False).tolist(), n_trees
+
+
+def _finalize_clade_comparison_job(
+    ref: JobRef,
+    result: Any,
+    *,
+    context: _CladeComparisonFinalizationContext,
+) -> dict[str, Any]:
+    """Publish compact scatter data and its server-side click resolution."""
+    if not isinstance(result, dict):
+        raise TypeError("clade-frequency worker returned a non-mapping result")
+    rows = result.get("rows")
+    leaf_names = result.get("leaf_names")
+    if not isinstance(rows, list) or not isinstance(leaf_names, list):
+        raise TypeError("clade-frequency worker returned an invalid payload")
+
+    records = []
+    resolution = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("clade-frequency row must be a mapping")
+        column_j = int(row["column_j"])
+        in_1 = column_j in context.consensus_columns_1
+        in_2 = column_j in context.consensus_columns_2
+        if not (in_1 or in_2):
+            continue
+        if in_1 and in_2:
+            membership = "both consensus trees"
+        elif in_1:
+            membership = f"{context.label_1} only"
+        else:
+            membership = f"{context.label_2} only"
+
+        split_key = tuple(int(index) for index in row["split_key"])
+        try:
+            tip_names = tuple(str(leaf_names[index]) for index in split_key)
+        except IndexError as exc:
+            raise ValueError(
+                "clade-frequency split references an unknown leaf index"
+            ) from exc
+
+        split_id = len(records)
+        records.append(
+            {
+                "split_id": split_id,
+                "freq_1": float(row["freq_1"]),
+                "freq_2": float(row["freq_2"]),
+                "clade_size": int(row["clade_size"]),
+                "in_consensus_tree_1": in_1,
+                "in_consensus_tree_2": in_2,
+                "consensus_tree_membership": membership,
+            }
+        )
+        resolution[split_id] = {
+            "source_distmat": context.source_distmat,
+            "column_j": column_j,
+            "tip_names": tip_names,
+        }
+
+    if not records:
+        raise ValueError(
+            "None of the selected consensus-tree clades are available to plot"
+        )
+    frame = pd.DataFrame(records)
+    plotted = frame[frame["clade_size"] >= context.min_clade_size]
+    figure = _build_scatter_fig(plotted, context.label_1, context.label_2)
+    state.store_clade_frequency_result(
+        ref.job_id,
+        {
+            "records": records,
+            "resolution": resolution,
+            "figure": figure.to_dict(),
+            "pair": (context.uid_1, context.uid_2),
+        },
+    )
+    elapsed = float(result.get("elapsed", 0.0))
+    add_log(
+        f"Compared {len(records)} consensus-tree clades for "
+        f"{context.source_distmat} in {elapsed:.3f}s."
+    )
+    return {
+        "result_key": ref.job_id,
+        "source_distmat": context.source_distmat,
+        "label_1": context.label_1,
+        "label_2": context.label_2,
+        "n_clades": len(records),
+        "elapsed": elapsed,
+    }
+
+
+def _resolved_clade(click_data, expected_pair=None):
+    """Resolve a browser split ID through its immutable managed result key."""
+    if not isinstance(click_data, dict):
+        return None
+    result_key = click_data.get("result_key")
+    split_id = click_data.get("split_id")
+    if result_key is None or split_id is None:
+        return None
+    cached = state.get_clade_frequency_result(result_key)
+    if cached is None:
+        return None
+    if expected_pair is not None and tuple(expected_pair) != tuple(
+        cached.get("pair", ())
+    ):
+        return None
+    return cached.get("resolution", {}).get(int(split_id))
 
 
 def register_clade_explore_callbacks():
@@ -809,184 +936,256 @@ def register_clade_explore_callbacks():
         Output("clade-freq-compare-button", "disabled"),
         Input("clade-freq-consensus-tree-select-1", "value"),
         Input("clade-freq-consensus-tree-select-2", "value"),
+        Input("compute-busy-store", "data"),
     )
-    def toggle_compare_button(uid1, uid2):
+    def toggle_compare_button(uid1, uid2, compute_busy):
         """Enable the Compare button only when both dropdowns have a selection."""
-        return not (uid1 and uid2)
+        return bool(is_compute_busy(compute_busy) or not (uid1 and uid2))
 
     # ------ Clade Frequency Comparison: compute and plot ------
 
-    # Instant feedback on click: flip the output paper visible so the
-    # ``dcc.Loading`` wrapper around ``clade-freq-plot`` (defined in
-    # ui/panels/clade_freq.py) can render its spinner while the slow
-    # server compute below runs. Without this the paper stays hidden
-    # until the compute returns, so the user sees no loader at all.
-    # Runs clientside (no Python roundtrip) so the spinner appears
-    # within a frame of the click.
-    clientside_callback(
-        """
-        function(n_clicks) {
-            if (!n_clicks) return window.dash_clientside.no_update;
-            return {};
-        }
-        """,
-        Output("clade-freq-output-paper", "style", allow_duplicate=True),
-        Input("clade-freq-compare-button", "n_clicks"),
-        prevent_initial_call=True,
-    )
-
     @callback(
-        Output("clade-freq-plot", "children"),
-        Output("clade-freq-data-store", "data"),
-        # Toggle the output Paper visible only on success; stays
-        # hidden on any error path or before the first successful
-        # Compare. Cleared by the sidebar's Clear-data flow.
-        Output("clade-freq-output-paper", "style"),
+        Output("clade-freq-plot", "children", allow_duplicate=True),
+        Output("clade-freq-data-store", "data", allow_duplicate=True),
+        Output("clade-freq-output-paper", "style", allow_duplicate=True),
+        Output("clade-freq-compare-button", "disabled", allow_duplicate=True),
+        Output("clade-freq-job-store", "data"),
+        Output("clade-freq-result-key-store", "data", allow_duplicate=True),
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
         Input("clade-freq-compare-button", "n_clicks"),
         State("clade-freq-consensus-tree-select-1", "value"),
         State("clade-freq-consensus-tree-select-2", "value"),
         State("clade-freq-min-clade-size", "value"),
         prevent_initial_call=True,
     )
-    def compute_and_plot_clade_frequencies(n_clicks, uid1, uid2, min_clade_size):
-        """Compute clade frequencies for the two selected consensus tree groups and
-        render a scatter plot (freq group 1 vs freq group 2).
+    def compute_and_plot_clade_frequencies(
+        n_clicks,
+        uid1,
+        uid2,
+        min_clade_size,
+    ):
+        """Prepare and submit a selective, process-isolated comparison."""
+        if not n_clicks or not uid1 or not uid2:
+            return (no_update,) * 7
 
-        Each dot is one bipartition observed in either group. Dot colour
-        encodes clade_size — the number of tips in the monophyletic
-        descendant side of the bipartition in the consensus tree(s) that
-        contain it (so it matches what the tanglegram highlights when
-        the dot is clicked). Clicking a dot triggers the tanglegram
-        callback.
-        """
-        if not uid1 or not uid2:
-            return no_update, no_update, no_update
+        def error(message):
+            return (
+                dmc.Text(message, c="red", size="sm"),
+                no_update,
+                {},
+                False,
+                no_update,
+                no_update,
+                no_update,
+            )
 
         entry1 = state.get_consensus_tree_registry_entry(uid1)
         entry2 = state.get_consensus_tree_registry_entry(uid2)
 
         if entry1 is None or entry2 is None:
-            return dmc.Text(
+            return error(
                 "One or both selected consensus trees are no longer available. "
-                "Please recompute them.",
-                c="red", size="sm",
-            ), no_update, no_update
+                "Please recompute them."
+            )
 
         try:
-            df = compute_clade_frequencies(entry1, entry2)
-        except (KeyError, FileNotFoundError) as e:
-            return dmc.Text(
-                f"Error computing clade frequencies: {e}",
-                c="red", size="sm",
-            ), no_update, no_update
+            source_1 = str(entry1["source_distmat"])
+            source_2 = str(entry2["source_distmat"])
+            if source_1 != source_2:
+                raise ValueError(
+                    "Selected consensus trees belong to different RF matrices."
+                )
+            columns_1 = frozenset(
+                int(column)
+                for column in (entry1.get("cols_in_consensus_tree") or [])
+            )
+            columns_2 = frozenset(
+                int(column)
+                for column in (entry2.get("cols_in_consensus_tree") or [])
+            )
+            columns = sorted(columns_1 | columns_2)
+            if not columns:
+                raise ValueError(
+                    "Selected consensus trees have no cached clade columns."
+                )
+            counts_1, n_trees_1 = _cached_counts_for_columns(entry1, columns)
+            counts_2, n_trees_2 = _cached_counts_for_columns(entry2, columns)
+            needs_fallback = counts_1 is None or counts_2 is None
+            full_names = (
+                list(state.get_distmat_names(source_1))
+                if needs_fallback
+                else None
+            )
+            snapshots_path = str(state.get_snapshots_path(source_1))
+        except (KeyError, ValueError, FileNotFoundError) as exc:
+            return error(f"Error preparing clade comparison: {exc}")
 
-        # Annotate every rooted clade with whether it's present in
-        # consensus tree 1 / consensus tree 2. The dropdowns in ``populate_consensus_tree_selects``
-        # restrict choices to the active distmat, so by construction
-        # ``entry1.source_distmat == entry2.source_distmat`` and both
-        # ``cols_in_consensus_tree`` lists are in the same column basis as the
-        # DataFrame's ``column_j`` — a pure int-in-set check.
-        src1 = entry1["source_distmat"]
-        cols_in_consensus_tree_1 = entry1.get("cols_in_consensus_tree") or []
-        cols_in_consensus_tree_2 = entry2.get("cols_in_consensus_tree") or []
-        df["in_consensus_tree_1"] = df["column_j"].isin(set(cols_in_consensus_tree_1))
-        df["in_consensus_tree_2"] = df["column_j"].isin(set(cols_in_consensus_tree_2))
+        try:
+            min_size = max(1, int(min_clade_size or 2))
+        except (TypeError, ValueError):
+            min_size = 2
+        context = _CladeComparisonFinalizationContext(
+            source_distmat=source_1,
+            uid_1=str(uid1),
+            uid_2=str(uid2),
+            label_1=str(entry1["name"]),
+            label_2=str(entry2["name"]),
+            consensus_columns_1=columns_1,
+            consensus_columns_2=columns_2,
+            min_clade_size=min_size,
+        )
 
-        # Show only clades that are present in at least one of the two
-        # consensus trees — keeps the tanglegram meaningful when the user clicks.
-        df = df[df["in_consensus_tree_1"] | df["in_consensus_tree_2"]].reset_index(drop=True)
+        try:
+            job_ref = job_manager.submit(
+                _get_executor(),
+                "clade_compare",
+                persistent_worker.submit_job,
+                "compute_clade_frequencies",
+                snapshots_path=snapshots_path,
+                columns=columns,
+                counts_1=counts_1,
+                counts_2=counts_2,
+                n_trees_1=n_trees_1,
+                n_trees_2=n_trees_2,
+                tree_names_1=(
+                    list(entry1.get("tree_names") or [])
+                    if counts_1 is None
+                    else None
+                ),
+                tree_names_2=(
+                    list(entry2.get("tree_names") or [])
+                    if counts_2 is None
+                    else None
+                ),
+                full_distmat_names=full_names,
+                metadata={
+                    "display_name": "Clade Frequency Comparison",
+                    "source_distmat": source_1,
+                },
+                finalizer=partial(
+                    _finalize_clade_comparison_job,
+                    context=context,
+                ),
+                cancel_exceptions=(persistent_worker.JobCancelled,),
+            )
+        except JobBusyError as exc:
+            message = (
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
+            add_log(message, "WARNING")
+            return error(message)
 
-        # No clade-size re-stamping in rooted mode: each rapidtrees
-        # column is already a rooted clade with one specific descendant
-        # set, so the size computed in ``compute_clade_frequencies``
-        # (``len(split_key)``) is already the size we want to display.
-
-        if df.empty:
-            return dmc.Text(
-                "None of the bipartitions observed in the two groups "
-                "is a clade of either consensus tree — nothing to plot.",
-                c="dimmed", size="sm",
-            ), no_update, no_update
-
-        # Pre-render a human-readable membership label per row for
-        # the scatter hover. Stored in the DataFrame so the slider
-        # callback can patch ``customdata`` without rebuilding the
-        # mapping.
-        label1_h = entry1["name"]
-        label2_h = entry2["name"]
-        membership_labels = []
-        for in1, in2 in zip(df["in_consensus_tree_1"], df["in_consensus_tree_2"]):
-            if in1 and in2:
-                membership_labels.append("both consensus trees")
-            elif in1:
-                membership_labels.append(f"{label1_h} only")
-            else:
-                membership_labels.append(f"{label2_h} only")
-        df["consensus_tree_membership"] = membership_labels
-
-        # Integer row id replaces the old fragile comma-joined string.
-        # The click-handler + tanglegram callbacks resolve split_id to
-        # tip names via state.get_canonical_keys at render time.
-        df["split_id"] = np.arange(len(df), dtype=np.int32)
-
-        # Refresh the click-resolution table: split_id → (distmat,
-        # column_j, split_key). ``column_j`` is the rapidtrees-encoded
-        # rooted-clade column index in the snapshot; the click handler
-        # uses it for the in_1/in_2 check against each consensus tree's
-        # ``cols_in_consensus_tree``. ``split_key`` is the descendant-set tuple
-        # of leaf indices, used only to resolve tip names for the
-        # highlight overlay.
-        _split_resolution.clear()
-        for split_id, col_j, key in zip(
-            df["split_id"].tolist(),
-            df["column_j"].tolist(),
-            df["split_key"].tolist(),
-        ):
-            _split_resolution[int(split_id)] = (src1, int(col_j), key)
-
-        label1 = entry1["name"]
-        label2 = entry2["name"]
-
-        # Serialise for the slider callback. split_key is a tuple[int]
-        # — not JSON-serialisable, so it stays server-side and we only
-        # ship the integer id through the browser. The in_consensus_tree_1/
-        # in_consensus_tree_2 booleans ride along so any future filter or
-        # colour-coding callback can consume them without re-running
-        # the clade-membership check.
-        store_data = df[[
-            "split_id", "freq_1", "freq_2", "clade_size",
-            "in_consensus_tree_1", "in_consensus_tree_2", "consensus_tree_membership",
-        ]].to_dict("records")
-
-        min_size = int(min_clade_size or 2)
-        df_plot = df[df["clade_size"] >= min_size]
-
-        fig = _build_scatter_fig(df_plot, label1, label2)
-        # Success path: reveal the output paper.
+        spinner = dmc.Group(
+            [
+                dmc.Loader(size="sm", type="dots"),
+                dmc.Text(
+                    f"Comparing {len(columns)} consensus-tree clades…",
+                    size="sm",
+                    c="dimmed",
+                ),
+                stop_button("clade-compare"),
+            ],
+            gap="sm",
+        )
         return (
-            dcc.Graph(
-                id="clade-freq-scatter",
-                figure=fig,
-                config={"displayModeBar": False},
-                style={"width": "100%"},
-            ),
+            spinner,
+            None,
+            {},
+            True,
+            job_ref.as_dict(),
+            None,
+            None,
+        )
+
+    @callback(
+        Output("clade-freq-plot", "children", allow_duplicate=True),
+        Output("clade-freq-data-store", "data", allow_duplicate=True),
+        Output("clade-freq-output-paper", "style", allow_duplicate=True),
+        Output("clade-freq-result-key-store", "data", allow_duplicate=True),
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "clade-compare"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
+        Input("clade-freq-job-store", "data"),
+        prevent_initial_call=True,
+    )
+    def render_clade_frequency_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="clade_compare",
+        )
+        if event is None:
+            return (no_update,) * 6
+
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        first_delivery = int(event["delivery_attempt"]) == 1
+        store_data = no_update
+        result_key = no_update
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
+                add_log("Clade comparison cancelled by user.", "WARNING")
+            output = dmc.Alert(
+                title="Clade comparison cancelled",
+                children=dmc.Text("Stopped before completion.", size="sm"),
+                color="gray",
+                variant="light",
+            )
+        elif terminal_state is JobState.FAILED:
+            message = str(payload.get("message", "Unknown error"))
+            if first_delivery:
+                add_log(f"Clade comparison failed: {message}", "ERROR")
+            output = dmc.Text(
+                f"Error computing clade frequencies: {message}",
+                c="red",
+                size="sm",
+            )
+        else:
+            cached = state.get_clade_frequency_result(
+                payload.get("result_key")
+            )
+            if cached is None:
+                output = dmc.Text(
+                    "Clade comparison result is no longer available. "
+                    "Please recompute it.",
+                    c="red",
+                    size="sm",
+                )
+            else:
+                store_data = cached["records"]
+                result_key = payload["result_key"]
+                output = dcc.Graph(
+                    id="clade-freq-scatter",
+                    figure=cached["figure"],
+                    config={"displayModeBar": False},
+                    style={"width": "100%"},
+                )
+
+        return (
+            output,
             store_data,
             {},
+            result_key,
+            None,
+            terminal_delivery_marker(event),
         )
 
     @callback(
         Output("clade-freq-click-store", "data"),
         Input("clade-freq-scatter", "clickData"),
+        State("clade-freq-result-key-store", "data"),
         prevent_initial_call=True,
     )
-    def store_scatter_click(click_data):
+    def store_scatter_click(click_data, result_key):
         """Forward a scatter plot click to the click store.
 
-        ``customdata`` is ``[split_id, clade_size]``. The split_id is an
-        integer row index in the DataFrame produced by the compute
-        callback; ``draw_tanglegram`` uses it together with the
-        per-distmat canonical-keys cache to resolve the actual tip
-        names to highlight.
+        ``customdata`` is ``[split_id, clade_size, membership]``. The
+        split ID and immutable result key let ``draw_tanglegram`` resolve the
+        actual tip names without decoding the full RF snapshot in the UI.
 
         The ``_t`` nonce is set to a unique counter each time so
         ``dcc.Store`` does not deduplicate identical click payloads
@@ -995,7 +1194,7 @@ def register_clade_explore_callbacks():
         because the store value matches the previous click.
         """
         nonlocal _click_counter
-        if not click_data or not click_data.get("points"):
+        if not result_key or not click_data or not click_data.get("points"):
             return no_update
         point = click_data["points"][0]
         custom = point.get("customdata")
@@ -1008,6 +1207,7 @@ def register_clade_explore_callbacks():
                 "clade_size": int(custom[1]),
                 "x":          float(point["x"]),
                 "y":          float(point["y"]),
+                "result_key": str(result_key),
                 "_t":         _click_counter,
             }
         except (TypeError, ValueError, IndexError, KeyError):
@@ -1068,38 +1268,23 @@ def register_clade_explore_callbacks():
           segments + 280 tip markers per tree) is never re-sent.
 
         The clicked split is identified by an integer ``split_id``;
-        the actual tip names are resolved server-side via
-        ``_split_resolution`` (rebuilt by the Compare callback) and
-        the per-distmat canonical-keys cache.
+        the actual tip names are resolved server-side through the immutable
+        managed comparison result identified in the click payload.
         """
         if not click_data or not uid1 or not uid2:
             return no_update, no_update, no_update
 
-        # ── Resolve the click via _split_resolution ───────────────────────
-        # Yields ``(src, column_j, split_key)`` where ``split_key`` is the
-        # tuple of leaf indices that make up the rooted clade.
-        split_id = click_data.get("split_id")
-        if split_id is None:
-            return no_update, no_update, no_update
-        resolved = _split_resolution.get(int(split_id))
+        resolved = _resolved_clade(click_data, expected_pair=(uid1, uid2))
         if resolved is None:
-            # Click store survived a Compare-button reset and we no
-            # longer know which split this is. Drop the request
-            # quietly; the next Compare repopulates _split_resolution.
+            # The result was reset or evicted; a fresh Compare repopulates it.
             return no_update, no_update, no_update
-        src, column_j, split_key = resolved
-
-        try:
-            canonical = state.get_canonical_keys(src)
-        except (KeyError, FileNotFoundError):
-            return no_update, no_update, no_update
-        leaf_names = canonical["leaf_names"]
+        column_j = int(resolved["column_j"])
 
         # Single highlight (same on both trees): consensus tree 1 and consensus tree 2 are
-        # both anchored to ``src`` (the Compare-clade dropdowns
+        # both anchored to one source matrix (the Compare-clade dropdowns
         # filter to the active distmat), so a column in the rooted
         # presence table represents the same descendant set in both.
-        highlight = {leaf_names[i] for i in split_key}
+        highlight = set(resolved["tip_names"])
 
         # Containment is an O(1) ``column_j ∈ cols_in_consensus_tree`` check
         # straight off the registry entries.
@@ -1298,8 +1483,8 @@ def register_clade_explore_callbacks():
         Patches only the two green overlay traces (9/10); the grey tip
         base (3/4) is left untouched because the green markers simply
         draw on top of it. Hiding empties the green x/y/text; showing
-        resolves the last clicked split from ``_split_resolution`` and
-        rebuilds them. Their styling was baked in at first render, so
+        resolves the last clicked split from its managed result and rebuilds
+        them. Their styling was baked in at first render, so
         the patch never re-sends marker/line/mode.
         """
         # Need a rendered tanglegram — a prior click plus a live layout
@@ -1318,20 +1503,10 @@ def register_clade_explore_callbacks():
                 patch["data"][idx]["text"] = []
             return patch
 
-        split_id = click_data.get("split_id")
-        if split_id is None:
-            return no_update
-        resolved = _split_resolution.get(int(split_id))
+        resolved = _resolved_clade(click_data, expected_pair=(uid1, uid2))
         if resolved is None:
             return no_update
-
-        src, _column_j, split_key = resolved
-        try:
-            canonical = state.get_canonical_keys(src)
-        except (KeyError, FileNotFoundError):
-            return no_update
-        leaf_names = canonical["leaf_names"]
-        highlight = {leaf_names[i] for i in split_key}
+        highlight = set(resolved["tip_names"])
 
         _, _, complement_per_tree = _build_mrca_traces(highlight, layout)
         complement1 = complement_per_tree["tips1"]

@@ -30,6 +30,7 @@ import pandas as pd
 
 from ..theme import get_template
 from ..plot_utils import retheme_figure
+from .job_reconcile import is_compute_busy
 
 
 TREETRACER_BLUE = "#228be6"
@@ -390,6 +391,9 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
 
 
 def register_within_run_callbacks():
+    # Fix the first-paint legend overlap (see _helpers.register_autorelayout).
+    from ._helpers import register_autorelayout
+    register_autorelayout("within-run-graph")
 
     # ------ selectors ------
     @callback(
@@ -698,15 +702,16 @@ def register_within_run_callbacks():
         Output("within-run-export-trees", "disabled"),
         Output("within-run-view-consensus-tree", "disabled"),
         Input("within-run-selected-trees-store", "data"),
+        Input("compute-busy-store", "data"),
     )
-    def update_selection_info(selected):
+    def update_selection_info(selected, compute_busy):
         if not selected:
             return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
                       color="red", variant="light", size="sm"),
             False,
-            False,
+            is_compute_busy(compute_busy),
         )
 
     # ------ export selected trees ------
@@ -776,14 +781,13 @@ def register_within_run_callbacks():
 
     # ------ View consensus tree — thin submit handler ------
     # Mirrors the Between-run shape — see callbacks/consensus_tree_compute.py for
-    # the shared dispatch + polling code, and callbacks/treespace.py
+    # shared dispatch and terminal presentation, and callbacks/treespace.py
     # for the parallel implementation.
     @callback(
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-view-consensus-tree", "disabled", allow_duplicate=True),
-        # consensus tree polling uses its own interval (see navbar.py).
-        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("consensus-job-store", "data", allow_duplicate=True),
         Input("within-run-view-consensus-tree", "n_clicks"),
         State("within-run-selected-trees-store", "data"),
         State("within-run-result-select", "value"),
@@ -791,24 +795,31 @@ def register_within_run_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def view_consensus_tree(n_clicks, selected_treenums, selected_key, selected_run, results):
+    def view_consensus_tree(
+        n_clicks,
+        selected_treenums,
+        selected_key,
+        selected_run,
+        results,
+    ):
+        from ..background_jobs import JobBusyError
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
         from . import consensus_tree_compute
 
         if not n_clicks or not selected_treenums:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 4
 
         def _err(msg, autoclose=5000):
-            return (False, False, no_update, dmc.Notification(
+            return (False, False, dmc.Notification(
                 title="Consensus tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
-            ))
+            ), no_update)
 
         mds_result = _get_active_result(selected_key, results)
         if not mds_result or not selected_run:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 4
 
         source_distmat = (mds_result.get("metadata") or {}).get("source_distmat")
         if not source_distmat:
@@ -816,7 +827,7 @@ def register_within_run_callbacks():
 
         df_run, _ = _filter_to_run(mds_result, selected_run)
         if df_run is None:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
         sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
@@ -844,20 +855,30 @@ def register_within_run_callbacks():
         # treenum.
         consensus_tree_coord_by_tree_name = {
             row["tree"]: (selected_run, int(row["treenum"]))
-            for _, row in df_run.iterrows()
+            for _, row in sel_df.iterrows()
         }
 
-        consensus_tree_compute.submit_consensus_tree_job(
-            matched_records=matched_records,
-            source_distmat=source_distmat,
-            mode="Within",
-            selection=[[selected_run, int(t)] for t in selected_treenums],
-            run=selected_run,
-            consensus_tree_coord_by_tree_name=consensus_tree_coord_by_tree_name,
-            store_target="within-run-view-consensus-tree-store",
-        )
+        try:
+            job_ref = consensus_tree_compute.submit_consensus_tree_job(
+                matched_records=matched_records,
+                source_distmat=source_distmat,
+                mode="Within",
+                selection=[
+                    [selected_run, int(t)] for t in selected_treenums
+                ],
+                run=selected_run,
+                consensus_tree_coord_by_tree_name=(
+                    consensus_tree_coord_by_tree_name
+                ),
+                store_target="within-run-view-consensus-tree-store",
+            )
+        except JobBusyError as exc:
+            return _err(
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
 
-        return True, True, False, no_update
+        return True, True, no_update, job_ref.as_dict()
 
     # The per-tab clientside ``window.open`` that used to live here is
     # gone; see the parallel note in ``treespace.py``. The

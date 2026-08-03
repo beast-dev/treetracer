@@ -1,4 +1,4 @@
-"""Shared consensus tree compute dispatch + polling.
+"""Managed consensus-tree dispatch, publication, and terminal presentation.
 
 Both the Between-run (``treespace``) and Within-run (``within_run``)
 tabs have a "View consensus tree" button. They used to each call
@@ -10,12 +10,9 @@ This module factors out the shared pieces so both tabs:
 
 * Click → enqueue a consensus tree compute job on the persistent worker, show a
   loading overlay over the active tab, disable the View consensus tree button.
-* Wait → ``compute-poll-interval`` ticks at 100 ms; this module's
-  ``poll_consensus_tree_completion`` runs once per tick. When the future is done,
-  it caches the NEXUS bytes, calls ``state.register_consensus_tree(...)``, fans
-  out the result to the right ``*-view-consensus-tree-store`` (which triggers the
-  per-tab clientside ``window.open(/peartree/<uid>)`` callback), and
-  dismisses the loading overlay.
+* Wait → the shared reconciler publishes a sticky terminal event. The success
+  finalizer caches the NEXUS bytes and registers the tree exactly once; this
+  module only renders a matching event and routes it to the originating tab.
 
 The per-tab callbacks ``view_consensus_tree`` in ``treespace.py`` and
 ``within_run.py`` shrink to ~30 lines each — they're only responsible
@@ -25,42 +22,133 @@ metadata, and calling ``submit_consensus_tree_job`` here.
 
 from __future__ import annotations
 
-from concurrent.futures import Future
-from typing import Any, Dict, Optional
+import copy
+from dataclasses import dataclass
+from functools import partial
+from typing import Any
 
 import dash_mantine_components as dmc
-from dash import Input, Output, State, callback, no_update
+from dash import Input, Output, callback, no_update
 
 from .. import state as _state
-from ..logger import add_log, notif_id
+from ..background_jobs import JobRef, JobState, job_manager
+from ..logger import add_log
 from ..consensus_tree import extract_log_posterior
 from . import persistent_worker
 from .compute import _get_executor
+from .job_reconcile import (
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
-# ── Module state ───────────────────────────────────────────────────────
-# A single in-flight consensus tree job at a time. ``_consensus_tree_meta`` carries the
-# tab-specific context the polling callback needs to finalise the
-# registry entry and route the result to the right view-consensus-tree-store.
+_TREESPACE_TARGET = "treespace-view-consensus-tree-store"
+_WITHIN_RUN_TARGET = "within-run-view-consensus-tree-store"
+_STORE_TARGETS = frozenset({_TREESPACE_TARGET, _WITHIN_RUN_TARGET})
 
-_consensus_tree_future: Optional[Future] = None
-_consensus_tree_meta: Dict[str, Any] = {}
+
+@dataclass(frozen=True, slots=True)
+class _ConsensusFinalizationContext:
+    """Parent-only state needed for exactly-once consensus publication."""
+
+    source_distmat: str
+    mode: str
+    run: str | None
+    selection: list[Any]
+    tree_names: tuple[str, ...]
+    coord_by_tree_name: dict[str, tuple[Any, int]]
+
+
+class ConsensusTaxaAlignmentError(ValueError):
+    """Raised when selected source files cannot share one Translate table."""
 
 
 def reset() -> None:
-    """Interrupt any in-flight consensus tree compute. Called by the sidebar's
-    Clear-Data callback so the persistent worker isn't still
-    processing a stale request after the DB is wiped.
-
-    ``Future.cancel()`` only drops a not-yet-started future — it can't
-    stop a job already running in the worker. ``cancel_current_job()``
-    kills the worker, which actually interrupts the compute."""
-    global _consensus_tree_future, _consensus_tree_meta
+    """Invalidate an active consensus job before application state clears."""
+    active = job_manager.active_ref()
+    if active is None or active.kind != "consensus":
+        return
     persistent_worker.cancel_current_job()
-    if _consensus_tree_future is not None:
-        _consensus_tree_future.cancel()
-    _consensus_tree_future = None
-    _consensus_tree_meta = {}
+    job_manager.invalidate(active)
+
+
+def _missing_taxa_message(missing_taxa: Any) -> str:
+    missing = sorted(str(name) for name in missing_taxa)
+    sample = ", ".join(missing[:5])
+    more = "…" if len(missing) > 5 else ""
+    return (
+        f"Cannot align translate tables: taxa [{sample}{more}] are present "
+        "in some selected runs but not in the canonical Translate block."
+    )
+
+
+def _finalize_consensus_tree_job(
+    _ref: JobRef,
+    result: Any,
+    *,
+    context: _ConsensusFinalizationContext,
+) -> dict[str, Any]:
+    """Publish one worker result and return a small browser payload."""
+    if not isinstance(result, dict):
+        raise TypeError("consensus-tree worker returned a non-mapping result")
+    if result.get("missing_taxa"):
+        raise ConsensusTaxaAlignmentError(
+            _missing_taxa_message(result["missing_taxa"])
+        )
+
+    nexus_bytes = result.get("nexus_bytes")
+    consensus_tree_row = result.get("consensus_tree_row")
+    if not isinstance(nexus_bytes, (bytes, bytearray)):
+        raise TypeError("consensus-tree worker result is missing NEXUS bytes")
+    if not isinstance(consensus_tree_row, dict):
+        raise TypeError("consensus-tree worker result is missing its tree row")
+
+    consensus_tree_name = str(consensus_tree_row["name"])
+    coord = context.coord_by_tree_name.get(consensus_tree_name)
+    if coord is None:
+        consensus_tree_group, consensus_treenum = None, None
+    else:
+        consensus_tree_group, consensus_treenum = coord
+
+    log_clade_cred = result.get("log_clade_credibility")
+    log_clade_cred = (
+        None if log_clade_cred is None else float(log_clade_cred)
+    )
+    consensus_tree_log_posterior = extract_log_posterior(consensus_tree_row)
+
+    # This finalizer runs behind JobManager's publication barrier and can only
+    # be claimed once. Poll retries never execute these state mutations again.
+    uid = _state.cache_consensus_tree(bytes(nexus_bytes))
+    entry = _state.register_consensus_tree(
+        source_distmat=context.source_distmat,
+        mode=context.mode,
+        run=context.run,
+        uuid=uid,
+        consensus_tree={
+            "group": consensus_tree_group,
+            "treenum": consensus_treenum,
+            "tree_name": consensus_tree_name,
+        },
+        selection=context.selection,
+        log_clade_credibility=log_clade_cred,
+        consensus_tree_log_posterior=consensus_tree_log_posterior,
+        tree_names=context.tree_names,
+        counts=result.get("counts"),
+        cols_in_consensus_tree=result.get("cols_in_consensus_tree"),
+    )
+    registered_name = entry["name"]
+    n_trees = len(context.tree_names)
+    add_log(
+        f"Cached consensus tree '{consensus_tree_name}' "
+        f"(from {n_trees} selected) as {uid}; registered as {registered_name}"
+    )
+    return {
+        "uuid": uid,
+        "name": registered_name,
+        "consensus_tree_name": consensus_tree_name,
+        "n_trees": n_trees,
+        "mode": context.mode,
+    }
 
 
 def submit_consensus_tree_job(
@@ -69,10 +157,10 @@ def submit_consensus_tree_job(
     source_distmat: str,
     mode: str,
     selection: list,
-    run: Optional[str],
-    consensus_tree_coord_by_tree_name: Dict[str, tuple],
+    run: str | None,
+    consensus_tree_coord_by_tree_name: dict[str, tuple],
     store_target: str,
-) -> None:
+) -> JobRef:
     """Enqueue a consensus tree compute job. Called by both tab callbacks.
 
     Args:
@@ -87,20 +175,22 @@ def submit_consensus_tree_job(
             re-create the orange selection ring.
         run: the run/group name for Within mode, else ``None``.
         consensus_tree_coord_by_tree_name: ``{tree_name: (group, treenum)}`` —
-            consulted by the polling callback to populate
+            consulted by the terminal presentation adapter to populate
             ``consensus_tree.treenum`` (used to put the green ring on the
             consensus tree's MDS dot).
         store_target: ``"treespace-view-consensus-tree-store"`` or
-            ``"within-run-view-consensus-tree-store"`` — tells the polling
-            callback which tab's clientside ``window.open`` to fire.
+            ``"within-run-view-consensus-tree-store"`` — tells the terminal
+            adapter which tab's clientside ``window.open`` to fire.
     """
-    global _consensus_tree_future, _consensus_tree_meta
+    if not matched_records:
+        raise ValueError("matched_records must not be empty")
+    if store_target not in _STORE_TARGETS:
+        raise ValueError(f"unsupported consensus-tree store target: {store_target}")
 
     tree_service = _get_tree_service()
     db_manager = tree_service.db_manager
 
     # ── Build the kwargs the worker needs ──────────────────────────────
-    canonical_source = matched_records[0]["file_source"]
     unique_sources = list(dict.fromkeys(r["file_source"] for r in matched_records))
 
     snapshots_path = _state.get_snapshots_path(source_distmat)
@@ -120,15 +210,18 @@ def submit_consensus_tree_job(
         if fs in getattr(db_manager, "_source_preambles", {})
     }
 
-    _consensus_tree_meta = {
-        "mode": mode,
-        "run": run,
-        "source_distmat": source_distmat,
-        "selection": selection,
-        "tree_names": [r["name"] for r in matched_records],
-        "consensus_tree_coord_by_tree_name": consensus_tree_coord_by_tree_name,
-        "store_target": store_target,
-    }
+    tree_names = tuple(str(r["name"]) for r in matched_records)
+    context = _ConsensusFinalizationContext(
+        mode=str(mode),
+        run=None if run is None else str(run),
+        source_distmat=str(source_distmat),
+        selection=copy.deepcopy(selection),
+        tree_names=tree_names,
+        coord_by_tree_name={
+            str(name): (coord[0], int(coord[1]))
+            for name, coord in consensus_tree_coord_by_tree_name.items()
+        },
+    )
 
     # Lift the rooting flag off the distmat registry. Defaults to True
     # for pre-feature distmats; the worker decides based on this whether
@@ -140,7 +233,9 @@ def submit_consensus_tree_job(
         f"({len(matched_records)} trees, source {source_distmat}, "
         f"{'rooted' if distmat_is_rooted else 'unrooted+midpoint-root'} mode)..."
     )
-    _consensus_tree_future = _get_executor().submit(
+    ref = job_manager.submit(
+        _get_executor(),
+        "consensus",
         persistent_worker.submit_job,
         "compute_consensus_tree",
         matched_records=matched_records,
@@ -151,7 +246,19 @@ def submit_consensus_tree_job(
         source_file_paths=source_file_paths,
         source_preambles=source_preambles,
         is_rooted=distmat_is_rooted,
+        metadata={
+            "display_name": f"{mode} consensus tree",
+            "mode": mode,
+            "source_distmat": source_distmat,
+            "store_target": store_target,
+        },
+        finalizer=partial(
+            _finalize_consensus_tree_job,
+            context=context,
+        ),
+        cancel_exceptions=(persistent_worker.JobCancelled,),
     )
+    return ref
 
 
 def _get_tree_service():
@@ -163,176 +270,93 @@ def _get_tree_service():
 
 def register_consensus_tree_compute_callbacks():
     @callback(
-        # View-consensus-tree-stores: only one fires per completion (based on mode).
+        # View stores: only the originating tab changes.
         Output("treespace-view-consensus-tree-store", "data", allow_duplicate=True),
         Output("within-run-view-consensus-tree-store", "data", allow_duplicate=True),
-        # Registry — shared by both tabs.
         Output("consensus-tree-registry-store", "data", allow_duplicate=True),
-        # Loading overlays — flipped off on both tabs so we don't leave
-        # a stale overlay on whichever tab the user might have switched
-        # away from mid-compute.
+        # Both overlays are dismissed in case the user changed tabs.
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
-        # View consensus tree buttons — re-enabled on completion.
-        Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
-        Output("within-run-view-consensus-tree", "disabled", allow_duplicate=True),
-        # Selection-ring stores — cleared so the orange "selected"
-        # marker drops off the MDS view once the compute returns.
+        # The originating selection is cleared on success.
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
-        # Notification + the consensus-tree-only poll interval. This callback polls
-        # ``consensus-tree-poll-interval`` rather than the shared
-        # ``compute-poll-interval`` so it does NOT share an Input — and
-        # therefore an allow_duplicate disambiguation hash — with the
-        # RF/MDS ``poll_completion`` callback. Sharing the input made
-        # both callbacks emit the identical
-        # ``compute-poll-interval.disabled`` / ``notifications-container``
-        # tokens, which the dash-renderer rejects as duplicates. The hash
-        # is derived from the Input signature (see dash/_utils.py).
         Output("notifications-container", "children", allow_duplicate=True),
-        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
-        Input("consensus-tree-poll-interval", "n_intervals"),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "consensus"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
+        Input("consensus-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_consensus_tree_completion(_n):
-        global _consensus_tree_future
-        if _consensus_tree_future is None or not _consensus_tree_future.done():
-            return (no_update,) * 11
+    def render_consensus_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="consensus",
+        )
+        if event is None:
+            return (no_update,) * 9
 
-        future = _consensus_tree_future
-        meta = _consensus_tree_meta
-        _consensus_tree_future = None  # consume the future before any further IO
+        ref = JobRef.from_dict(event)
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        store_target = event["metadata"].get("store_target")
+        first_delivery = int(event["delivery_attempt"]) == 1
 
-        mode = meta.get("mode", "Between")
-        store_target = meta.get("store_target")
-
-        # Idle outputs everywhere except the bits we definitely flip.
         out_treespace_store = no_update
         out_within_store = no_update
         out_registry = no_update
-        # Dismiss BOTH overlays on completion (cheap, and the user might
-        # have switched tabs mid-compute). The View buttons, though, are
-        # scoped to the originating tab in the success path below —
-        # enabling both here lights up the OTHER tab's View button for a
-        # consensus tree it can't show (the cross-tab leak bug).
         out_treespace_overlay = False
         out_within_overlay = False
-        out_treespace_btn = no_update
-        out_within_btn = no_update
         out_treespace_sel = no_update
         out_within_sel = no_update
 
-        try:
-            result = future.result()
-        except persistent_worker.JobCancelled:
-            # User Stop — dismiss the overlays + re-enable the buttons
-            # (already set above). The cancel callback showed the
-            # notification, so don't stack another one here.
-            add_log("consensus tree computation cancelled by user.", "WARNING")
-            return (out_treespace_store, out_within_store, out_registry,
-                    out_treespace_overlay, out_within_overlay,
-                    out_treespace_btn, out_within_btn,
-                    out_treespace_sel, out_within_sel,
-                    no_update, True)
-        except Exception as e:
-            msg = f"Consensus tree computation failed: {e}"
-            add_log(msg, "ERROR")
-            notif = dmc.Notification(
-                title="Consensus tree Error", message=str(e),
-                color="red", action="show", autoClose=6000, id=notif_id(),
-            )
-            return (out_treespace_store, out_within_store, out_registry,
-                    out_treespace_overlay, out_within_overlay,
-                    out_treespace_btn, out_within_btn,
-                    out_treespace_sel, out_within_sel,
-                    notif, True)
-
-        if result.get("missing_taxa"):
-            missing = sorted(result["missing_taxa"])
-            sample = ", ".join(missing[:5])
-            more = "…" if len(missing) > 5 else ""
+        notif = no_update
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
+                add_log("Consensus tree computation cancelled by user.", "WARNING")
+        elif terminal_state is JobState.FAILED:
+            message = str(payload.get("message", "Unknown error"))
+            if first_delivery:
+                add_log(f"Consensus tree computation failed: {message}", "ERROR")
             notif = dmc.Notification(
                 title="Consensus tree Error",
-                message=(
-                    f"Cannot align translate tables: taxa [{sample}{more}] "
-                    "are present in some selected runs but not in the "
-                    "canonical Translate block."
-                ),
-                color="red", action="show", autoClose=8000, id=notif_id(),
+                message=message,
+                color="red",
+                action="show",
+                autoClose=8000,
+                id=f"consensus-terminal-{ref.job_id}",
             )
-            return (out_treespace_store, out_within_store, out_registry,
-                    out_treespace_overlay, out_within_overlay,
-                    out_treespace_btn, out_within_btn,
-                    out_treespace_sel, out_within_sel,
-                    notif, True)
-
-        nexus_bytes = result["nexus_bytes"]
-        consensus_tree_row = result["consensus_tree_row"]
-        consensus_tree_name = consensus_tree_row["name"]
-        log_clade_cred = result["log_clade_credibility"]
-
-        uid = _state.cache_consensus_tree(nexus_bytes)
-
-        # consensus tree's (group, treenum) for the green-ring positioning.
-        coord = meta.get("consensus_tree_coord_by_tree_name", {}).get(consensus_tree_name)
-        if coord is not None:
-            consensus_tree_group, consensus_treenum = coord
         else:
-            consensus_tree_group, consensus_treenum = None, None
+            view_payload = {"uuid": payload["uuid"], "name": payload["name"]}
+            if store_target == _TREESPACE_TARGET:
+                out_treespace_store = view_payload
+                out_treespace_sel = []
+            elif store_target == _WITHIN_RUN_TARGET:
+                out_within_store = view_payload
+                out_within_sel = []
+            out_registry = _state.get_consensus_tree_registry()
+            notif = dmc.Notification(
+                title="Consensus Tree Ready",
+                message=(
+                    f"Consensus tree {payload['name']} computed from "
+                    f"{payload['n_trees']} selected trees."
+                ),
+                color="green",
+                action="show",
+                autoClose=3000,
+                id=f"consensus-terminal-{ref.job_id}",
+            )
 
-        entry = _state.register_consensus_tree(
-            source_distmat=meta["source_distmat"],
-            mode=mode,
-            run=meta.get("run"),
-            uuid=uid,
-            consensus_tree={
-                "group": consensus_tree_group,
-                "treenum": consensus_treenum,
-                "tree_name": consensus_tree_name,
-            },
-            selection=meta["selection"],
-            log_clade_credibility=(None if log_clade_cred is None
-                                   else float(log_clade_cred)),
-            consensus_tree_log_posterior=extract_log_posterior(consensus_tree_row),
-            tree_names=meta["tree_names"],
-            counts=result["counts"],
-            cols_in_consensus_tree=result["cols_in_consensus_tree"],
+        return (
+            out_treespace_store,
+            out_within_store,
+            out_registry,
+            out_treespace_overlay,
+            out_within_overlay,
+            out_treespace_sel,
+            out_within_sel,
+            notif,
+            terminal_delivery_marker(event),
         )
-        registered_name = entry["name"]
-        add_log(
-            f"Cached consensus tree '{consensus_tree_name}' (from {len(meta['tree_names'])} selected) "
-            f"as {uid}; registered as {registered_name}"
-        )
-        # The rename modal opens next (see ``forward_compute_to_modal``
-        # in ``callbacks/rename_consensus_tree.py``); PearTree only opens once the
-        # user clicks Save in the modal. Don't promise "opening in
-        # PearTree" here — the modal title makes the next step obvious.
-        notif = dmc.Notification(
-            title="Consensus Tree Ready",
-            message=(
-                f"Consensus tree {registered_name} computed from "
-                f"{len(meta['tree_names'])} selected trees."
-            ),
-            color="green", action="show", autoClose=3000, id=notif_id(),
-        )
-
-        # Route the {uuid, name} payload — and enable the View button —
-        # for the originating tab only. The OTHER tab's store and button
-        # stay untouched (no_update) so each tab governs its own state.
-        payload = {"uuid": uid, "name": registered_name}
-        if store_target == "treespace-view-consensus-tree-store":
-            out_treespace_store = payload
-            out_treespace_sel = []
-            out_treespace_btn = False
-        else:
-            out_within_store = payload
-            out_within_sel = []
-            out_within_btn = False
-
-        out_registry = _state.get_consensus_tree_registry()
-
-        return (out_treespace_store, out_within_store, out_registry,
-                out_treespace_overlay, out_within_overlay,
-                out_treespace_btn, out_within_btn,
-                out_treespace_sel, out_within_sel,
-                notif, True)

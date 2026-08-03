@@ -3,12 +3,10 @@ import re
 from dash import html, callback, clientside_callback, Input, Output, Patch, State, no_update
 import dash_mantine_components as dmc
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 
 from ..logger import add_log
 from ..state import get_mds_result
-from ..theme import get_template
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
     retheme_figure,
@@ -17,6 +15,7 @@ from ..consensus_tree._canonical_remap import (
     _substitute_newick_labels,
     _build_canonical_remaps,
 )
+from .job_reconcile import is_compute_busy
 
 
 # Matches the `tree NAME` token at the start of a NEXUS tree line.
@@ -197,6 +196,10 @@ def _patch_overlay_bundle(patch, n_traces, panel_data, offsets):
 
 
 def register_treespace_callbacks():
+    # Fix the first-paint legend overlap (see _helpers.register_autorelayout).
+    from ._helpers import register_autorelayout
+    register_autorelayout("graph")
+
     # Populate the MDS-result selector dropdown
     @callback(
         Output("treespace-result-select", "data"),
@@ -493,15 +496,16 @@ def register_treespace_callbacks():
         Output("treespace-export-trees", "disabled"),
         Output("treespace-view-consensus-tree", "disabled"),
         Input("treespace-selected-trees-store", "data"),
+        Input("compute-busy-store", "data"),
     )
-    def update_selection_info(selected):
+    def update_selection_info(selected, compute_busy):
         if not selected:
             return html.Div(), True, True
         return (
             dmc.Badge(f"Selected: {len(selected)} trees",
                       color="red", variant="light", size="sm"),
             False,
-            False,
+            is_compute_busy(compute_busy),
         )
 
     # ------ selection store change → patch only the last 4 traces ------
@@ -758,17 +762,14 @@ def register_treespace_callbacks():
     # Validates input, builds the matched-record list + consensus-tree-coord
     # lookup, then hands off to the persistent worker via
     # ``consensus_tree_compute.submit_consensus_tree_job``. Completion is handled by
-    # ``consensus_tree_compute.poll_consensus_tree_completion`` which fans the result back to
+    # the consensus terminal presentation adapter, which fans the result back to
     # this tab's view-consensus-tree-store, dismisses the loading overlay, and
     # re-enables the button.
     @callback(
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
-        # consensus tree polling uses its own interval (see navbar.py) so this
-        # handler and poll_consensus_tree_completion don't collide with the RF/MDS
-        # poll on a shared allow_duplicate output.
-        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("consensus-job-store", "data", allow_duplicate=True),
         Input("treespace-view-consensus-tree", "n_clicks"),
         State("treespace-selected-trees-store", "data"),
         State("plot-config-store", "data"),
@@ -778,19 +779,20 @@ def register_treespace_callbacks():
     )
     def view_consensus_tree(n_clicks, selected_pairs, plot_config,
                       selected_key, results):
+        from ..background_jobs import JobBusyError
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
         from . import consensus_tree_compute
 
         if not n_clicks or not selected_pairs or not plot_config:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 4
 
         def _err(msg, autoclose=5000):
-            return (False, False, no_update, dmc.Notification(
+            return (False, False, dmc.Notification(
                 title="Consensus tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
-            ))
+            ), no_update)
 
         results = results or {}
         if not selected_key or selected_key not in results:
@@ -826,35 +828,43 @@ def register_treespace_callbacks():
             rec["line_offset"] = int(rec["line_offset"])
             rec["line_length"] = int(rec["line_length"])
 
-        # (group, treenum) per tree-name so the poll callback can put the
+        # (group, treenum) per tree-name so terminal presentation can put the
         # green ring on the consensus tree's dot.
         consensus_tree_coord_by_tree_name = {
             row["tree"]: (row["group"], int(row["treenum"]))
-            for _, row in combined_df.iterrows()
+            for _, row in sel_df.iterrows()
         }
 
-        consensus_tree_compute.submit_consensus_tree_job(
-            matched_records=matched_records,
-            source_distmat=source_distmat,
-            mode="Between",
-            selection=[[g, int(t)] for g, t in selected_pairs],
-            run=None,
-            consensus_tree_coord_by_tree_name=consensus_tree_coord_by_tree_name,
-            store_target="treespace-view-consensus-tree-store",
-        )
+        try:
+            job_ref = consensus_tree_compute.submit_consensus_tree_job(
+                matched_records=matched_records,
+                source_distmat=source_distmat,
+                mode="Between",
+                selection=[[g, int(t)] for g, t in selected_pairs],
+                run=None,
+                consensus_tree_coord_by_tree_name=(
+                    consensus_tree_coord_by_tree_name
+                ),
+                store_target="treespace-view-consensus-tree-store",
+            )
+        except JobBusyError as exc:
+            return _err(
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
 
-        # Return: overlay on, button disabled, polling enabled, no
-        # notification yet (notification fires when compute finishes).
-        return True, True, False, no_update
+        # The immutable job store wakes the one global reconciler.
+        return True, True, no_update, job_ref.as_dict()
 
     # The per-tab clientside ``window.open`` that used to live here is
     # gone — it was a duplicate of the one in within_run.py and the
     # one in consensus_tree_list.py. They all now route through
     # ``consensus-tree-peartree-open-store`` and the single clientside callback
     # in ``callbacks/rename_consensus_tree.py`` does the actual ``window.open``.
-    # The poll callback in ``consensus_tree_compute.py`` still writes the freshly
-    # registered consensus tree's ``{uuid, name}`` to ``treespace-view-consensus-tree-store``
-    # — it's now picked up by ``forward_compute_to_modal`` in
+    # The terminal adapter in ``consensus_tree_compute.py`` writes the freshly
+    # registered tree's ``{uuid, name}`` to
+    # ``treespace-view-consensus-tree-store``. It is picked up by
+    # ``forward_compute_to_modal`` in
     # ``rename_consensus_tree.py``, which opens the rename modal (with
     # ``after='view'``) so the user can confirm or edit the auto-name
     # before peartree opens on Save.

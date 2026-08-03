@@ -1,3 +1,7 @@
+from dataclasses import dataclass
+from functools import partial
+from typing import Any
+
 from dash import dcc, html, callback, clientside_callback, Input, Output, State, no_update, ctx, ALL
 import dash_mantine_components as dmc
 import plotly.express as px
@@ -7,14 +11,20 @@ from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
 
-from ..logger import add_log, notif_id
+from ..background_jobs import JobBusyError, JobRef, JobState, job_manager
+from ..logger import add_log
 from ..db.tree_service import get_tree_service
-from ..ess.rf_trace import compute_rf_trace_data
-from ..ess import compute_pseudo_ess
+from ..ess.rf_trace import find_reference_index
 from .. import state
 from ..theme import get_template
 from ..ui.widgets import stop_button
-from ._helpers import _save_file_dialog
+from . import persistent_worker
+from .compute import _get_executor
+from .job_reconcile import (
+    is_compute_busy,
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
@@ -84,6 +94,105 @@ def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+@dataclass(frozen=True, slots=True)
+class _RfTraceFinalizationContext:
+    selected_matrix: str
+    names: tuple[str, ...]
+    reference_index: int
+    reference_name: str
+    reference_group: str
+    reference_position: str
+    burnin: int
+
+
+def _finalize_rf_trace_job(
+    ref: JobRef,
+    result: Any,
+    *,
+    context: _RfTraceFinalizationContext,
+) -> dict[str, Any]:
+    """Build and store one RF trace while retaining a small terminal event."""
+    if not isinstance(result, dict) or not isinstance(
+        result.get("distances"), list
+    ):
+        raise TypeError("RF-trace worker returned an invalid distance row")
+    distances = result["distances"]
+    if len(distances) != len(context.names):
+        raise ValueError(
+            "RF-trace worker row length does not match the matrix name index"
+        )
+
+    tree_service = get_tree_service()
+    tree_service.db_manager.flush()
+    all_trees = tree_service.db_manager._trees
+    if len(all_trees) > 0:
+        name_to_file_source = dict(
+            zip(
+                all_trees["name"].astype(str).tolist(),
+                all_trees["file_source"].astype(str).tolist(),
+            )
+        )
+    else:
+        name_to_file_source = {}
+
+    records = []
+    group_counts: dict[str, int] = {}
+    for index, (tree_name, distance) in enumerate(
+        zip(context.names, distances)
+    ):
+        if index == context.reference_index:
+            continue
+        group = (
+            tree_name.rsplit("/", 1)[0]
+            if "/" in tree_name
+            else tree_name
+        )
+        group_counts[group] = group_counts.get(group, 0) + 1
+        records.append(
+            {
+                "rf_distance": int(distance),
+                "group": group,
+                "name": tree_name,
+                "file_source": name_to_file_source.get(
+                    tree_name,
+                    "(from distance matrix)",
+                ),
+                "treenum": group_counts[group],
+            }
+        )
+
+    if not records:
+        raise ValueError("No non-reference trees are available for RF Trace")
+    trace_df = pd.DataFrame(records)
+    figure = _build_rf_trace_fig(
+        trace_df,
+        context.reference_group,
+        context.reference_position,
+        burnin=context.burnin,
+    )
+    state.store_rf_trace_result(
+        ref.job_id,
+        {
+            "records": records,
+            "figure": figure.to_dict(),
+        },
+    )
+    elapsed = float(result.get("elapsed", 0.0))
+    add_log(
+        f"RF Trace computed for {len(records)} trees against "
+        f"{context.reference_name!r} in {elapsed:.3f}s."
+    )
+    return {
+        "result_key": ref.job_id,
+        "selected_matrix": context.selected_matrix,
+        "reference_name": context.reference_name,
+        "reference_group": context.reference_group,
+        "reference_position": context.reference_position,
+        "n_trees": len(records),
+        "elapsed": elapsed,
+    }
 
 def register_diagnostics_callbacks():
 
@@ -346,12 +455,29 @@ def register_diagnostics_callbacks():
         return group_options, default_group
 
     @callback(
-        Output("rf-trace-plot", "children"),
-        Output("rf-trace-store", "data"),
-        Output("notifications-container", "children", allow_duplicate=True),
+        Output("compute-rf-trace-button", "disabled"),
+        Input("diagnostics-distmat-select", "value"),
+        Input("rf-reference-group-select", "value"),
+        Input("compute-busy-store", "data"),
+    )
+    def toggle_compute_rf_trace_button(
+        selected_matrix,
+        reference_group,
+        compute_busy,
+    ):
+        return bool(
+            is_compute_busy(compute_busy)
+            or not selected_matrix
+            or not reference_group
+        )
+
+    @callback(
+        Output("rf-trace-plot", "children", allow_duplicate=True),
+        Output("rf-trace-store", "data", allow_duplicate=True),
+        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
+        Output("rf-trace-job-store", "data"),
         Input("compute-rf-trace-button", "n_clicks"),
-        State("tree-offset-store", "data"),
         State("rf-reference-group-select", "value"),
         State("rf-reference-position-select", "value"),
         State("distmat-store", "data"),
@@ -359,16 +485,23 @@ def register_diagnostics_callbacks():
         State("rf-burnin-input", "value"),
         prevent_initial_call=True,
     )
-    def compute_rf_trace(n_clicks, stored_summaries, ref_group, ref_position,
-                         stored_distmats, selected_matrix, burnin):
-        """Compute RF distance of every tree to a single shared reference tree using pre-computed distance matrix."""
+    def compute_rf_trace(
+        n_clicks,
+        ref_group,
+        ref_position,
+        stored_distmats,
+        selected_matrix,
+        burnin,
+    ):
+        """Validate and submit a memory-mapped RF-trace row extraction."""
         if not n_clicks:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
 
         if not ref_group:
             return (
                 dmc.Text("Please select a reference group.", c="red"),
                 no_update,
+                False,
                 no_update,
                 no_update,
             )
@@ -376,45 +509,192 @@ def register_diagnostics_callbacks():
         if not stored_distmats:
             return (
                 dmc.Text("Please compute RF distances first (Distances tab).", c="red"),
-                no_update, no_update, no_update,
+                no_update, False, no_update, no_update,
             )
 
         if not selected_matrix or selected_matrix not in stored_distmats:
             return (
                 dmc.Text("Please pick an RF matrix at the top of the page.", c="red"),
-                no_update, no_update, no_update,
+                no_update, False, no_update, no_update,
             )
 
-        result, ref_name = compute_rf_trace_data(selected_matrix, ref_group, ref_position)
-
-        # If result is a string, it's an error message
-        if isinstance(result, str):
-            return dmc.Text(result, c="red"), no_update, no_update, no_update
-
-        trace_df = result
+        try:
+            names = tuple(str(name) for name in state.get_distmat_names(selected_matrix))
+            matrix_path = str(state.get_distmat_file_path(selected_matrix))
+            reference_index, reference_name = find_reference_index(
+                names,
+                ref_group,
+                ref_position,
+            )
+        except (KeyError, ValueError) as exc:
+            return (
+                dmc.Text(str(exc), c="red"),
+                no_update,
+                False,
+                no_update,
+                no_update,
+            )
 
         try:
-            burnin = int(burnin) if burnin else 0
+            burnin_int = max(0, int(burnin)) if burnin else 0
         except (ValueError, TypeError):
-            burnin = 0
-        fig = _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=burnin)
-
-        notification = dmc.Notification(
-            title="RF Trace Computed",
-            message=f"Computed RF distances for {len(trace_df)} trees to {ref_position} tree of {ref_group}.",
-            color="green",
-            action="show",
-            autoClose=3000,
-            id=notif_id(),
+            burnin_int = 0
+        context = _RfTraceFinalizationContext(
+            selected_matrix=selected_matrix,
+            names=names,
+            reference_index=reference_index,
+            reference_name=reference_name,
+            reference_group=str(ref_group),
+            reference_position=str(ref_position),
+            burnin=burnin_int,
         )
 
-        store_data = trace_df.to_dict("records")
+        try:
+            job_ref = job_manager.submit(
+                _get_executor(),
+                "rf_trace",
+                persistent_worker.submit_job,
+                "compute_rf_trace",
+                matrix_path=matrix_path,
+                reference_index=reference_index,
+                metadata={
+                    "display_name": "RF Trace",
+                    "source_distmat": selected_matrix,
+                },
+                finalizer=partial(
+                    _finalize_rf_trace_job,
+                    context=context,
+                ),
+                cancel_exceptions=(persistent_worker.JobCancelled,),
+            )
+        except JobBusyError as exc:
+            msg = (
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
+            add_log(msg, "WARNING")
+            return (
+                dmc.Alert(
+                    title="Computation already running",
+                    children=dmc.Text(msg, size="sm"),
+                    color="yellow",
+                    variant="light",
+                ),
+                no_update,
+                False,
+                no_update,
+                no_update,
+            )
+
+        spinner = dmc.Group(
+            [
+                dmc.Loader(size="sm", type="dots"),
+                dmc.Text(
+                    f"Reading the RF row for {reference_name}…",
+                    size="sm",
+                    c="dimmed",
+                ),
+                stop_button("rf-trace"),
+            ],
+            gap="sm",
+        )
+        return (
+            spinner,
+            None,
+            True,
+            True,
+            job_ref.as_dict(),
+        )
+
+    @callback(
+        Output("rf-trace-plot", "children", allow_duplicate=True),
+        Output("rf-trace-store", "data", allow_duplicate=True),
+        Output("notifications-container", "children", allow_duplicate=True),
+        Output("export-rf-trace-button", "disabled", allow_duplicate=True),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "rf-trace"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
+        Input("rf-trace-job-store", "data"),
+        prevent_initial_call=True,
+    )
+    def render_rf_trace_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="rf_trace",
+        )
+        if event is None:
+            return (no_update,) * 5
+
+        ref = JobRef.from_dict(event)
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        first_delivery = int(event["delivery_attempt"]) == 1
+        notification = no_update
+        store_data = no_update
+        export_disabled = True
+
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
+                add_log("RF Trace computation cancelled by user.", "WARNING")
+            output = dmc.Alert(
+                title="RF Trace computation cancelled",
+                children=dmc.Text("Stopped before completion.", size="sm"),
+                color="gray",
+                variant="light",
+            )
+        elif terminal_state is JobState.FAILED:
+            message = str(payload.get("message", "Unknown error"))
+            if first_delivery:
+                add_log(f"RF Trace computation failed: {message}", "ERROR")
+            output = dmc.Text(
+                f"RF Trace computation failed: {message}",
+                c="red",
+            )
+            notification = dmc.Notification(
+                title="RF Trace Error",
+                message=message,
+                color="red",
+                action="show",
+                autoClose=6000,
+                id=f"rf-trace-terminal-{ref.job_id}",
+            )
+        else:
+            cached = state.get_rf_trace_result(payload.get("result_key"))
+            if cached is None:
+                output = dmc.Text(
+                    "RF Trace result is no longer available. Please recompute it.",
+                    c="red",
+                )
+            else:
+                store_data = cached["records"]
+                output = dcc.Graph(
+                    id="rf-trace-graph",
+                    figure=cached["figure"],
+                    config={"displayModeBar": False},
+                )
+                export_disabled = False
+                notification = dmc.Notification(
+                    title="RF Trace Computed",
+                    message=(
+                        f"Computed RF distances for {payload['n_trees']} trees "
+                        f"to the {payload['reference_position']} tree of "
+                        f"{payload['reference_group']}."
+                    ),
+                    color="green",
+                    action="show",
+                    autoClose=3000,
+                    id=f"rf-trace-terminal-{ref.job_id}",
+                )
 
         return (
-            dcc.Graph(id="rf-trace-graph", figure=fig, config={"displayModeBar": False}),
+            output,
             store_data,
             notification,
-            False,
+            export_disabled,
+            terminal_delivery_marker(event),
         )
 
     # Re-render RF trace plot when burnin changes
@@ -565,27 +845,24 @@ def register_diagnostics_callbacks():
         Output("compute-pseudo-ess-button", "disabled"),
         Input("diagnostics-distmat-select", "value"),
         Input({"type": "ess-run-checkbox", "index": ALL}, "checked"),
+        Input("compute-busy-store", "data"),
     )
-    def toggle_compute_pseudo_ess_button(selected_matrix, checks):
+    def toggle_compute_pseudo_ess_button(
+        selected_matrix,
+        checks,
+        compute_busy,
+    ):
         # Disabled until a matrix is selected AND at least one run is checked.
-        if not selected_matrix:
+        if is_compute_busy(compute_busy) or not selected_matrix:
             return True
         if not checks or not any(checks):
             return True
         return False
 
     @callback(
-        # pseudo-ess-output.children + compute-pseudo-ess-button.disabled
-        # are both written from THIS click handler, from
-        # poll_pseudo_ess_completion (pseudo_ess_compute.py), and from
-        # the sidebar's Clear-data handler. Making the click handler
-        # ALSO use allow_duplicate=True means there's no "primary"
-        # for these Outputs — every writer is equal. This avoids the
-        # Dash 4.x output-dispatch quirk where a secondary write can
-        # be dropped if the primary hasn't fired in the same batch.
         Output("pseudo-ess-output", "children", allow_duplicate=True),
         Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("pseudo-ess-job-store", "data"),
         Input("compute-pseudo-ess-button", "n_clicks"),
         State("diagnostics-distmat-select", "value"),
         State("ess-n-refs-input", "value"),
@@ -594,7 +871,14 @@ def register_diagnostics_callbacks():
         State({"type": "ess-run-checkbox", "index": ALL}, "id"),
         prevent_initial_call=True,
     )
-    def compute_pseudo_ess_for_runs(n_clicks, selected_matrix, n_refs, burnin, checks, ids):
+    def compute_pseudo_ess_for_runs(
+        n_clicks,
+        selected_matrix,
+        n_refs,
+        burnin,
+        checks,
+        ids,
+    ):
         """Submit a Pseudo-ESS job to the persistent worker.
 
         Parent-side: validates input, bins trees per run, applies
@@ -602,15 +886,13 @@ def register_diagnostics_callbacks():
         worker needs. The actual eigendecomp-heavy ESS compute lives
         in the worker subprocess — see ``ess._subprocess_worker``.
 
-        Returns immediately with a spinner in ``pseudo-ess-output``,
-        the compute button disabled, and the shared poll interval
-        enabled so ``poll_pseudo_ess_completion`` will pick up the
-        worker's response.
+        Returns immediately with a spinner, a disabled originating button,
+        and an immutable job identity that wakes the central reconciler.
         """
         from . import pseudo_ess_compute
 
         if not n_clicks or not selected_matrix:
-            return no_update, no_update, no_update
+            return (no_update,) * 3
 
         ticked = [i["index"] for i, c in zip(ids, checks) if c]
         if not ticked:
@@ -618,7 +900,9 @@ def register_diagnostics_callbacks():
                     no_update, no_update)
 
         try:
-            names, _distmat_unused = state.load_distmat(selected_matrix)
+            # Only labels are needed to form per-run row indices. Avoid loading
+            # the full n×n matrix into the GUI process; the worker reads it once.
+            names = list(state.get_distmat_names(selected_matrix))
         except KeyError:
             return (dmc.Text(f"Matrix {selected_matrix!r} is no longer available.",
                              c="red", size="sm"),
@@ -672,16 +956,33 @@ def register_diagnostics_callbacks():
                 c="dimmed", size="sm",
             ), no_update, no_update)
 
-        # Hand off to the subprocess. The poll callback in
-        # pseudo_ess_compute.py picks up the result and replaces the
-        # spinner with the result table.
-        pseudo_ess_compute.submit_pseudo_ess_job(
-            distmat_path=str(state.get_distmat_file_path(selected_matrix)),
-            names=list(names),
-            requests=requests,
-            n_refs=n_refs_int,
-            seed=0,
-        )
+        # Hand off to the subprocess. The central reconciler publishes the
+        # terminal event; pseudo_ess_compute.py replaces the spinner with the
+        # matching result table.
+        try:
+            job_ref = pseudo_ess_compute.submit_pseudo_ess_job(
+                distmat_path=str(state.get_distmat_file_path(selected_matrix)),
+                names=names,
+                requests=requests,
+                n_refs=n_refs_int,
+                seed=0,
+            )
+        except JobBusyError as exc:
+            msg = (
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
+            add_log(msg, "WARNING")
+            return (
+                dmc.Alert(
+                    title="Computation already running",
+                    children=dmc.Text(msg, size="sm"),
+                    color="yellow",
+                    variant="light",
+                ),
+                False,
+                no_update,
+            )
 
         spinner = dmc.Group([
             dmc.Loader(size="sm", type="dots"),
@@ -692,5 +993,4 @@ def register_diagnostics_callbacks():
             stop_button("ess"),
         ], gap="sm")
 
-        # spinner, button disabled, poll interval enabled.
-        return spinner, True, False
+        return spinner, True, job_ref.as_dict()

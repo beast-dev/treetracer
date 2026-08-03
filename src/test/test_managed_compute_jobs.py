@@ -53,7 +53,11 @@ def _registered_callback(name, register):
 
 
 def test_pseudo_ess_submit_and_terminal_ui_replay_until_ack(monkeypatch):
-    manager = JobManager(id_factory=lambda: "pseudo-test-job")
+    now = [10.0]
+    manager = JobManager(
+        id_factory=lambda: "pseudo-test-job",
+        clock=lambda: now[0],
+    )
     worker_calls = []
 
     def worker(job_name, **kwargs):
@@ -104,10 +108,11 @@ def test_pseudo_ess_submit_and_terminal_ui_replay_until_ack(monkeypatch):
         pseudo_ess_compute.register_pseudo_ess_compute_callbacks,
     )
     first_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
+    now[0] += 1.0
     second_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
     first = render(first_event, ref.as_dict())
     second = render(second_event, ref.as_dict())
@@ -124,7 +129,11 @@ def test_pseudo_ess_submit_and_terminal_ui_replay_until_ack(monkeypatch):
 
 
 def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
-    manager = JobManager(id_factory=lambda: "consensus-test-job")
+    now = [20.0]
+    manager = JobManager(
+        id_factory=lambda: "consensus-test-job",
+        clock=lambda: now[0],
+    )
     cache_calls = []
     register_calls = []
     registry = [{"name": "RF_001_Between_consensus_tree_1"}]
@@ -199,10 +208,11 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
         consensus_tree_compute.register_consensus_tree_compute_callbacks,
     )
     first_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
+    now[0] += 1.0
     second_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
     first = render(first_event, ref.as_dict())
     second = render(second_event, ref.as_dict())
@@ -268,7 +278,7 @@ def test_consensus_finalization_failure_reenables_origin_button(monkeypatch):
         consensus_tree_compute.register_consensus_tree_compute_callbacks,
     )
     event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
     output = render(event, ref.as_dict())
     assert output[3:5] == (False, False)

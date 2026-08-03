@@ -113,7 +113,6 @@ def add_navbar():
                         storage_type="memory",
                         data={"busy": False},
                     ),
-                    dcc.Store(id="compute-job-ack-store", storage_type="memory"),
                     dcc.Store(
                         id={
                             "type": "compute-terminal-receipt",

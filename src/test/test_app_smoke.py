@@ -9,6 +9,8 @@ or restructuring traces can't silently shift their offsets.
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
 
@@ -55,6 +57,44 @@ def test_compute_interval_has_one_reconciliation_owner():
         owners.add(getattr(callback_fn, "__name__", ""))
 
     assert owners == {"reconcile_compute_job"}
+
+
+def test_reconciler_piggybacks_receipts_as_state_without_an_ack_callback():
+    """Browser receipts settle through the one polling owner.
+
+    Keeping receipts as State avoids a receipt-triggered callback cycle while
+    removing the independently schedulable acknowledgement request that could
+    be starved by rapid terminal replays.
+    """
+    from dash import _callback
+
+    reconciler = None
+    callback_names = set()
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        name = getattr(callback_fn, "__name__", "")
+        callback_names.add(name)
+        if name == "reconcile_compute_job":
+            reconciler = callback_data
+
+    assert reconciler is not None
+    receipt_states = []
+    for state in reconciler.get("state", []):
+        component_id = state.get("id")
+        if not isinstance(component_id, str) or not component_id.startswith("{"):
+            continue
+        parsed = json.loads(component_id)
+        if parsed.get("type") == "compute-terminal-receipt":
+            receipt_states.append((parsed, state.get("property")))
+
+    assert receipt_states == [
+        (
+            {"kind": ["ALL"], "type": "compute-terminal-receipt"},
+            "data",
+        )
+    ]
+    assert "acknowledge_terminal_receipt" not in callback_names
 
 
 def test_reconciler_uses_wildcards_for_dynamic_progress_banners():

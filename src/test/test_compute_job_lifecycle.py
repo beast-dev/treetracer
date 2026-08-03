@@ -95,7 +95,7 @@ def test_terminal_event_must_match_the_current_browser_generation():
     ) == event
 
 
-def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
+def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
     manager = JobManager(id_factory=lambda: "rf-test-job")
     register_calls = []
     expected_index = {
@@ -145,10 +145,6 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         job_reconcile.register_job_reconciliation_callbacks,
     )
     render = _registered_callback("render_rf_mds_terminal_event")
-    acknowledge = _registered_callback(
-        "acknowledge_terminal_receipt",
-        job_reconcile.register_job_reconciliation_callbacks,
-    )
     rf_bar_ids = [{"type": "compute-progress-bar", "which": "rf"}]
     rf_label_ids = [{"type": "compute-progress-label", "which": "rf"}]
 
@@ -165,8 +161,22 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         None,
         rf_bar_ids,
         rf_label_ids,
+        [],
     )
     first = render(first_reconcile[1], ref.as_dict(), None, False)
+
+    assert len(first_reconcile) == 5
+    assert first_reconcile[0] is False
+    assert first_reconcile[2]["busy"] is True
+    assert first_reconcile[3:] == ([100.0], ["complete"])
+    assert len(first) == 12
+    assert first[1] == expected_index
+    assert first[2] is False
+    assert first[8]["terminal_revision"] == terminal.terminal.revision
+    assert first[8]["delivery_attempt"] == 1
+    assert len(register_calls) == 1
+    assert manager.snapshot(ref).acknowledged is False
+
     second_reconcile = reconcile(
         11,
         ref.as_dict(),
@@ -180,28 +190,17 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         None,
         rf_bar_ids,
         rf_label_ids,
+        [first[8], None, None, None, None],
     )
-    second = render(second_reconcile[1], ref.as_dict(), None, False)
-
-    assert len(first_reconcile) == 5
-    assert first_reconcile[0] is False
-    assert first_reconcile[2]["busy"] is True
-    assert first_reconcile[3:] == ([100.0], ["complete"])
-    assert len(first) == 12
-    assert first[1] == expected_index
-    assert first[2] is False
-    assert first[8]["terminal_revision"] == terminal.terminal.revision
-    assert first[8]["delivery_attempt"] == 1
-    assert second[8]["delivery_attempt"] == 2
-    assert len(register_calls) == 1
-    assert manager.snapshot(ref).acknowledged is False
-
-    ack_store = acknowledge([second[8], None, None, None, None])
-    assert ack_store["acknowledged"] is True
     assert manager.snapshot(ref).acknowledged is True
     assert manager.active_ref() is None
+    assert second_reconcile[0] is True
+    assert second_reconcile[2] == {"busy": False}
 
-    settled = reconcile(
+    # If that settling response is lost, the browser still believes it is
+    # busy and keeps the interval enabled. The next request converges to the
+    # same idle state without another terminal delivery.
+    repeated_settle = reconcile(
         12,
         ref.as_dict(),
         None,
@@ -212,11 +211,12 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         first_reconcile[2],
         None,
         None,
-        [],
-        [],
+        rf_bar_ids,
+        rf_label_ids,
+        [first[8], None, None, None, None],
     )
-    assert settled[0] is True
-    assert settled[2] == {"busy": False}
+    assert repeated_settle[0] is True
+    assert repeated_settle[2] == {"busy": False}
 
 
 def test_mds_finalization_stores_full_result_once_and_replays_small_index(
@@ -276,8 +276,8 @@ def test_mds_finalization_stores_full_result_once_and_replays_small_index(
     assert "embedding" not in terminal.terminal.payload
     assert "data" not in terminal.terminal.payload
 
-    manager.snapshot_for_delivery(ref)
-    manager.snapshot_for_delivery(ref)
+    manager.claim_terminal_delivery(ref)
+    manager.claim_terminal_delivery(ref)
     assert list(stored) == ["RF_002_MDS.tsv"]
 
 

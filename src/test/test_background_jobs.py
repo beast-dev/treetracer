@@ -31,7 +31,8 @@ def _wait_for_state(manager, ref, expected, timeout=2.0):
 
 
 def test_success_is_sticky_until_matching_acknowledgement():
-    manager = JobManager()
+    now = [10.0]
+    manager = JobManager(clock=lambda: now[0])
     with ThreadPoolExecutor(max_workers=1) as executor:
         ref = manager.submit(
             executor,
@@ -51,8 +52,10 @@ def test_success_is_sticky_until_matching_acknowledgement():
     assert terminal.metadata == {"display_name": "RF_001"}
     assert manager.active_ref() == ref
 
-    first = manager.snapshot_for_delivery(ref)
-    second = manager.snapshot_for_delivery(ref)
+    first = manager.claim_terminal_delivery(ref)
+    assert manager.claim_terminal_delivery(ref) is None
+    now[0] += 1.0
+    second = manager.claim_terminal_delivery(ref)
     assert first.terminal == second.terminal
     assert first.delivery_attempt == 1
     assert second.delivery_attempt == 2
@@ -76,7 +79,7 @@ def test_stale_generation_cannot_read_update_or_acknowledge_job():
     assert manager.snapshot(ref).acknowledged is False
 
 
-def test_finalizer_runs_once_while_concurrent_readers_replay_terminal():
+def test_finalizer_runs_once_and_delivery_lease_has_one_concurrent_winner():
     manager = JobManager()
     finalizer_entered = threading.Event()
     release_finalizer = threading.Event()
@@ -109,7 +112,7 @@ def test_finalizer_runs_once_while_concurrent_readers_replay_terminal():
 
     def read_terminal():
         barrier.wait(timeout=2)
-        value = manager.snapshot_for_delivery(ref)
+        value = manager.claim_terminal_delivery(ref)
         with snapshots_lock:
             snapshots.append(value)
 
@@ -122,8 +125,45 @@ def test_finalizer_runs_once_while_concurrent_readers_replay_terminal():
 
     assert calls == 1
     assert len(snapshots) == 8
-    assert {s.terminal.payload["result_ref"] for s in snapshots} == {"ESS_001"}
-    assert sorted(s.delivery_attempt for s in snapshots) == list(range(1, 9))
+    deliveries = [snapshot for snapshot in snapshots if snapshot is not None]
+    assert len(deliveries) == 1
+    assert deliveries[0].terminal.payload["result_ref"] == "ESS_001"
+    assert deliveries[0].delivery_attempt == 1
+    assert manager.snapshot(ref).delivery_attempt == 1
+
+
+def test_terminal_delivery_retries_follow_the_capped_lease_schedule():
+    now = [20.0]
+    manager = JobManager(
+        clock=lambda: now[0],
+        terminal_retry_delays=(0.5, 1.0, 2.0),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        ref = manager.submit(executor, "rf", lambda: None)
+        _wait_for_state(manager, ref, JobState.SUCCEEDED)
+
+    assert manager.claim_terminal_delivery(ref).delivery_attempt == 1
+    now[0] += 0.49
+    assert manager.claim_terminal_delivery(ref) is None
+    now[0] += 0.01
+    assert manager.claim_terminal_delivery(ref).delivery_attempt == 2
+    now[0] += 0.99
+    assert manager.claim_terminal_delivery(ref) is None
+    now[0] += 0.01
+    assert manager.claim_terminal_delivery(ref).delivery_attempt == 3
+    now[0] += 2.0
+    assert manager.claim_terminal_delivery(ref).delivery_attempt == 4
+    now[0] += 2.0
+    assert manager.claim_terminal_delivery(ref).delivery_attempt == 5
+
+
+@pytest.mark.parametrize(
+    "delays",
+    [(), (0.0,), (float("inf"),), (2.0, 1.0)],
+)
+def test_terminal_delivery_retry_schedule_must_be_valid(delays):
+    with pytest.raises(ValueError):
+        JobManager(terminal_retry_delays=delays)
 
 
 def test_compute_exception_becomes_sticky_failure():
@@ -141,8 +181,8 @@ def test_compute_exception_becomes_sticky_failure():
         "error_type": "RuntimeError",
         "stage": "compute",
     }
-    assert manager.snapshot_for_delivery(ref).state is JobState.FAILED
-    assert manager.snapshot_for_delivery(ref).state is JobState.FAILED
+    assert manager.claim_terminal_delivery(ref).state is JobState.FAILED
+    assert manager.claim_terminal_delivery(ref) is None
 
 
 def test_configured_worker_cancellation_exception_is_not_an_error():
@@ -186,7 +226,7 @@ def test_finalizer_exception_is_terminal_failure_and_not_retried():
         terminal = _wait_for_state(manager, ref, JobState.FAILED)
 
     for _ in range(5):
-        manager.snapshot_for_delivery(ref)
+        manager.snapshot(ref)
     assert calls == 1
     assert terminal.terminal.payload["stage"] == "finalize"
     assert terminal.terminal.payload["error_type"] == "ValueError"

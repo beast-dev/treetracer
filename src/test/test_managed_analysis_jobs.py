@@ -120,7 +120,11 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
 
 
 def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):
-    manager = JobManager(id_factory=lambda: "rf-trace-test-job")
+    now = [30.0]
+    manager = JobManager(
+        id_factory=lambda: "rf-trace-test-job",
+        clock=lambda: now[0],
+    )
     db = SimpleNamespace(
         _trees=pd.DataFrame(
             {
@@ -180,10 +184,11 @@ def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):
         diagnostics.register_diagnostics_callbacks,
     )
     first_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
+    now[0] += 1.0
     second_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
     first = render(first_event, ref.as_dict())
     second = render(second_event, ref.as_dict())
@@ -214,7 +219,11 @@ def test_stage_four_submit_callbacks_have_matching_idle_output_shapes():
 def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
     monkeypatch,
 ):
-    manager = JobManager(id_factory=lambda: "clade-test-job")
+    now = [40.0]
+    manager = JobManager(
+        id_factory=lambda: "clade-test-job",
+        clock=lambda: now[0],
+    )
     fake_figure = SimpleNamespace(to_dict=lambda: {"data": [], "layout": {}})
     monkeypatch.setattr(clade_explore, "job_manager", manager)
     monkeypatch.setattr(clade_explore, "add_log", lambda *_a, **_k: None)
@@ -288,10 +297,11 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
         clade_explore.register_clade_explore_callbacks,
     )
     first_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
+    now[0] += 1.0
     second_event = job_reconcile._terminal_envelope(
-        manager.snapshot_for_delivery(ref)
+        manager.claim_terminal_delivery(ref)
     )
     first = render(first_event, ref.as_dict())
     second = render(second_event, ref.as_dict())

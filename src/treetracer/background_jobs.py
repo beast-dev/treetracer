@@ -178,6 +178,7 @@ class _JobRecord:
     terminal: TerminalEvent | None = None
     acknowledged: bool = False
     delivery_attempt: int = 0
+    next_delivery_at: float | None = None
     terminal_revision: int = 0
     started_at: float | None = None
     finished_at: float | None = None
@@ -201,13 +202,28 @@ class JobManager:
         *,
         single_active: bool = True,
         max_history: int = 32,
+        terminal_retry_delays: tuple[float, ...] = (1.0, 2.0, 4.0, 5.0),
         clock: Callable[[], float] = time.monotonic,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
         if max_history < 1:
             raise ValueError("max_history must be at least 1")
+        retry_delays = tuple(float(delay) for delay in terminal_retry_delays)
+        if not retry_delays or any(
+            not math.isfinite(delay) or delay <= 0.0
+            for delay in retry_delays
+        ):
+            raise ValueError(
+                "terminal_retry_delays must contain positive finite values"
+            )
+        if any(
+            later < earlier
+            for earlier, later in zip(retry_delays, retry_delays[1:])
+        ):
+            raise ValueError("terminal_retry_delays must be non-decreasing")
         self._single_active = single_active
         self._max_history = max_history
+        self._terminal_retry_delays = retry_delays
         self._clock = clock
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._lock = RLock()
@@ -316,20 +332,42 @@ class JobManager:
             record = self._matching_record_locked(ref)
             return None if record is None else self._snapshot_locked(record)
 
-    def snapshot_for_delivery(self, ref: JobRef) -> JobSnapshot | None:
-        """Read state for a poll response and count terminal replays.
+    def claim_terminal_delivery(self, ref: JobRef) -> JobSnapshot | None:
+        """Claim a terminal delivery attempt only when its lease is due.
 
-        A changing delivery attempt lets a ``dcc.Store`` retrigger browser
-        reconciliation even though the semantic terminal event and its
-        revision remain stable.
+        The first attempt is immediate. Later attempts use the configured,
+        capped retry schedule. This gives the browser time to apply terminal
+        UI and return its receipt instead of flooding the callback graph with
+        a new envelope on every progress-poll tick.
+
+        ``None`` means that the record is missing, non-terminal, already
+        acknowledged, or still inside the current delivery lease.
         """
 
         with self._lock:
             record = self._matching_record_locked(ref)
-            if record is None:
+            if (
+                record is None
+                or record.terminal is None
+                or record.acknowledged
+            ):
                 return None
-            if record.terminal is not None and not record.acknowledged:
-                record.delivery_attempt += 1
+
+            now = self._clock()
+            if (
+                record.next_delivery_at is not None
+                and now < record.next_delivery_at
+            ):
+                return None
+
+            record.delivery_attempt += 1
+            delay_index = min(
+                record.delivery_attempt - 1,
+                len(self._terminal_retry_delays) - 1,
+            )
+            record.next_delivery_at = (
+                now + self._terminal_retry_delays[delay_index]
+            )
             return self._snapshot_locked(record)
 
     def active_ref(self) -> JobRef | None:
@@ -383,6 +421,7 @@ class JobManager:
             if record.terminal.revision != int(terminal_revision):
                 return False
             record.acknowledged = True
+            record.next_delivery_at = None
             self._prune_history_locked()
             return True
 
@@ -615,6 +654,9 @@ class JobManager:
         record.state = state
         record.future = None
         record.finished_at = self._clock()
+        record.acknowledged = False
+        record.delivery_attempt = 0
+        record.next_delivery_at = None
         record.terminal_revision += 1
         record.terminal = TerminalEvent(
             state=state,

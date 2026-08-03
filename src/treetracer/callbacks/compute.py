@@ -778,8 +778,8 @@ def register_compute_callbacks():
         Output("export-mds-button", "disabled"),
         Output("plot-config-store", "data", allow_duplicate=True),
         # Shared notification + a dedicated receipt. The receipt lands in the
-        # same browser response as the terminal UI and is consumed by the one
-        # acknowledgement sink in ``job_reconcile.py``.
+        # same browser response as the terminal UI and returns as State on the
+        # next central reconciliation poll in ``job_reconcile.py``.
         Output("notifications-container", "children", allow_duplicate=True),
         Output(
             {"type": "compute-terminal-receipt", "kind": "rf-mds"},

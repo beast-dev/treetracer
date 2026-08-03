@@ -9,12 +9,14 @@ module is that owner:
 * terminal state is copied into one small, replayable browser event;
 * job-specific presentation callbacks render that event and write a dedicated
   receipt in the same response as their UI;
-* one acknowledgement callback consumes those receipts.
+* the next interval request carries those receipts back as callback state.
 
 The interval remains enabled until a matching receipt has acknowledged the
-sticky terminal event.  A lost terminal-event response, presentation response,
-or acknowledgement request therefore causes another delivery attempt instead
-of a permanently stuck loading state.
+sticky terminal event. Terminal retries use a capped lease schedule rather
+than firing on every poll, so a slow browser gets an uncontested window to
+apply UI and return its receipt. A lost terminal-event response, presentation
+response, or settling response therefore causes a later delivery/settling
+attempt instead of a permanently stuck loading state.
 """
 
 from __future__ import annotations
@@ -276,6 +278,10 @@ def register_job_reconciliation_callbacks():
         State("mds-progress-path", "data"),
         State({"type": "compute-progress-bar", "which": ALL}, "id"),
         State({"type": "compute-progress-label", "which": ALL}, "id"),
+        State(
+            {"type": "compute-terminal-receipt", "kind": ALL},
+            "data",
+        ),
         prevent_initial_call=True,
     )
     def reconcile_compute_job(
@@ -291,8 +297,27 @@ def register_job_reconciliation_callbacks():
         mds_progress_path,
         progress_bar_ids,
         progress_label_ids,
+        receipts,
     ):
         """Own polling, terminal delivery, progress, and the global gate."""
+        # A receipt exists in browser state only after its feature callback's
+        # terminal UI response was applied. Piggyback acknowledgement on this
+        # already-running poll instead of scheduling another callback in the
+        # rapidly updating terminal chain. Exact identity/revision matching
+        # makes stale receipts harmless.
+        receipt_ref, receipt = _matching_active_receipt(receipts)
+        if receipt_ref is not None and receipt is not None:
+            if job_manager.acknowledge(
+                receipt_ref,
+                receipt["terminal_revision"],
+            ):
+                _wlog(
+                    "[parent] reconcile_compute_job: acknowledged "
+                    f"job={receipt_ref.job_id}/{receipt_ref.kind}/generation-"
+                    f"{receipt_ref.generation}, revision="
+                    f"{receipt['terminal_revision']}"
+                )
+
         active = job_manager.active_ref()
         busy = _busy_update(active, current_busy)
         if active is None:
@@ -325,29 +350,37 @@ def register_job_reconciliation_callbacks():
         terminal_event = no_update
 
         if snapshot.terminal is not None:
-            delivery = job_manager.snapshot_for_delivery(active)
+            delivery = job_manager.claim_terminal_delivery(active)
             if delivery is None:
-                progress_outputs = _dynamic_progress_outputs(
-                    progress_bar_ids,
-                    progress_label_ids,
+                # ``None`` normally means the previous delivery lease is
+                # still active. Clear Data can concurrently remove the record,
+                # so re-check ownership before deciding to keep polling.
+                current_active = job_manager.active_ref()
+                if current_active != active:
+                    progress_outputs = _dynamic_progress_outputs(
+                        progress_bar_ids,
+                        progress_label_ids,
+                    )
+                    return (
+                        current_active is None,
+                        no_update,
+                        _busy_update(current_active, current_busy),
+                        *progress_outputs,
+                    )
+            else:
+                terminal_event = _terminal_envelope(delivery)
+                _wlog(
+                    "[parent] reconcile_compute_job: delivering "
+                    f"job={active.job_id}/{active.kind}/generation-"
+                    f"{active.generation}, state={delivery.state.value}, "
+                    f"attempt={delivery.delivery_attempt}"
                 )
-                return (
-                    True,
-                    no_update,
-                    _busy_update(None, current_busy),
-                    *progress_outputs,
-                )
-            terminal_event = _terminal_envelope(delivery)
+
+            terminal_progress = snapshot if delivery is None else delivery
             if active.kind == "rf":
-                rf_progress = _terminal_progress(delivery)
+                rf_progress = _terminal_progress(terminal_progress)
             elif active.kind == "mds":
-                mds_progress = _terminal_progress(delivery)
-            _wlog(
-                "[parent] reconcile_compute_job: delivering "
-                f"job={active.job_id}/{active.kind}/generation-"
-                f"{active.generation}, state={delivery.state.value}, "
-                f"attempt={delivery.delivery_attempt}"
-            )
+                mds_progress = _terminal_progress(terminal_progress)
         elif active.kind == "rf":
             rf_progress = _read_rf_progress(active, rf_progress_path)
         elif active.kind == "mds":
@@ -359,9 +392,9 @@ def register_job_reconciliation_callbacks():
                 f"{active.generation}, state={snapshot.state.value}"
             )
 
-        # Polling remains enabled through terminal presentation. The receipt
-        # callback acknowledges server state; the next tick then takes the
-        # active=None branch and is the sole path that disables this interval.
+        # Polling remains enabled through terminal presentation. A later tick
+        # carries the browser receipt as State, acknowledges it above, and
+        # takes the active=None branch in that same response.
         progress_outputs = _dynamic_progress_outputs(
             progress_bar_ids,
             progress_label_ids,
@@ -374,22 +407,3 @@ def register_job_reconciliation_callbacks():
             busy,
             *progress_outputs,
         )
-
-    @callback(
-        Output("compute-job-ack-store", "data"),
-        Input(
-            {"type": "compute-terminal-receipt", "kind": ALL},
-            "data",
-        ),
-        prevent_initial_call=True,
-    )
-    def acknowledge_terminal_receipt(receipts):
-        """Acknowledge only the receipt for the authoritative active job."""
-        active, receipt = _matching_active_receipt(receipts)
-        if active is None or receipt is None:
-            return no_update
-        acknowledged = job_manager.acknowledge(
-            active,
-            receipt["terminal_revision"],
-        )
-        return {**receipt, "acknowledged": acknowledged}

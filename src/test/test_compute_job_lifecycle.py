@@ -149,6 +149,8 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         "acknowledge_terminal_receipt",
         job_reconcile.register_job_reconciliation_callbacks,
     )
+    rf_bar_ids = [{"type": "compute-progress-bar", "which": "rf"}]
+    rf_label_ids = [{"type": "compute-progress-label", "which": "rf"}]
 
     first_reconcile = reconcile(
         10,
@@ -161,6 +163,8 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         {"busy": False},
         None,
         None,
+        rf_bar_ids,
+        rf_label_ids,
     )
     first = render(first_reconcile[1], ref.as_dict(), None, False)
     second_reconcile = reconcile(
@@ -174,13 +178,15 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         first_reconcile[2],
         None,
         None,
+        rf_bar_ids,
+        rf_label_ids,
     )
     second = render(second_reconcile[1], ref.as_dict(), None, False)
 
-    assert len(first_reconcile) == 7
+    assert len(first_reconcile) == 5
     assert first_reconcile[0] is False
     assert first_reconcile[2]["busy"] is True
-    assert first_reconcile[3:5] == (100.0, "complete")
+    assert first_reconcile[3:] == ([100.0], ["complete"])
     assert len(first) == 12
     assert first[1] == expected_index
     assert first[2] is False
@@ -206,6 +212,8 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         first_reconcile[2],
         None,
         None,
+        [],
+        [],
     )
     assert settled[0] is True
     assert settled[2] == {"busy": False}

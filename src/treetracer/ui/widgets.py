@@ -38,10 +38,9 @@ def computing_banner(title: str, message: str, which: str,
 
     When ``show_progress=True`` the banner stacks an additional
     ``dmc.Progress`` bar and a small status label under the
-    message/stop row. The bar's id is ``f"{which}-progress-bar"`` and
-    the label's id is ``f"{which}-progress-label"`` so a separate
-    polling callback can drive them off a sidecar progress file (see
-    ``update_rf_progress`` in ``callbacks/compute.py``).
+    message/stop row. The bar and label use pattern-matching IDs so the
+    central reconciler can update whichever banner currently exists without
+    naming the absent RF or MDS banner as a Dash callback output.
     """
     # flex:1 + minWidth:0 lets the (often long) message shrink and
     # wrap instead of shoving the Stop button past the Alert's right
@@ -62,13 +61,17 @@ def computing_banner(title: str, message: str, which: str,
             [
                 message_row,
                 dmc.Progress(
-                    id=f"{which}-progress-bar",
+                    id={"type": "compute-progress-bar", "which": which},
                     value=0,
                     size="md",
                     color="blue",
                 ),
-                dmc.Text("starting…", size="xs", c="dimmed",
-                         id=f"{which}-progress-label"),
+                dmc.Text(
+                    "starting…",
+                    size="xs",
+                    c="dimmed",
+                    id={"type": "compute-progress-label", "which": which},
+                ),
             ],
             gap="xs",
         )

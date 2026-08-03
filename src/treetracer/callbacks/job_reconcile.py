@@ -187,6 +187,58 @@ def _read_mds_progress(ref: JobRef, progress_path: Any):
     return percentage, f"{label} ({percentage:.0f}%)"
 
 
+def _progress_component_updates(
+    component_ids: Any,
+    rf_progress: tuple[Any, Any],
+    mds_progress: tuple[Any, Any],
+    *,
+    position: int,
+) -> list[Any]:
+    """Map RF/MDS progress to only the dynamic components in the layout.
+
+    Dash rejects a callback response if it names a concrete Output component
+    that is not currently mounted. RF and MDS banners are mutually exclusive
+    dynamic children, so wildcard Outputs plus their matched IDs are required
+    here. Unknown matches receive ``no_update`` defensively.
+    """
+    updates = []
+    for component_id in component_ids or []:
+        which = (
+            component_id.get("which")
+            if isinstance(component_id, Mapping)
+            else None
+        )
+        if which == "rf":
+            updates.append(rf_progress[position])
+        elif which == "mds":
+            updates.append(mds_progress[position])
+        else:
+            updates.append(no_update)
+    return updates
+
+
+def _dynamic_progress_outputs(
+    progress_bar_ids: Any,
+    progress_label_ids: Any,
+    rf_progress: tuple[Any, Any] = (no_update, no_update),
+    mds_progress: tuple[Any, Any] = (no_update, no_update),
+) -> tuple[list[Any], list[Any]]:
+    return (
+        _progress_component_updates(
+            progress_bar_ids,
+            rf_progress,
+            mds_progress,
+            position=0,
+        ),
+        _progress_component_updates(
+            progress_label_ids,
+            rf_progress,
+            mds_progress,
+            position=1,
+        ),
+    )
+
+
 def _matching_active_receipt(receipts: Any):
     active = job_manager.active_ref()
     if active is None:
@@ -209,10 +261,8 @@ def register_job_reconciliation_callbacks():
         Output("compute-poll-interval", "disabled"),
         Output("compute-terminal-event-store", "data"),
         Output("compute-busy-store", "data"),
-        Output("rf-progress-bar", "value"),
-        Output("rf-progress-label", "children"),
-        Output("mds-progress-bar", "value"),
-        Output("mds-progress-label", "children"),
+        Output({"type": "compute-progress-bar", "which": ALL}, "value"),
+        Output({"type": "compute-progress-label", "which": ALL}, "children"),
         Input("compute-poll-interval", "n_intervals"),
         # Per-workflow stores wake this single owner immediately after submit.
         Input("rf-job-store", "data"),
@@ -224,6 +274,8 @@ def register_job_reconciliation_callbacks():
         State("compute-busy-store", "data"),
         State("rf-progress-path", "data"),
         State("mds-progress-path", "data"),
+        State({"type": "compute-progress-bar", "which": ALL}, "id"),
+        State({"type": "compute-progress-label", "which": ALL}, "id"),
         prevent_initial_call=True,
     )
     def reconcile_compute_job(
@@ -237,31 +289,35 @@ def register_job_reconciliation_callbacks():
         current_busy,
         rf_progress_path,
         mds_progress_path,
+        progress_bar_ids,
+        progress_label_ids,
     ):
         """Own polling, terminal delivery, progress, and the global gate."""
         active = job_manager.active_ref()
         busy = _busy_update(active, current_busy)
         if active is None:
+            progress_outputs = _dynamic_progress_outputs(
+                progress_bar_ids,
+                progress_label_ids,
+            )
             return (
                 True,
                 no_update,
                 busy,
-                no_update,
-                no_update,
-                no_update,
-                no_update,
+                *progress_outputs,
             )
 
         snapshot = job_manager.snapshot(active)
         if snapshot is None:
+            progress_outputs = _dynamic_progress_outputs(
+                progress_bar_ids,
+                progress_label_ids,
+            )
             return (
                 True,
                 no_update,
                 _busy_update(None, current_busy),
-                no_update,
-                no_update,
-                no_update,
-                no_update,
+                *progress_outputs,
             )
 
         rf_progress = (no_update, no_update)
@@ -271,14 +327,15 @@ def register_job_reconciliation_callbacks():
         if snapshot.terminal is not None:
             delivery = job_manager.snapshot_for_delivery(active)
             if delivery is None:
+                progress_outputs = _dynamic_progress_outputs(
+                    progress_bar_ids,
+                    progress_label_ids,
+                )
                 return (
                     True,
                     no_update,
                     _busy_update(None, current_busy),
-                    no_update,
-                    no_update,
-                    no_update,
-                    no_update,
+                    *progress_outputs,
                 )
             terminal_event = _terminal_envelope(delivery)
             if active.kind == "rf":
@@ -305,12 +362,17 @@ def register_job_reconciliation_callbacks():
         # Polling remains enabled through terminal presentation. The receipt
         # callback acknowledges server state; the next tick then takes the
         # active=None branch and is the sole path that disables this interval.
+        progress_outputs = _dynamic_progress_outputs(
+            progress_bar_ids,
+            progress_label_ids,
+            rf_progress,
+            mds_progress,
+        )
         return (
             False,
             terminal_event,
             busy,
-            *rf_progress,
-            *mds_progress,
+            *progress_outputs,
         )
 
     @callback(

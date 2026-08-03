@@ -57,6 +57,48 @@ def test_compute_interval_has_one_reconciliation_owner():
     assert owners == {"reconcile_compute_job"}
 
 
+def test_reconciler_uses_wildcards_for_dynamic_progress_banners():
+    """RF and MDS banners never coexist, so concrete Outputs are unsafe.
+
+    Dash rejects the whole reconciler response when a concrete output names
+    the progress component belonging to the other, currently-unmounted banner.
+    """
+    from dash import _callback
+
+    reconciler_outputs = None
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        if getattr(callback_fn, "__name__", "") != "reconcile_compute_job":
+            continue
+        output = callback_data.get("output")
+        reconciler_outputs = output if isinstance(output, list) else [output]
+        break
+
+    assert reconciler_outputs is not None
+    component_ids = [item.component_id for item in reconciler_outputs]
+    concrete_progress_ids = {
+        "rf-progress-bar",
+        "rf-progress-label",
+        "mds-progress-bar",
+        "mds-progress-label",
+    }
+    assert not any(
+        isinstance(component_id, str)
+        and component_id in concrete_progress_ids
+        for component_id in component_ids
+    )
+    pattern_types = {
+        component_id.get("type")
+        for component_id in component_ids
+        if isinstance(component_id, dict)
+    }
+    assert {
+        "compute-progress-bar",
+        "compute-progress-label",
+    } <= pattern_types
+
+
 def test_every_compute_action_reads_the_shared_busy_gate():
     """All entry points must become unavailable while the worker is owned."""
     from dash import _callback

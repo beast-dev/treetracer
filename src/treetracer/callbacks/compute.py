@@ -323,14 +323,14 @@ def _shutdown_executor():
 
 
 def reset():
-    """Invalidate any RF/MDS job before Clear Data wipes its inputs.
+    """Invalidate any managed job before Clear Data wipes its inputs.
 
     Removing the manager record prevents a late worker result from
-    re-registering a matrix or MDS result after the application state has been
-    cleared.  The persistent-worker kill interrupts native work when possible.
+    publishing into freshly cleared application state. The persistent-worker
+    kill interrupts native work when possible.
     """
     active = job_manager.active_ref()
-    if active is None or active.kind not in {"rf", "mds"}:
+    if active is None:
         return
     persistent_worker.cancel_current_job()
     job_manager.invalidate(active)

@@ -31,7 +31,7 @@ subprocesses):
 Wire protocol (parent ↔ worker, framed identically on the socket):
 
     request:  [4-byte LE length N][N bytes pickle.dumps({
-                  "job": "compute_rf" | "compute_consensus_tree",
+                  "job": "compute_rf" | "compute_consensus_tree" | ...,
                   "kwargs": {...},
               })]
     response: [4-byte LE length M][M bytes pickle.dumps({
@@ -396,8 +396,8 @@ def submit_job(job_name: str, **kwargs: Any) -> Dict[str, Any]:
     pywebview event loop on its native thread, etc.) stay responsive.
 
     Args:
-        job_name: ``"compute_rf"`` or ``"compute_consensus_tree"`` — must match a
-            branch in ``__init__.py:_run_persistent_worker``.
+        job_name: Managed compute operation name; must match a branch in
+            ``__init__.py:_run_persistent_worker``.
         **kwargs: forwarded to the worker function.
 
     Returns the worker function's return value (unpickled). Raises

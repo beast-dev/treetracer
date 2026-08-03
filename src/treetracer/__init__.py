@@ -135,6 +135,20 @@ def _run_persistent_worker() -> int:
                 wlog("calling compute_pseudo_ess_worker_entry")
                 result = compute_pseudo_ess_worker_entry(**kwargs)
                 wlog("compute_pseudo_ess_worker_entry returned")
+            elif job == "compute_rf_trace":
+                wlog("importing compute_rf_trace_worker_entry")
+                from .ess._rf_trace_worker import compute_rf_trace_worker_entry
+                wlog("calling compute_rf_trace_worker_entry")
+                result = compute_rf_trace_worker_entry(**kwargs)
+                wlog("compute_rf_trace_worker_entry returned")
+            elif job == "compute_clade_frequencies":
+                wlog("importing compute_clade_frequencies_worker_entry")
+                from .clade_freq._subprocess_worker import (
+                    compute_clade_frequencies_worker_entry,
+                )
+                wlog("calling compute_clade_frequencies_worker_entry")
+                result = compute_clade_frequencies_worker_entry(**kwargs)
+                wlog("compute_clade_frequencies_worker_entry returned")
             elif job == "compute_mds":
                 # MDS doesn't need a dedicated worker wrapper — the
                 # ``rf._worker.compute_mds_worker`` function is already

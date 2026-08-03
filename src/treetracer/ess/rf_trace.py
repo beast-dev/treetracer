@@ -1,14 +1,30 @@
-"""RF distance trace computation.
+"""RF distance trace preparation and compatibility computation.
 
 Computes the RF distance from every tree to a user-selected reference tree,
 using a pre-computed distance matrix. Pure computation — no Dash imports.
 """
 
+import numpy as np
 import pandas as pd
 
 from ..logger import add_log
-from ..state import load_distmat
+from ..state import get_distmat_file_path, get_distmat_names
 from ..db.tree_service import get_tree_service
+
+
+def find_reference_index(distmat_names, ref_group, ref_position):
+    """Return the first/last ``(index, name)`` belonging to a group."""
+    matches = [
+        (index, name)
+        for index, name in enumerate(distmat_names)
+        if (str(name).rsplit("/", 1)[0] if "/" in str(name) else str(name))
+        == ref_group
+    ]
+    if not matches:
+        raise ValueError(
+            f"No trees of group {ref_group!r} in the selected RF matrix."
+        )
+    return matches[0] if ref_position == "first" else matches[-1]
 
 
 def compute_rf_trace_data(distmat_key, ref_group, ref_position):
@@ -42,9 +58,15 @@ def compute_rf_trace_data(distmat_key, ref_group, ref_position):
 
         (error_message, None) on failure.
     """
-    # Load matrix from disk
+    # Memory-map the matrix so this compatibility API also touches only the
+    # selected O(n) row rather than materialising the O(n²) file.
     try:
-        distmat_names, distmat_matrix = load_distmat(distmat_key)
+        distmat_names = list(get_distmat_names(distmat_key))
+        distmat_matrix = np.load(
+            get_distmat_file_path(distmat_key),
+            mmap_mode="r",
+            allow_pickle=False,
+        )
     except KeyError:
         return "Distance matrix not available. Please recompute RF distances.", None
 
@@ -60,21 +82,21 @@ def compute_rf_trace_data(distmat_key, ref_group, ref_position):
         n.rsplit("/", 1)[0] if "/" in n else n for n in distmat_names
     ]
 
-    ref_trees_in_group = [
-        name for name, grp in zip(distmat_names, distmat_groups)
-        if grp == ref_group
-    ]
-    if not ref_trees_in_group:
-        msg = (f"No trees of group '{ref_group}' in distance matrix "
-               f"'{distmat_key}'.")
+    try:
+        ref_idx, ref_name = find_reference_index(
+            distmat_names,
+            ref_group,
+            ref_position,
+        )
+    except ValueError:
+        msg = (
+            f"No trees of group '{ref_group}' in distance matrix "
+            f"'{distmat_key}'."
+        )
         add_log(msg, "ERROR")
         return msg, None
-
-    ref_name = (ref_trees_in_group[0] if ref_position == "first"
-                else ref_trees_in_group[-1])
     add_log(f"Reference tree: '{ref_name}' "
             f"({ref_position} of '{ref_group}' in '{distmat_key}')")
-    ref_idx = name_to_idx[ref_name]
 
     # Optional per-row ``file_source`` for hover. We pull it from the
     # DB when available, but a tree missing from the DB (e.g. dropped

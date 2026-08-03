@@ -272,4 +272,4 @@ def test_clear_data_idle_branch_matches_managed_lifecycle_outputs():
         "clear_uploads",
         sidebar.register_sidebar_callbacks,
     )
-    assert len(clear_uploads(None)) == 45
+    assert len(clear_uploads(None)) == 48

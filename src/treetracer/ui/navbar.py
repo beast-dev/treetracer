@@ -94,8 +94,14 @@ def add_navbar():
                     dcc.Store(id="mds-job-store", storage_type="memory"),
                     dcc.Store(id="pseudo-ess-job-store", storage_type="memory"),
                     dcc.Store(id="consensus-job-store", storage_type="memory"),
+                    dcc.Store(id="rf-trace-job-store", storage_type="memory"),
+                    dcc.Store(id="clade-freq-job-store", storage_type="memory"),
                     dcc.Store(id="compute-applied-job-store", storage_type="memory"),
                     dcc.Store(id="compute-job-ack-store", storage_type="memory"),
+                    # Resolves scatter split IDs through the matching server-side
+                    # managed comparison result; avoids shipping tip sets through
+                    # browser JSON or decoding the full snapshot on click.
+                    dcc.Store(id="clade-freq-result-key-store", storage_type="memory"),
                     # Consensus trees keep a dedicated cadence because their
                     # overlay and button lifecycle can stop independently of
                     # the shared RF/MDS/Pseudo-ESS interval.

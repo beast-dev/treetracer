@@ -4,7 +4,12 @@ import os
 
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
-from ..state import clear_all_distmats, clear_all_mds_results, clear_all_consensus_trees
+from ..state import (
+    clear_all_analysis_results,
+    clear_all_consensus_trees,
+    clear_all_distmats,
+    clear_all_mds_results,
+)
 from ..plot_utils import placeholder_fig
 from .clade_explore import clear_clade_freq_caches, _tanglegram_placeholder_fig
 from ._helpers import _open_file_dialog
@@ -630,6 +635,7 @@ def register_sidebar_callbacks():
         Output("clade-freq-tanglegram-title", "children", allow_duplicate=True),
         Output("clade-freq-data-store", "data", allow_duplicate=True),
         Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Output("clade-freq-result-key-store", "data", allow_duplicate=True),
         Output("clade-freq-tanglegram-pair-store", "data", allow_duplicate=True),
         Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
         Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
@@ -641,6 +647,8 @@ def register_sidebar_callbacks():
         Output("mds-job-store", "data", allow_duplicate=True),
         Output("pseudo-ess-job-store", "data", allow_duplicate=True),
         Output("consensus-job-store", "data", allow_duplicate=True),
+        Output("rf-trace-job-store", "data", allow_duplicate=True),
+        Output("clade-freq-job-store", "data", allow_duplicate=True),
         Output("compute-applied-job-store", "data", allow_duplicate=True),
         Output("compute-job-ack-store", "data", allow_duplicate=True),
         Output("rf-progress-path", "data", allow_duplicate=True),
@@ -658,12 +666,8 @@ def register_sidebar_callbacks():
             # Cancel any in-flight subprocess job — descriptors point
             # into the DB we're about to wipe, and we don't want the
             # poll callbacks to write results based on stale state.
-            from . import compute, consensus_tree_compute, pseudo_ess_compute
-            resetters = (
-                ("RF/MDS", compute.reset),
-                ("consensus tree", consensus_tree_compute.reset),
-                ("Pseudo-ESS", pseudo_ess_compute.reset),
-            )
+            from . import compute
+            resetters = (("managed", compute.reset),)
             for label, resetter in resetters:
                 try:
                     resetter()
@@ -676,6 +680,7 @@ def register_sidebar_callbacks():
             clear_all_distmats()
             clear_all_mds_results()
             clear_all_consensus_trees()
+            clear_all_analysis_results()
             # Wipe the in-process clade-freq caches (parsed NEXUS
             # trees, tanglegram layouts, click→split lookup). They're
             # keyed on consensus tree uuids that no longer exist after the calls
@@ -739,6 +744,7 @@ def register_sidebar_callbacks():
                 None,            # clade-freq-tanglegram-title.children
                 None,            # clade-freq-data-store
                 None,            # clade-freq-click-store
+                None,            # clade-freq-result-key-store
                 None,            # clade-freq-tanglegram-pair-store
                 None,            # clade-freq-consensus-tree-select-1.value
                 None,            # clade-freq-consensus-tree-select-2.value
@@ -747,6 +753,8 @@ def register_sidebar_callbacks():
                 None,            # mds-job-store
                 None,            # pseudo-ess-job-store
                 None,            # consensus-job-store
+                None,            # rf-trace-job-store
+                None,            # clade-freq-job-store
                 None,            # compute-applied-job-store
                 None,            # compute-job-ack-store
                 None,            # rf-progress-path
@@ -756,4 +764,4 @@ def register_sidebar_callbacks():
                 False,           # treespace-loading-overlay visible
                 False,           # within-run-loading-overlay visible
             )
-        return (no_update,) * 45
+        return (no_update,) * 48

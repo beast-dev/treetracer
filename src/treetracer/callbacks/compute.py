@@ -1,7 +1,6 @@
 from dash import html, callback, Input, Output, State, no_update, ALL, ctx
 import dash_mantine_components as dmc
 from concurrent.futures import ThreadPoolExecutor
-from threading import RLock
 import pandas as pd
 
 from ..logger import add_log, notif_id
@@ -32,7 +31,6 @@ from . import persistent_worker
 # work runs in the worker subprocess, keeping the pywebview/Dash process
 # responsive while compute jobs are in flight.
 _executor = None
-_publication_lock = RLock()
 
 
 def _mds_export_filename(source_distmat):
@@ -54,8 +52,6 @@ def _job_ref_from_store(data, *, expected_kind=None):
     except (KeyError, TypeError, ValueError):
         return None
     if expected_kind is not None and ref.kind != expected_kind:
-        return None
-    if ref.kind not in {"rf", "mds"}:
         return None
     return ref
 
@@ -202,17 +198,9 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     return result
 
 
-def _job_can_publish(ref):
-    snapshot = job_manager.snapshot(ref)
-    return snapshot is not None and snapshot.state is JobState.FINALIZING
-
-
-def _finalize_rf_job(ref, pipeline):
+def _finalize_rf_job(_ref, pipeline):
     """Persist one RF result and return its small terminal UI payload."""
-    with _publication_lock:
-        if not _job_can_publish(ref):
-            return {}
-        return _publish_rf_result(pipeline)
+    return _publish_rf_result(pipeline)
 
 
 def _publish_rf_result(pipeline):
@@ -272,12 +260,9 @@ def _mds_pipeline(
     }
 
 
-def _finalize_mds_job(ref, result):
+def _finalize_mds_job(_ref, result):
     """Persist one MDS result and return its small terminal UI payload."""
-    with _publication_lock:
-        if not _job_can_publish(ref):
-            return {}
-        return _publish_mds_result(result)
+    return _publish_mds_result(result)
 
 
 def _publish_mds_result(result):
@@ -349,11 +334,6 @@ def reset():
         return
     persistent_worker.cancel_current_job()
     job_manager.invalidate(active)
-    # If a finalizer acquired the publication lock just before invalidation,
-    # let it finish before Clear Data removes published state. If it acquires
-    # the lock afterward, its identity re-check rejects the invalidated job.
-    with _publication_lock:
-        pass
 
 
 def register_compute_callbacks():
@@ -381,7 +361,6 @@ def register_compute_callbacks():
         active = job_manager.active_ref()
         managed_cancelled = (
             active is not None
-            and active.kind in {"rf", "mds"}
             and job_manager.mark_cancelled(
                 active,
                 message="Computation cancelled by user",
@@ -514,7 +493,7 @@ def register_compute_callbacks():
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
         State("tree-offset-store", "data"),
-        State("rf-mds-applied-job-store", "data"),
+        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def handle_compute_rf(
@@ -852,7 +831,7 @@ def register_compute_callbacks():
         Output("mds-job-store", "data"),
         Input("compute-mds-button", "n_clicks"),
         State("mds-distmat-select", "value"),
-        State("rf-mds-applied-job-store", "data"),
+        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def handle_compute_mds(n_clicks, selected_distmat, applied_job):
@@ -948,7 +927,7 @@ def register_compute_callbacks():
         # acknowledgement callback to consume the retained terminal event.
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Output("rf-mds-applied-job-store", "data"),
+        Output("compute-applied-job-store", "data", allow_duplicate=True),
         # Auto-collapse sidebar on RF success (3 outputs mirror the
         # shell sidebar-toggle callback's outputs).
         Output("navbar", "style", allow_duplicate=True),
@@ -1104,16 +1083,12 @@ def register_compute_callbacks():
                     id=f"mds-terminal-{ref.job_id}",
                 )
 
-        applied = {
-            **ref.as_dict(),
-            "terminal_revision": terminal.revision,
-            "delivery_attempt": snapshot.delivery_attempt,
-        }
+        applied = snapshot.terminal_delivery_marker()
         return (*rf_out, *mds_out, notif, True, applied, *sidebar_out)
 
     @callback(
-        Output("rf-mds-job-ack-store", "data"),
-        Input("rf-mds-applied-job-store", "data"),
+        Output("compute-job-ack-store", "data"),
+        Input("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def acknowledge_terminal_job(applied_job):

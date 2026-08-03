@@ -152,6 +152,17 @@ class JobSnapshot:
         )
         return value
 
+    def terminal_delivery_marker(self) -> dict[str, Any]:
+        """Return the browser marker for this terminal delivery attempt."""
+
+        if self.terminal is None:
+            raise ValueError("a non-terminal snapshot has no delivery marker")
+        return {
+            **self.ref.as_dict(),
+            "terminal_revision": self.terminal.revision,
+            "delivery_attempt": self.delivery_attempt,
+        }
+
 
 Finalizer = Callable[[JobRef, Any], Mapping[str, Any] | None]
 
@@ -200,6 +211,12 @@ class JobManager:
         self._clock = clock
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._lock = RLock()
+        # Domain finalizers run outside ``_lock`` but inside this barrier.
+        # Reset removes the record first, then crosses the same barrier. This
+        # guarantees that Clear Data either waits for an already-started
+        # publication or makes a not-yet-started publication reject the stale
+        # identity before doing domain work.
+        self._publication_lock = RLock()
         self._records: dict[str, _JobRecord] = {}
         self._next_generation = 1
 
@@ -434,6 +451,8 @@ class JobManager:
 
         if future is not None:
             future.cancel()
+        with self._publication_lock:
+            pass
         return True
 
     def _mark_running(self, ref: JobRef) -> bool:
@@ -475,12 +494,24 @@ class JobManager:
             return
 
         try:
-            payload = {} if finalizer is None else finalizer(ref, result)
-            if payload is None:
-                payload = {}
-            if not isinstance(payload, Mapping):
-                raise TypeError("job finalizer must return a mapping or None")
-            payload = copy.deepcopy(dict(payload))
+            with self._publication_lock:
+                # Invalidation may have won after finalization was claimed but
+                # before this wrapper acquired the publication barrier.
+                with self._lock:
+                    record = self._matching_record_locked(ref)
+                    if (
+                        record is None
+                        or record.state is not JobState.FINALIZING
+                    ):
+                        return
+                payload = {} if finalizer is None else finalizer(ref, result)
+                if payload is None:
+                    payload = {}
+                if not isinstance(payload, Mapping):
+                    raise TypeError(
+                        "job finalizer must return a mapping or None"
+                    )
+                payload = copy.deepcopy(dict(payload))
         except BaseException as exc:
             self._finish_exception(ref, exc, stage="finalize")
             return

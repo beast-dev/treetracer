@@ -7,14 +7,13 @@ from scipy.stats import gaussian_kde
 import numpy as np
 import pandas as pd
 
+from ..background_jobs import JobBusyError
 from ..logger import add_log, notif_id
 from ..db.tree_service import get_tree_service
 from ..ess.rf_trace import compute_rf_trace_data
-from ..ess import compute_pseudo_ess
 from .. import state
 from ..theme import get_template
 from ..ui.widgets import stop_button
-from ._helpers import _save_file_dialog
 
 
 def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
@@ -586,15 +585,25 @@ def register_diagnostics_callbacks():
         Output("pseudo-ess-output", "children", allow_duplicate=True),
         Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("pseudo-ess-job-store", "data"),
         Input("compute-pseudo-ess-button", "n_clicks"),
         State("diagnostics-distmat-select", "value"),
         State("ess-n-refs-input", "value"),
         State("ess-burnin-input", "value"),
         State({"type": "ess-run-checkbox", "index": ALL}, "checked"),
         State({"type": "ess-run-checkbox", "index": ALL}, "id"),
+        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
-    def compute_pseudo_ess_for_runs(n_clicks, selected_matrix, n_refs, burnin, checks, ids):
+    def compute_pseudo_ess_for_runs(
+        n_clicks,
+        selected_matrix,
+        n_refs,
+        burnin,
+        checks,
+        ids,
+        applied_job,
+    ):
         """Submit a Pseudo-ESS job to the persistent worker.
 
         Parent-side: validates input, bins trees per run, applies
@@ -608,21 +617,29 @@ def register_diagnostics_callbacks():
         worker's response.
         """
         from . import pseudo_ess_compute
+        from .compute import _ack_applied_job
 
         if not n_clicks or not selected_matrix:
-            return no_update, no_update, no_update
+            return (no_update,) * 4
+
+        # The visible terminal result and this marker arrived in one previous
+        # browser response. A fast next click can precede the dedicated ack
+        # callback, so acknowledge it idempotently before requesting a new job.
+        _ack_applied_job(applied_job)
 
         ticked = [i["index"] for i, c in zip(ids, checks) if c]
         if not ticked:
             return (dmc.Text("No runs selected.", c="dimmed", size="sm"),
-                    no_update, no_update)
+                    no_update, no_update, no_update)
 
         try:
-            names, _distmat_unused = state.load_distmat(selected_matrix)
+            # Only labels are needed to form per-run row indices. Avoid loading
+            # the full n×n matrix into the GUI process; the worker reads it once.
+            names = list(state.get_distmat_names(selected_matrix))
         except KeyError:
             return (dmc.Text(f"Matrix {selected_matrix!r} is no longer available.",
                              c="red", size="sm"),
-                    no_update, no_update)
+                    no_update, no_update, no_update)
 
         # Bucket row indices by group prefix once (matrix-row order
         # matches MCMC iteration order within each chain).
@@ -670,18 +687,36 @@ def register_diagnostics_callbacks():
             return (dmc.Text(
                 "Burn-in leaves fewer than 4 trees per run; nothing to compute.",
                 c="dimmed", size="sm",
-            ), no_update, no_update)
+            ), no_update, no_update, no_update)
 
         # Hand off to the subprocess. The poll callback in
         # pseudo_ess_compute.py picks up the result and replaces the
         # spinner with the result table.
-        pseudo_ess_compute.submit_pseudo_ess_job(
-            distmat_path=str(state.get_distmat_file_path(selected_matrix)),
-            names=list(names),
-            requests=requests,
-            n_refs=n_refs_int,
-            seed=0,
-        )
+        try:
+            job_ref = pseudo_ess_compute.submit_pseudo_ess_job(
+                distmat_path=str(state.get_distmat_file_path(selected_matrix)),
+                names=names,
+                requests=requests,
+                n_refs=n_refs_int,
+                seed=0,
+            )
+        except JobBusyError as exc:
+            msg = (
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
+            add_log(msg, "WARNING")
+            return (
+                dmc.Alert(
+                    title="Computation already running",
+                    children=dmc.Text(msg, size="sm"),
+                    color="yellow",
+                    variant="light",
+                ),
+                False,
+                no_update,
+                no_update,
+            )
 
         spinner = dmc.Group([
             dmc.Loader(size="sm", type="dots"),
@@ -692,5 +727,5 @@ def register_diagnostics_callbacks():
             stop_button("ess"),
         ], gap="sm")
 
-        # spinner, button disabled, poll interval enabled.
-        return spinner, True, False
+        # Spinner, button disabled, polling enabled, and immutable job identity.
+        return spinner, True, False, job_ref.as_dict()

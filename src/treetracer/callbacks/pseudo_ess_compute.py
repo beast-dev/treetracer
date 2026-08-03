@@ -1,78 +1,68 @@
-"""Pseudo-ESS dispatch + polling.
+"""Managed Pseudo-ESS dispatch, finalization, and terminal polling.
 
-Same shape as ``consensus_tree_compute.py``: the Diagnostics tab's
-"Compute Pseudo-ESS" click handler validates input, slices the
-distmat into per-run index lists, and hands the work off to the
-persistent worker subprocess via ``persistent_worker.submit_job``.
-
-The click handler returns immediately with a loading spinner in the
-``pseudo-ess-output`` slot. ``poll_pseudo_ess_completion`` listens to
-``compute-poll-interval`` and, on the worker's response, builds the
-result table parent-side and writes it back.
+The Diagnostics tab prepares small per-run index lists and submits one worker
+request. ``JobManager`` owns the job identity and terminal state, so polling is
+read-only and a completed result remains replayable until the browser confirms
+that it applied the matching UI response.
 """
 
 from __future__ import annotations
 
-from concurrent.futures import Future
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import dash_mantine_components as dmc
 import numpy as np
-from dash import Input, Output, callback, html, no_update
+from dash import Input, Output, callback, no_update
 
-from ..logger import add_log, notif_id
+from ..background_jobs import JobRef, JobState, job_manager
+from ..logger import add_log
 from .._worker_log import log as _wlog
 from . import persistent_worker
-from .compute import _get_executor
-
-
-_pseudo_ess_future: Optional[Future] = None
-_pseudo_ess_meta: Dict[str, Any] = {}
+from .compute import _get_executor, _job_ref_from_store
 
 
 def reset() -> None:
-    """Interrupt any in-flight Pseudo-ESS compute. Called by sidebar's
-    Clear-Data callback so the worker isn't still processing against
-    a distmat that no longer exists.
-
-    ``Future.cancel()`` only drops a not-yet-started future — it can't
-    stop a job already running in the worker. ``cancel_current_job()``
-    kills the worker, which actually interrupts the compute."""
-    global _pseudo_ess_future, _pseudo_ess_meta
+    """Invalidate an active Pseudo-ESS job before application state clears."""
+    active = job_manager.active_ref()
+    if active is None or active.kind != "pseudo_ess":
+        return
     persistent_worker.cancel_current_job()
-    if _pseudo_ess_future is not None:
-        _pseudo_ess_future.cancel()
-    _pseudo_ess_future = None
-    _pseudo_ess_meta = {}
+    job_manager.invalidate(active)
+
+
+def _finalize_pseudo_ess_job(
+    _ref: JobRef,
+    result: Any,
+) -> dict[str, Any]:
+    """Validate the worker response and retain only its small table payload."""
+    if not isinstance(result, dict):
+        raise TypeError("Pseudo-ESS worker returned a non-mapping result")
+    rows = result.get("results")
+    if not isinstance(rows, list):
+        raise TypeError("Pseudo-ESS worker result is missing its results list")
+    add_log(f"Pseudo-ESS computed for {len(rows)} row(s).")
+    return {"results": rows, "n_rows": len(rows)}
 
 
 def submit_pseudo_ess_job(
     *,
     distmat_path: str,
-    names: List[str],
-    requests: List[Dict[str, Any]],
+    names: list[str],
+    requests: list[dict[str, Any]],
     n_refs: int,
     seed: int = 0,
-) -> None:
+) -> JobRef:
     """Enqueue a Pseudo-ESS job covering all ticked runs (+ optional
     Combined row) in a single subprocess round-trip.
 
     Args:
         distmat_path: path passed straight to the worker.
-        names: row/col labels (saved on ``_pseudo_ess_meta`` only for
-            potential future cancellation logging; the worker doesn't
-            read them).
+        names: row/column labels forwarded to the worker.
         requests: list of ``{"label", "indices", "burnin_label"}``
             dicts the worker iterates over.
         n_refs: forwarded to ``compute_pseudo_ess``.
         seed: forwarded.
     """
-    global _pseudo_ess_future, _pseudo_ess_meta
-
-    _pseudo_ess_meta = {
-        "distmat_path": distmat_path,
-        "n_runs": len(requests),
-    }
     add_log(
         f"[Pseudo-ESS] Dispatching to persistent worker "
         f"({len(requests)} row(s), n_refs={n_refs})..."
@@ -81,7 +71,9 @@ def submit_pseudo_ess_job(
         f"[parent] submit_pseudo_ess_job: {len(requests)} requests, "
         f"n_refs={n_refs}, distmat_path={distmat_path!r}"
     )
-    _pseudo_ess_future = _get_executor().submit(
+    ref = job_manager.submit(
+        _get_executor(),
+        "pseudo_ess",
         persistent_worker.submit_job,
         "compute_pseudo_ess",
         distmat_path=distmat_path,
@@ -89,11 +81,22 @@ def submit_pseudo_ess_job(
         requests=requests,
         n_refs=n_refs,
         seed=seed,
+        metadata={
+            "display_name": "Pseudo-ESS",
+            "source_distmat_path": distmat_path,
+            "n_rows": len(requests),
+        },
+        finalizer=_finalize_pseudo_ess_job,
+        cancel_exceptions=(persistent_worker.JobCancelled,),
     )
-    _wlog(f"[parent] submit_pseudo_ess_job: future created (id={id(_pseudo_ess_future):x})")
+    _wlog(
+        "[parent] submit_pseudo_ess_job: managed job created "
+        f"({ref.job_id}/generation-{ref.generation})"
+    )
+    return ref
 
 
-def _ess_cell(v: Optional[float]):
+def _ess_cell(v: float | None):
     """One stoplight-coloured ESS table cell. Thresholds mirror
     Lanfear's rule of thumb."""
     if v is None or np.isnan(v):
@@ -109,7 +112,7 @@ def _ess_cell(v: Optional[float]):
     )
 
 
-def _build_result_table(results: List[Dict[str, Any]]):
+def _build_result_table(results: list[dict[str, Any]]):
     """Parent-side render of the per-row Pseudo-ESS table. The worker
     only returns plain dicts; this turns them into Mantine table rows."""
     if not results:
@@ -153,108 +156,57 @@ def _build_result_table(results: List[Dict[str, Any]]):
 
 
 def register_pseudo_ess_compute_callbacks():
-    # Why only 2 outputs (not 4) — see the giant block comment below.
     @callback(
         Output("pseudo-ess-output", "children", allow_duplicate=True),
         Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("compute-applied-job-store", "data", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
+        Input("pseudo-ess-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_pseudo_ess_completion(_n):
-        # ────────────────────────────────────────────────────────────
-        # Output contention: WHY this callback returns ONLY 2 values
-        # (table + button.disabled) instead of also writing
-        # ``compute-poll-interval.disabled`` and
-        # ``notifications-container.children``.
-        #
-        # Three poll callbacks share ``Input("compute-poll-interval",
-        # "n_intervals")``:
-        #
-        #   * poll_completion       (compute.py — RF / MDS)
-        #   * poll_consensus_tree_completion   (consensus_tree_compute.py)
-        #   * poll_pseudo_ess_completion (here)
-        #
-        # On every 100 ms tick they fire concurrently. When the ESS
-        # job finishes, this callback returns a real value for
-        # ``compute-poll-interval.disabled``, while the other two
-        # return ``no_update`` for everything (no RF/MDS/consensus tree running).
-        # ``compute-poll-interval.disabled``'s primary writer
-        # (no ``allow_duplicate``) lives in ``handle_compute_rf`` in
-        # compute.py. Dash 4.x has a bug — observed empirically on
-        # the Windows bundle and verified by file-log trace — where
-        # this secondary-write-during-primary-not-firing pattern
-        # causes the *entire callback batch* to be silently dropped:
-        # the table never reaches the GUI, the interval stays
-        # enabled, the button stays disabled.
-        #
-        # Dropping ``compute-poll-interval.disabled`` from THIS
-        # callback's Outputs removes the conflict. The interval just
-        # keeps firing forever after ESS finishes — every 100 ms it
-        # re-enters this callback, sees ``_pseudo_ess_future is None``,
-        # returns ``(no_update,) * 2``. Cost: a few µs per tick. The
-        # other two poll callbacks also no-op on idle ticks today.
-        #
-        # Dropping ``notifications-container.children`` for the same
-        # reason — many callbacks fight over it via allow_duplicate.
-        # The user sees the table appear, which is the only signal
-        # they need; a green toast on top is redundant.
-        # ────────────────────────────────────────────────────────────
-        global _pseudo_ess_future
-        future_set = _pseudo_ess_future is not None
-        future_done = future_set and _pseudo_ess_future.done()
-        if future_set:
-            _wlog(
-                f"[parent] poll_pseudo_ess_completion: "
-                f"future_set={future_set}, future_done={future_done}, "
-                f"future_id={id(_pseudo_ess_future):x}"
-            )
-        if not future_set or not future_done:
-            return no_update, no_update
+    def poll_pseudo_ess_completion(n_intervals, job_data):
+        ref = _job_ref_from_store(job_data, expected_kind="pseudo_ess")
+        if ref is None:
+            return (no_update,) * 4
 
-        future = _pseudo_ess_future
-        _pseudo_ess_future = None
-        _wlog("[parent] poll_pseudo_ess_completion: future done, calling .result()")
+        snapshot = job_manager.snapshot_for_delivery(ref)
+        if snapshot is None or snapshot.acknowledged:
+            return (no_update,) * 4
+        if snapshot.terminal is None:
+            if (n_intervals or 0) % 10 == 0:
+                _wlog(
+                    f"[parent] poll_pseudo_ess_completion tick={n_intervals}: "
+                    f"job={ref.job_id}/generation-{ref.generation}, "
+                    f"state={snapshot.state.value}"
+                )
+            return (no_update,) * 4
 
-        try:
-            result = future.result()
-            _wlog(
-                f"[parent] poll_pseudo_ess_completion: .result() returned; "
-                f"type={type(result).__name__}, "
-                f"keys={sorted(result.keys()) if isinstance(result, dict) else '<not a dict>'}"
+        terminal = snapshot.terminal
+        applied = snapshot.terminal_delivery_marker()
+        if terminal.state is JobState.CANCELLED:
+            if snapshot.delivery_attempt == 1:
+                add_log("Pseudo-ESS computation cancelled by user.", "WARNING")
+            output = dmc.Alert(
+                title="Pseudo-ESS computation cancelled",
+                children=dmc.Text("Stopped before completion.", size="sm"),
+                color="gray",
+                variant="light",
             )
-        except persistent_worker.JobCancelled:
-            _wlog("[parent] poll_pseudo_ess_completion: JobCancelled")
-            add_log("Pseudo-ESS computation cancelled by user.", "WARNING")
-            return (
-                dmc.Alert(
-                    title="Pseudo-ESS computation cancelled",
-                    children=dmc.Text("Stopped before completion.", size="sm"),
-                    color="gray", variant="light",
-                ),
-                False,        # re-enable button
+        elif terminal.state is JobState.FAILED:
+            msg = (
+                "Pseudo-ESS computation failed: "
+                f"{terminal.payload.get('message', 'Unknown error')}"
             )
-        except Exception as e:
-            _wlog(f"[parent] poll_pseudo_ess_completion: .result() raised {type(e).__name__}: {e}")
-            msg = f"Pseudo-ESS computation failed: {e}"
-            add_log(msg, "ERROR")
-            return (
-                dmc.Text(msg, c="red", size="sm"),
-                False,                  # re-enable button
-            )
+            if snapshot.delivery_attempt == 1:
+                add_log(msg, "ERROR")
+            output = dmc.Text(msg, c="red", size="sm")
+        else:
+            rows = list(terminal.payload.get("results", []))
+            output = _build_result_table(rows)
 
-        rows = result.get("results", [])
-        _wlog(f"[parent] poll_pseudo_ess_completion: building result table for {len(rows)} rows")
-        add_log(f"Pseudo-ESS computed for {len(rows)} row(s).")
-        try:
-            table = _build_result_table(rows)
-            _wlog("[parent] poll_pseudo_ess_completion: result table built; returning")
-        except Exception as e:
-            _wlog(
-                f"[parent] poll_pseudo_ess_completion: _build_result_table raised "
-                f"{type(e).__name__}: {e}"
-            )
-            raise
-        return (
-            table,
-            False,                      # re-enable button
-        )
+        # The terminal event remains server-side until the applied marker is
+        # processed by the shared acknowledgement callback. If this whole Dash
+        # response is lost, the still-enabled interval requests the same event
+        # again with a new delivery-attempt marker.
+        return output, False, True, applied

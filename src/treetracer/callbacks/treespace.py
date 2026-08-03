@@ -3,12 +3,10 @@ import re
 from dash import html, callback, clientside_callback, Input, Output, Patch, State, no_update
 import dash_mantine_components as dmc
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 
 from ..logger import add_log
 from ..state import get_mds_result
-from ..theme import get_template
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
     retheme_figure,
@@ -773,28 +771,34 @@ def register_treespace_callbacks():
         # poll on a shared allow_duplicate output.
         Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
+        Output("consensus-job-store", "data", allow_duplicate=True),
         Input("treespace-view-consensus-tree", "n_clicks"),
         State("treespace-selected-trees-store", "data"),
         State("plot-config-store", "data"),
         State("treespace-result-select", "value"),
         State("mds-result-store", "data"),
+        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def view_consensus_tree(n_clicks, selected_pairs, plot_config,
-                      selected_key, results):
+                      selected_key, results, applied_job):
+        from ..background_jobs import JobBusyError
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
         from . import consensus_tree_compute
+        from .compute import _ack_applied_job
 
         if not n_clicks or not selected_pairs or not plot_config:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
+
+        _ack_applied_job(applied_job)
 
         def _err(msg, autoclose=5000):
             return (False, False, no_update, dmc.Notification(
                 title="Consensus tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
-            ))
+            ), no_update)
 
         results = results or {}
         if not selected_key or selected_key not in results:
@@ -834,22 +838,30 @@ def register_treespace_callbacks():
         # green ring on the consensus tree's dot.
         consensus_tree_coord_by_tree_name = {
             row["tree"]: (row["group"], int(row["treenum"]))
-            for _, row in combined_df.iterrows()
+            for _, row in sel_df.iterrows()
         }
 
-        consensus_tree_compute.submit_consensus_tree_job(
-            matched_records=matched_records,
-            source_distmat=source_distmat,
-            mode="Between",
-            selection=[[g, int(t)] for g, t in selected_pairs],
-            run=None,
-            consensus_tree_coord_by_tree_name=consensus_tree_coord_by_tree_name,
-            store_target="treespace-view-consensus-tree-store",
-        )
+        try:
+            job_ref = consensus_tree_compute.submit_consensus_tree_job(
+                matched_records=matched_records,
+                source_distmat=source_distmat,
+                mode="Between",
+                selection=[[g, int(t)] for g, t in selected_pairs],
+                run=None,
+                consensus_tree_coord_by_tree_name=(
+                    consensus_tree_coord_by_tree_name
+                ),
+                store_target="treespace-view-consensus-tree-store",
+            )
+        except JobBusyError as exc:
+            return _err(
+                f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
+                "is still finishing. Please wait for it to complete."
+            )
 
         # Return: overlay on, button disabled, polling enabled, no
         # notification yet (notification fires when compute finishes).
-        return True, True, False, no_update
+        return True, True, False, no_update, job_ref.as_dict()
 
     # The per-tab clientside ``window.open`` that used to live here is
     # gone — it was a duplicate of the one in within_run.py and the

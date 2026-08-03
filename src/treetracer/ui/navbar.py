@@ -86,22 +86,19 @@ def add_navbar():
                     dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
-                    # RF/MDS job identities and two-phase terminal delivery.
-                    # The poll callback writes the applied marker atomically
-                    # with the visible result; only then does the ack callback
-                    # release the server-side sticky terminal event.
+                    # Per-workflow job identities and shared two-phase terminal
+                    # delivery. The poll that renders a terminal result writes
+                    # an applied marker; only then does the acknowledgement
+                    # callback release the server-side sticky event.
                     dcc.Store(id="rf-job-store", storage_type="memory"),
                     dcc.Store(id="mds-job-store", storage_type="memory"),
-                    dcc.Store(id="rf-mds-applied-job-store", storage_type="memory"),
-                    dcc.Store(id="rf-mds-job-ack-store", storage_type="memory"),
-                    # consensus tree computation polls on its OWN interval. Dash derives an
-                    # allow_duplicate output's disambiguation hash from the
-                    # callback's Input signature (dash/_utils.py), so sharing
-                    # ``compute-poll-interval`` between the RF/MDS poll and the
-                    # consensus tree poll makes them collide on the shared
-                    # ``compute-poll-interval.disabled`` /
-                    # ``notifications-container.children`` outputs. A dedicated
-                    # interval gives ``poll_consensus_tree_completion`` a distinct Input.
+                    dcc.Store(id="pseudo-ess-job-store", storage_type="memory"),
+                    dcc.Store(id="consensus-job-store", storage_type="memory"),
+                    dcc.Store(id="compute-applied-job-store", storage_type="memory"),
+                    dcc.Store(id="compute-job-ack-store", storage_type="memory"),
+                    # Consensus trees keep a dedicated cadence because their
+                    # overlay and button lifecycle can stop independently of
+                    # the shared RF/MDS/Pseudo-ESS interval.
                     dcc.Interval(id="consensus-tree-poll-interval", interval=100, disabled=True),
                     # Path to the RF worker's sidecar progress file
                     # (``<save_path>.progress``). Set by

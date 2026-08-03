@@ -634,15 +634,21 @@ def register_sidebar_callbacks():
         Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
         Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
-        # RF/MDS lifecycle state. Clear the browser identities together with
-        # the server-side job record so no terminal replay can resurrect data.
+        # Managed-compute lifecycle state. Clear every browser identity together
+        # with the server-side job record so no terminal replay can resurrect
+        # data after the reset.
         Output("rf-job-store", "data", allow_duplicate=True),
         Output("mds-job-store", "data", allow_duplicate=True),
-        Output("rf-mds-applied-job-store", "data", allow_duplicate=True),
-        Output("rf-mds-job-ack-store", "data", allow_duplicate=True),
+        Output("pseudo-ess-job-store", "data", allow_duplicate=True),
+        Output("consensus-job-store", "data", allow_duplicate=True),
+        Output("compute-applied-job-store", "data", allow_duplicate=True),
+        Output("compute-job-ack-store", "data", allow_duplicate=True),
         Output("rf-progress-path", "data", allow_duplicate=True),
         Output("mds-progress-path", "data", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
+        Output("treespace-loading-overlay", "visible", allow_duplicate=True),
+        Output("within-run-loading-overlay", "visible", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -739,10 +745,15 @@ def register_sidebar_callbacks():
                 {"display": "none"},  # clade-freq-output-paper.style
                 None,            # rf-job-store
                 None,            # mds-job-store
-                None,            # rf-mds-applied-job-store
-                None,            # rf-mds-job-ack-store
+                None,            # pseudo-ess-job-store
+                None,            # consensus-job-store
+                None,            # compute-applied-job-store
+                None,            # compute-job-ack-store
                 None,            # rf-progress-path
                 None,            # mds-progress-path
                 True,            # compute-poll-interval disabled
+                True,            # consensus-tree-poll-interval disabled
+                False,           # treespace-loading-overlay visible
+                False,           # within-run-loading-overlay visible
             )
-        return (no_update,) * 40
+        return (no_update,) * 45

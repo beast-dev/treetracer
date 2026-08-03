@@ -14,7 +14,7 @@ def _add_within_run_panel():
     return html.Div([
         # consensus-tree-compute loading overlay — see treespace panel for the
         # full pattern. Toggled by ``view_consensus_tree`` (on) and
-        # ``consensus_tree_compute.poll_consensus_tree_completion`` (off).
+        # the consensus terminal presentation adapter (off).
         dmc.LoadingOverlay(
             id="within-run-loading-overlay",
             visible=False,

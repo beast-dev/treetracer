@@ -1,4 +1,4 @@
-"""Managed consensus-tree dispatch, publication, and terminal polling.
+"""Managed consensus-tree dispatch, publication, and terminal presentation.
 
 Both the Between-run (``treespace``) and Within-run (``within_run``)
 tabs have a "View consensus tree" button. They used to each call
@@ -10,10 +10,9 @@ This module factors out the shared pieces so both tabs:
 
 * Click → enqueue a consensus tree compute job on the persistent worker, show a
   loading overlay over the active tab, disable the View consensus tree button.
-* Wait → a dedicated interval reads a sticky ``JobManager`` snapshot. The
-  success finalizer caches the NEXUS bytes and registers the tree exactly once;
-  polling only renders the retained terminal payload and routes it to the
-  originating tab.
+* Wait → the shared reconciler publishes a sticky terminal event. The success
+  finalizer caches the NEXUS bytes and registers the tree exactly once; this
+  module only renders a matching event and routes it to the originating tab.
 
 The per-tab callbacks ``view_consensus_tree`` in ``treespace.py`` and
 ``within_run.py`` shrink to ~30 lines each — they're only responsible
@@ -36,7 +35,11 @@ from ..background_jobs import JobRef, JobState, job_manager
 from ..logger import add_log
 from ..consensus_tree import extract_log_posterior
 from . import persistent_worker
-from .compute import _get_executor, _job_ref_from_store
+from .compute import _get_executor
+from .job_reconcile import (
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 _TREESPACE_TARGET = "treespace-view-consensus-tree-store"
@@ -172,12 +175,12 @@ def submit_consensus_tree_job(
             re-create the orange selection ring.
         run: the run/group name for Within mode, else ``None``.
         consensus_tree_coord_by_tree_name: ``{tree_name: (group, treenum)}`` —
-            consulted by the polling callback to populate
+            consulted by the terminal presentation adapter to populate
             ``consensus_tree.treenum`` (used to put the green ring on the
             consensus tree's MDS dot).
         store_target: ``"treespace-view-consensus-tree-store"`` or
-            ``"within-run-view-consensus-tree-store"`` — tells the polling
-            callback which tab's clientside ``window.open`` to fire.
+            ``"within-run-view-consensus-tree-store"`` — tells the terminal
+            adapter which tab's clientside ``window.open`` to fire.
     """
     if not matched_records:
         raise ValueError("matched_records must not be empty")
@@ -274,55 +277,48 @@ def register_consensus_tree_compute_callbacks():
         # Both overlays are dismissed in case the user changed tabs.
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
-        # Only the originating button is re-enabled.
-        Output("treespace-view-consensus-tree", "disabled", allow_duplicate=True),
-        Output("within-run-view-consensus-tree", "disabled", allow_duplicate=True),
         # The originating selection is cleared on success.
         Output("treespace-selected-trees-store", "data", allow_duplicate=True),
         Output("within-run-selected-trees-store", "data", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
-        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
-        Output("compute-applied-job-store", "data", allow_duplicate=True),
-        Input("consensus-tree-poll-interval", "n_intervals"),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "consensus"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
         Input("consensus-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_consensus_tree_completion(n_intervals, job_data):
-        ref = _job_ref_from_store(job_data, expected_kind="consensus")
-        if ref is None:
-            return (no_update,) * 12
+    def render_consensus_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="consensus",
+        )
+        if event is None:
+            return (no_update,) * 9
 
-        snapshot = job_manager.snapshot_for_delivery(ref)
-        if snapshot is None or snapshot.acknowledged:
-            return (no_update,) * 12
-        if snapshot.terminal is None:
-            return (no_update,) * 12
-
-        terminal = snapshot.terminal
-        payload = terminal.payload
-        store_target = snapshot.metadata.get("store_target")
+        ref = JobRef.from_dict(event)
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        store_target = event["metadata"].get("store_target")
+        first_delivery = int(event["delivery_attempt"]) == 1
 
         out_treespace_store = no_update
         out_within_store = no_update
         out_registry = no_update
         out_treespace_overlay = False
         out_within_overlay = False
-        out_treespace_btn = no_update
-        out_within_btn = no_update
         out_treespace_sel = no_update
         out_within_sel = no_update
-        if store_target == _TREESPACE_TARGET:
-            out_treespace_btn = False
-        elif store_target == _WITHIN_RUN_TARGET:
-            out_within_btn = False
 
         notif = no_update
-        if terminal.state is JobState.CANCELLED:
-            if snapshot.delivery_attempt == 1:
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
                 add_log("Consensus tree computation cancelled by user.", "WARNING")
-        elif terminal.state is JobState.FAILED:
+        elif terminal_state is JobState.FAILED:
             message = str(payload.get("message", "Unknown error"))
-            if snapshot.delivery_attempt == 1:
+            if first_delivery:
                 add_log(f"Consensus tree computation failed: {message}", "ERROR")
             notif = dmc.Notification(
                 title="Consensus tree Error",
@@ -359,11 +355,8 @@ def register_consensus_tree_compute_callbacks():
             out_registry,
             out_treespace_overlay,
             out_within_overlay,
-            out_treespace_btn,
-            out_within_btn,
             out_treespace_sel,
             out_within_sel,
             notif,
-            True,
-            snapshot.terminal_delivery_marker(),
+            terminal_delivery_marker(event),
         )

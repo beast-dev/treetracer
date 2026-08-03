@@ -63,7 +63,8 @@ def compute_rf_worker_entry(
             Defaults to True for backward compatibility with the
             previous always-rooted behaviour.
 
-    Returns a dict consumed by ``poll_completion`` in callbacks/compute.py.
+    Returns a dict finalized by the managed job wrapper; the central
+    reconciler later delivers only its small terminal payload to the browser.
     """
     t0 = time.time()
 
@@ -138,8 +139,8 @@ def compute_rf_worker_entry(
     # When ``progress_path`` is set, share a ``ProgressCounter`` with the
     # rayon workers via the new rapidtrees 0.6 API, and run a daemon
     # thread that mirrors the counter state into a small JSON sidecar
-    # file. The parent's Dash poll callback reads this file every ~100ms
-    # to drive a progress bar — no IPC changes needed.
+    # file. The parent's central reconciler samples it every 250ms to drive a
+    # progress bar — no IPC changes needed.
     counter = None
     stop_event: Optional[threading.Event] = None
     writer: Optional[threading.Thread] = None

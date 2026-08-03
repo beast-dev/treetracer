@@ -14,6 +14,7 @@ from treetracer.background_jobs import JobManager, JobState
 from treetracer.callbacks import (
     compute,
     consensus_tree_compute,
+    job_reconcile,
     pseudo_ess_compute,
     sidebar,
 )
@@ -98,22 +99,26 @@ def test_pseudo_ess_submit_and_terminal_ui_replay_until_ack(monkeypatch):
     assert terminal.state is JobState.SUCCEEDED
     assert terminal.terminal.payload["n_rows"] == 1
 
-    poll = _registered_callback(
-        "poll_pseudo_ess_completion",
+    render = _registered_callback(
+        "render_pseudo_ess_terminal_event",
         pseudo_ess_compute.register_pseudo_ess_compute_callbacks,
     )
-    first = poll(10, ref.as_dict())
-    second = poll(11, ref.as_dict())
+    first_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    second_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    first = render(first_event, ref.as_dict())
+    second = render(second_event, ref.as_dict())
 
-    assert len(first) == 4
-    assert first[1] is False
-    assert first[2] is True
-    assert first[3]["terminal_revision"] == terminal.terminal.revision
-    assert first[3]["delivery_attempt"] == 1
-    assert second[3]["delivery_attempt"] == 2
+    assert len(first) == 2
+    assert first[1]["terminal_revision"] == terminal.terminal.revision
+    assert first[1]["delivery_attempt"] == 1
+    assert second[1]["delivery_attempt"] == 2
     assert manager.snapshot(ref).acknowledged is False
 
-    assert compute._ack_applied_job(second[3]) is True
+    assert manager.acknowledge(ref, second[1]["terminal_revision"]) is True
     assert manager.snapshot(ref).acknowledged is True
     assert manager.active_ref() is None
 
@@ -189,14 +194,20 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
     assert "nexus_bytes" not in terminal.terminal.payload
     assert "counts" not in terminal.terminal.payload
 
-    poll = _registered_callback(
-        "poll_consensus_tree_completion",
+    render = _registered_callback(
+        "render_consensus_terminal_event",
         consensus_tree_compute.register_consensus_tree_compute_callbacks,
     )
-    first = poll(10, ref.as_dict())
-    second = poll(11, ref.as_dict())
+    first_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    second_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    first = render(first_event, ref.as_dict())
+    second = render(second_event, ref.as_dict())
 
-    assert len(first) == 12
+    assert len(first) == 9
     assert first[0] == {
         "uuid": "tree-uuid",
         "name": "RF_001_Between_consensus_tree_1",
@@ -204,16 +215,14 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
     assert first[1] is no_update
     assert first[2] == registry
     assert first[3:5] == (False, False)
-    assert first[5] is False
+    assert first[5] == []
     assert first[6] is no_update
-    assert first[7] == []
-    assert first[10] is True
-    assert first[11]["delivery_attempt"] == 1
-    assert second[11]["delivery_attempt"] == 2
+    assert first[8]["delivery_attempt"] == 1
+    assert second[8]["delivery_attempt"] == 2
     assert len(cache_calls) == 1
     assert len(register_calls) == 1
 
-    assert compute._ack_applied_job(second[11]) is True
+    assert manager.acknowledge(ref, second[8]["terminal_revision"]) is True
     assert manager.snapshot(ref).acknowledged is True
 
 
@@ -254,17 +263,19 @@ def test_consensus_finalization_failure_reenables_origin_button(monkeypatch):
     assert terminal.terminal.payload["stage"] == "finalize"
     assert "Taxon A, Taxon C" in terminal.terminal.payload["message"]
 
-    poll = _registered_callback(
-        "poll_consensus_tree_completion",
+    render = _registered_callback(
+        "render_consensus_terminal_event",
         consensus_tree_compute.register_consensus_tree_compute_callbacks,
     )
-    output = poll(1, ref.as_dict())
+    event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    output = render(event, ref.as_dict())
     assert output[3:5] == (False, False)
     assert output[5] is no_update
-    assert output[6] is False
-    assert output[10] is True
-    assert output[11]["job_id"] == ref.job_id
-    assert output[9].id == f"consensus-terminal-{ref.job_id}"
+    assert output[6] is no_update
+    assert output[8]["job_id"] == ref.job_id
+    assert output[7].id == f"consensus-terminal-{ref.job_id}"
 
 
 def test_clear_data_idle_branch_matches_managed_lifecycle_outputs():
@@ -272,4 +283,4 @@ def test_clear_data_idle_branch_matches_managed_lifecycle_outputs():
         "clear_uploads",
         sidebar.register_sidebar_callbacks,
     )
-    assert len(clear_uploads(None)) == 48
+    assert len(clear_uploads(None)) == 44

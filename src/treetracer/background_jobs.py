@@ -1,10 +1,10 @@
 """Thread-safe lifecycle state for background compute jobs.
 
-The Dash UI polls long-running RF, MDS, Pseudo-ESS, and consensus-tree
-computations.  A completed job must not become a one-shot event: an HTTP
-response can be superseded before the browser applies it.  ``JobManager``
-therefore keeps terminal state until the matching browser generation
-acknowledges it.
+The Dash UI reconciles RF, MDS, Pseudo-ESS, consensus-tree, RF Trace, and
+clade-comparison computations through one polling owner. A completed job must
+not become a one-shot event: an HTTP response can be superseded before the
+browser applies it. ``JobManager`` therefore keeps terminal state until the
+matching browser generation acknowledges it.
 
 This module deliberately has no Dash or worker imports.  Job-specific code
 submits work with a success finalizer that performs its domain side effects
@@ -116,7 +116,7 @@ class TerminalEvent:
 
 @dataclass(frozen=True, slots=True)
 class JobSnapshot:
-    """Immutable point-in-time view returned to poll callbacks."""
+    """Immutable point-in-time view returned to the reconciler."""
 
     ref: JobRef
     state: JobState

@@ -640,21 +640,17 @@ def register_sidebar_callbacks():
         Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
         Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
-        # Managed-compute lifecycle state. Clear every browser identity together
-        # with the server-side job record so no terminal replay can resurrect
-        # data after the reset.
+        # Clear every browser job identity with the server-side record. Those
+        # store changes wake the central reconciler, which alone settles its
+        # interval and busy state after reset.
         Output("rf-job-store", "data", allow_duplicate=True),
         Output("mds-job-store", "data", allow_duplicate=True),
         Output("pseudo-ess-job-store", "data", allow_duplicate=True),
         Output("consensus-job-store", "data", allow_duplicate=True),
         Output("rf-trace-job-store", "data", allow_duplicate=True),
         Output("clade-freq-job-store", "data", allow_duplicate=True),
-        Output("compute-applied-job-store", "data", allow_duplicate=True),
-        Output("compute-job-ack-store", "data", allow_duplicate=True),
         Output("rf-progress-path", "data", allow_duplicate=True),
         Output("mds-progress-path", "data", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Output("consensus-tree-poll-interval", "disabled", allow_duplicate=True),
         Output("treespace-loading-overlay", "visible", allow_duplicate=True),
         Output("within-run-loading-overlay", "visible", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
@@ -664,8 +660,8 @@ def register_sidebar_callbacks():
         if n_clicks:
             add_log("Data cleared")
             # Cancel any in-flight subprocess job — descriptors point
-            # into the DB we're about to wipe, and we don't want the
-            # poll callbacks to write results based on stale state.
+            # into the DB we're about to wipe, and we don't want a late
+            # finalizer to publish results into freshly cleared state.
             from . import compute
             resetters = (("managed", compute.reset),)
             for label, resetter in resetters:
@@ -755,13 +751,9 @@ def register_sidebar_callbacks():
                 None,            # consensus-job-store
                 None,            # rf-trace-job-store
                 None,            # clade-freq-job-store
-                None,            # compute-applied-job-store
-                None,            # compute-job-ack-store
                 None,            # rf-progress-path
                 None,            # mds-progress-path
-                True,            # compute-poll-interval disabled
-                True,            # consensus-tree-poll-interval disabled
                 False,           # treespace-loading-overlay visible
                 False,           # within-run-loading-overlay visible
             )
-        return (no_update,) * 48
+        return (no_update,) * 44

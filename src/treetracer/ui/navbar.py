@@ -84,32 +84,79 @@ def add_navbar():
                     # scatter-click state, kept server-side-friendly.
                     dcc.Store(id="clade-freq-data-store", storage_type="memory"),
                     dcc.Store(id="clade-freq-click-store", storage_type="memory"),
-                    # Background computation polling
-                    dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
-                    # Per-workflow job identities and shared two-phase terminal
-                    # delivery. The poll that renders a terminal result writes
-                    # an applied marker; only then does the acknowledgement
-                    # callback release the server-side sticky event.
+                    # One shared reconciliation cadence for every serialized
+                    # background computation. It is enabled only while a
+                    # managed job is awaiting completion or UI receipt.
+                    dcc.Interval(
+                        id="compute-poll-interval",
+                        interval=250,
+                        disabled=True,
+                    ),
+                    # Per-workflow immutable job identities wake the central
+                    # reconciler immediately after a successful submission.
                     dcc.Store(id="rf-job-store", storage_type="memory"),
                     dcc.Store(id="mds-job-store", storage_type="memory"),
                     dcc.Store(id="pseudo-ess-job-store", storage_type="memory"),
                     dcc.Store(id="consensus-job-store", storage_type="memory"),
                     dcc.Store(id="rf-trace-job-store", storage_type="memory"),
                     dcc.Store(id="clade-freq-job-store", storage_type="memory"),
-                    dcc.Store(id="compute-applied-job-store", storage_type="memory"),
+                    # The reconciler publishes one generic terminal envelope.
+                    # Feature adapters render it only when its generation
+                    # matches their current job store, then atomically write a
+                    # dedicated receipt with the terminal UI.
+                    dcc.Store(
+                        id="compute-terminal-event-store",
+                        storage_type="memory",
+                    ),
+                    dcc.Store(
+                        id="compute-busy-store",
+                        storage_type="memory",
+                        data={"busy": False},
+                    ),
                     dcc.Store(id="compute-job-ack-store", storage_type="memory"),
+                    dcc.Store(
+                        id={
+                            "type": "compute-terminal-receipt",
+                            "kind": "rf-mds",
+                        },
+                        storage_type="memory",
+                    ),
+                    dcc.Store(
+                        id={
+                            "type": "compute-terminal-receipt",
+                            "kind": "pseudo-ess",
+                        },
+                        storage_type="memory",
+                    ),
+                    dcc.Store(
+                        id={
+                            "type": "compute-terminal-receipt",
+                            "kind": "consensus",
+                        },
+                        storage_type="memory",
+                    ),
+                    dcc.Store(
+                        id={
+                            "type": "compute-terminal-receipt",
+                            "kind": "rf-trace",
+                        },
+                        storage_type="memory",
+                    ),
+                    dcc.Store(
+                        id={
+                            "type": "compute-terminal-receipt",
+                            "kind": "clade-compare",
+                        },
+                        storage_type="memory",
+                    ),
                     # Resolves scatter split IDs through the matching server-side
                     # managed comparison result; avoids shipping tip sets through
                     # browser JSON or decoding the full snapshot on click.
                     dcc.Store(id="clade-freq-result-key-store", storage_type="memory"),
-                    # Consensus trees keep a dedicated cadence because their
-                    # overlay and button lifecycle can stop independently of
-                    # the shared RF/MDS/Pseudo-ESS interval.
-                    dcc.Interval(id="consensus-tree-poll-interval", interval=100, disabled=True),
                     # Path to the RF worker's sidecar progress file
                     # (``<save_path>.progress``). Set by
                     # ``handle_compute_rf`` when an RF compute starts;
-                    # consumed by ``update_rf_progress`` to drive the
+                    # consumed by the central job reconciler to drive the
                     # progress bar inside the computing banner.
                     dcc.Store(id="rf-progress-path", storage_type="memory"),
                     # Same sidecar-progress pattern for MDS/PCoA. This

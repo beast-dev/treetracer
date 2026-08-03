@@ -13,7 +13,7 @@ import pytest
 
 from treetracer import state
 from treetracer.background_jobs import JobManager, JobState
-from treetracer.callbacks import clade_explore, compute, diagnostics
+from treetracer.callbacks import clade_explore, diagnostics, job_reconcile
 from treetracer.clade_freq._subprocess_worker import (
     compute_clade_frequencies_worker_entry,
 )
@@ -132,7 +132,6 @@ def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):
     )
     fake_figure = SimpleNamespace(to_dict=lambda: {"data": [], "layout": {}})
     monkeypatch.setattr(diagnostics, "job_manager", manager)
-    monkeypatch.setattr(compute, "job_manager", manager)
     monkeypatch.setattr(diagnostics, "add_log", lambda *_a, **_k: None)
     monkeypatch.setattr(
         diagnostics,
@@ -176,21 +175,25 @@ def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):
     cached = state.get_rf_trace_result(ref.job_id)
     assert [row["rf_distance"] for row in cached["records"]] == [4, 8]
 
-    poll = _registered_callback(
-        "poll_rf_trace_completion",
+    render = _registered_callback(
+        "render_rf_trace_terminal_event",
         diagnostics.register_diagnostics_callbacks,
     )
-    first = poll(1, ref.as_dict())
-    second = poll(2, ref.as_dict())
-    assert len(first) == 7
+    first_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    second_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    first = render(first_event, ref.as_dict())
+    second = render(second_event, ref.as_dict())
+    assert len(first) == 5
     assert len(first[1]) == 2
     assert first[3] is False
-    assert first[4] is False
-    assert first[5] is True
-    assert first[6]["delivery_attempt"] == 1
-    assert second[6]["delivery_attempt"] == 2
+    assert first[4]["delivery_attempt"] == 1
+    assert second[4]["delivery_attempt"] == 2
 
-    assert compute._ack_applied_job(second[6]) is True
+    assert manager.acknowledge(ref, second[4]["terminal_revision"]) is True
     assert manager.snapshot(ref).acknowledged is True
 
 
@@ -204,8 +207,8 @@ def test_stage_four_submit_callbacks_have_matching_idle_output_shapes():
         clade_explore.register_clade_explore_callbacks,
     )
 
-    assert len(rf_submit(None, None, None, None, None, None, None)) == 6
-    assert len(clade_submit(None, None, None, None, None)) == 8
+    assert len(rf_submit(None, None, None, None, None, None)) == 5
+    assert len(clade_submit(None, None, None, None)) == 7
 
 
 def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
@@ -214,7 +217,6 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
     manager = JobManager(id_factory=lambda: "clade-test-job")
     fake_figure = SimpleNamespace(to_dict=lambda: {"data": [], "layout": {}})
     monkeypatch.setattr(clade_explore, "job_manager", manager)
-    monkeypatch.setattr(compute, "job_manager", manager)
     monkeypatch.setattr(clade_explore, "add_log", lambda *_a, **_k: None)
     monkeypatch.setattr(
         clade_explore,
@@ -281,21 +283,25 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
         expected_pair=("uid-b", "uid-a"),
     ) is None
 
-    poll = _registered_callback(
-        "poll_clade_frequency_completion",
+    render = _registered_callback(
+        "render_clade_frequency_terminal_event",
         clade_explore.register_clade_explore_callbacks,
     )
-    first = poll(1, ref.as_dict())
-    second = poll(2, ref.as_dict())
-    assert len(first) == 8
+    first_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    second_event = job_reconcile._terminal_envelope(
+        manager.snapshot_for_delivery(ref)
+    )
+    first = render(first_event, ref.as_dict())
+    second = render(second_event, ref.as_dict())
+    assert len(first) == 6
     assert len(first[1]) == 2
     assert first[2] == {}
-    assert first[3] is False
-    assert first[4] is True
-    assert first[5] == ref.job_id
-    assert first[6] is None
-    assert first[7]["delivery_attempt"] == 1
-    assert second[7]["delivery_attempt"] == 2
+    assert first[3] == ref.job_id
+    assert first[4] is None
+    assert first[5]["delivery_attempt"] == 1
+    assert second[5]["delivery_attempt"] == 2
 
-    assert compute._ack_applied_job(second[7]) is True
+    assert manager.acknowledge(ref, second[5]["terminal_revision"]) is True
     assert manager.snapshot(ref).acknowledged is True

@@ -26,7 +26,12 @@ from ..theme import get_template, DARK_TEMPLATE
 from ..plot_utils import retheme_figure
 from ..ui.widgets import stop_button
 from . import persistent_worker
-from .compute import _get_executor, _job_ref_from_store
+from .compute import _get_executor
+from .job_reconcile import (
+    is_compute_busy,
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -931,10 +936,11 @@ def register_clade_explore_callbacks():
         Output("clade-freq-compare-button", "disabled"),
         Input("clade-freq-consensus-tree-select-1", "value"),
         Input("clade-freq-consensus-tree-select-2", "value"),
+        Input("compute-busy-store", "data"),
     )
-    def toggle_compare_button(uid1, uid2):
+    def toggle_compare_button(uid1, uid2, compute_busy):
         """Enable the Compare button only when both dropdowns have a selection."""
-        return not (uid1 and uid2)
+        return bool(is_compute_busy(compute_busy) or not (uid1 and uid2))
 
     # ------ Clade Frequency Comparison: compute and plot ------
 
@@ -943,7 +949,6 @@ def register_clade_explore_callbacks():
         Output("clade-freq-data-store", "data", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
         Output("clade-freq-compare-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("clade-freq-job-store", "data"),
         Output("clade-freq-result-key-store", "data", allow_duplicate=True),
         Output("clade-freq-click-store", "data", allow_duplicate=True),
@@ -951,7 +956,6 @@ def register_clade_explore_callbacks():
         State("clade-freq-consensus-tree-select-1", "value"),
         State("clade-freq-consensus-tree-select-2", "value"),
         State("clade-freq-min-clade-size", "value"),
-        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def compute_and_plot_clade_frequencies(
@@ -959,15 +963,10 @@ def register_clade_explore_callbacks():
         uid1,
         uid2,
         min_clade_size,
-        applied_job,
     ):
         """Prepare and submit a selective, process-isolated comparison."""
-        from .compute import _ack_applied_job
-
         if not n_clicks or not uid1 or not uid2:
-            return (no_update,) * 8
-
-        _ack_applied_job(applied_job)
+            return (no_update,) * 7
 
         def error(message):
             return (
@@ -975,7 +974,6 @@ def register_clade_explore_callbacks():
                 no_update,
                 {},
                 False,
-                no_update,
                 no_update,
                 no_update,
                 no_update,
@@ -1095,7 +1093,6 @@ def register_clade_explore_callbacks():
             None,
             {},
             True,
-            False,
             job_ref.as_dict(),
             None,
             None,
@@ -1105,33 +1102,32 @@ def register_clade_explore_callbacks():
         Output("clade-freq-plot", "children", allow_duplicate=True),
         Output("clade-freq-data-store", "data", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
-        Output("clade-freq-compare-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("clade-freq-result-key-store", "data", allow_duplicate=True),
         Output("clade-freq-click-store", "data", allow_duplicate=True),
-        Output("compute-applied-job-store", "data", allow_duplicate=True),
-        Input("compute-poll-interval", "n_intervals"),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "clade-compare"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
         Input("clade-freq-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_clade_frequency_completion(_n_intervals, job_data):
-        ref = _job_ref_from_store(job_data, expected_kind="clade_compare")
-        if ref is None:
-            return (no_update,) * 8
-        snapshot = job_manager.snapshot_for_delivery(ref)
-        if (
-            snapshot is None
-            or snapshot.acknowledged
-            or snapshot.terminal is None
-        ):
-            return (no_update,) * 8
+    def render_clade_frequency_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="clade_compare",
+        )
+        if event is None:
+            return (no_update,) * 6
 
-        terminal = snapshot.terminal
-        payload = terminal.payload
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        first_delivery = int(event["delivery_attempt"]) == 1
         store_data = no_update
         result_key = no_update
-        if terminal.state is JobState.CANCELLED:
-            if snapshot.delivery_attempt == 1:
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
                 add_log("Clade comparison cancelled by user.", "WARNING")
             output = dmc.Alert(
                 title="Clade comparison cancelled",
@@ -1139,9 +1135,9 @@ def register_clade_explore_callbacks():
                 color="gray",
                 variant="light",
             )
-        elif terminal.state is JobState.FAILED:
+        elif terminal_state is JobState.FAILED:
             message = str(payload.get("message", "Unknown error"))
-            if snapshot.delivery_attempt == 1:
+            if first_delivery:
                 add_log(f"Clade comparison failed: {message}", "ERROR")
             output = dmc.Text(
                 f"Error computing clade frequencies: {message}",
@@ -1173,11 +1169,9 @@ def register_clade_explore_callbacks():
             output,
             store_data,
             {},
-            False,
-            True,
             result_key,
             None,
-            snapshot.terminal_delivery_marker(),
+            terminal_delivery_marker(event),
         )
 
     @callback(

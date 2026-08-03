@@ -15,7 +15,7 @@ def _add_treespace_panel():
     return html.Div([
         # consensus-tree-compute loading overlay. Visible=True flipped on by
         # ``view_consensus_tree`` (click handler), back to False by
-        # ``consensus_tree_compute.poll_consensus_tree_completion``. Position relative on the
+        # consensus terminal presentation adapter. Position relative on the
         # wrapping Div lets the overlay sit on top.
         dmc.LoadingOverlay(
             id="treespace-loading-overlay",

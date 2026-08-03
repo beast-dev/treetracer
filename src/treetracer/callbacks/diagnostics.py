@@ -19,7 +19,12 @@ from .. import state
 from ..theme import get_template
 from ..ui.widgets import stop_button
 from . import persistent_worker
-from .compute import _get_executor, _job_ref_from_store
+from .compute import _get_executor
+from .job_reconcile import (
+    is_compute_busy,
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 def _build_rf_trace_fig(trace_df, ref_group, ref_position, burnin=0):
@@ -450,11 +455,27 @@ def register_diagnostics_callbacks():
         return group_options, default_group
 
     @callback(
+        Output("compute-rf-trace-button", "disabled"),
+        Input("diagnostics-distmat-select", "value"),
+        Input("rf-reference-group-select", "value"),
+        Input("compute-busy-store", "data"),
+    )
+    def toggle_compute_rf_trace_button(
+        selected_matrix,
+        reference_group,
+        compute_busy,
+    ):
+        return bool(
+            is_compute_busy(compute_busy)
+            or not selected_matrix
+            or not reference_group
+        )
+
+    @callback(
         Output("rf-trace-plot", "children", allow_duplicate=True),
         Output("rf-trace-store", "data", allow_duplicate=True),
         Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("rf-trace-job-store", "data"),
         Input("compute-rf-trace-button", "n_clicks"),
         State("rf-reference-group-select", "value"),
@@ -462,7 +483,6 @@ def register_diagnostics_callbacks():
         State("distmat-store", "data"),
         State("diagnostics-distmat-select", "value"),
         State("rf-burnin-input", "value"),
-        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def compute_rf_trace(
@@ -472,15 +492,10 @@ def register_diagnostics_callbacks():
         stored_distmats,
         selected_matrix,
         burnin,
-        applied_job,
     ):
         """Validate and submit a memory-mapped RF-trace row extraction."""
-        from .compute import _ack_applied_job
-
         if not n_clicks:
-            return (no_update,) * 6
-
-        _ack_applied_job(applied_job)
+            return (no_update,) * 5
 
         if not ref_group:
             return (
@@ -489,19 +504,18 @@ def register_diagnostics_callbacks():
                 False,
                 no_update,
                 no_update,
-                no_update,
             )
 
         if not stored_distmats:
             return (
                 dmc.Text("Please compute RF distances first (Distances tab).", c="red"),
-                no_update, False, no_update, no_update, no_update,
+                no_update, False, no_update, no_update,
             )
 
         if not selected_matrix or selected_matrix not in stored_distmats:
             return (
                 dmc.Text("Please pick an RF matrix at the top of the page.", c="red"),
-                no_update, False, no_update, no_update, no_update,
+                no_update, False, no_update, no_update,
             )
 
         try:
@@ -517,7 +531,6 @@ def register_diagnostics_callbacks():
                 dmc.Text(str(exc), c="red"),
                 no_update,
                 False,
-                no_update,
                 no_update,
                 no_update,
             )
@@ -571,7 +584,6 @@ def register_diagnostics_callbacks():
                 False,
                 no_update,
                 no_update,
-                no_update,
             )
 
         spinner = dmc.Group(
@@ -591,7 +603,6 @@ def register_diagnostics_callbacks():
             None,
             True,
             True,
-            False,
             job_ref.as_dict(),
         )
 
@@ -600,33 +611,33 @@ def register_diagnostics_callbacks():
         Output("rf-trace-store", "data", allow_duplicate=True),
         Output("notifications-container", "children", allow_duplicate=True),
         Output("export-rf-trace-button", "disabled", allow_duplicate=True),
-        Output("compute-rf-trace-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Output("compute-applied-job-store", "data", allow_duplicate=True),
-        Input("compute-poll-interval", "n_intervals"),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "rf-trace"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
         Input("rf-trace-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_rf_trace_completion(_n_intervals, job_data):
-        ref = _job_ref_from_store(job_data, expected_kind="rf_trace")
-        if ref is None:
-            return (no_update,) * 7
-        snapshot = job_manager.snapshot_for_delivery(ref)
-        if (
-            snapshot is None
-            or snapshot.acknowledged
-            or snapshot.terminal is None
-        ):
-            return (no_update,) * 7
+    def render_rf_trace_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="rf_trace",
+        )
+        if event is None:
+            return (no_update,) * 5
 
-        terminal = snapshot.terminal
-        payload = terminal.payload
+        ref = JobRef.from_dict(event)
+        terminal_state = JobState(str(event["state"]))
+        payload = event["payload"]
+        first_delivery = int(event["delivery_attempt"]) == 1
         notification = no_update
         store_data = no_update
         export_disabled = True
 
-        if terminal.state is JobState.CANCELLED:
-            if snapshot.delivery_attempt == 1:
+        if terminal_state is JobState.CANCELLED:
+            if first_delivery:
                 add_log("RF Trace computation cancelled by user.", "WARNING")
             output = dmc.Alert(
                 title="RF Trace computation cancelled",
@@ -634,9 +645,9 @@ def register_diagnostics_callbacks():
                 color="gray",
                 variant="light",
             )
-        elif terminal.state is JobState.FAILED:
+        elif terminal_state is JobState.FAILED:
             message = str(payload.get("message", "Unknown error"))
-            if snapshot.delivery_attempt == 1:
+            if first_delivery:
                 add_log(f"RF Trace computation failed: {message}", "ERROR")
             output = dmc.Text(
                 f"RF Trace computation failed: {message}",
@@ -683,9 +694,7 @@ def register_diagnostics_callbacks():
             store_data,
             notification,
             export_disabled,
-            False,
-            True,
-            snapshot.terminal_delivery_marker(),
+            terminal_delivery_marker(event),
         )
 
     # Re-render RF trace plot when burnin changes
@@ -836,27 +845,23 @@ def register_diagnostics_callbacks():
         Output("compute-pseudo-ess-button", "disabled"),
         Input("diagnostics-distmat-select", "value"),
         Input({"type": "ess-run-checkbox", "index": ALL}, "checked"),
+        Input("compute-busy-store", "data"),
     )
-    def toggle_compute_pseudo_ess_button(selected_matrix, checks):
+    def toggle_compute_pseudo_ess_button(
+        selected_matrix,
+        checks,
+        compute_busy,
+    ):
         # Disabled until a matrix is selected AND at least one run is checked.
-        if not selected_matrix:
+        if is_compute_busy(compute_busy) or not selected_matrix:
             return True
         if not checks or not any(checks):
             return True
         return False
 
     @callback(
-        # pseudo-ess-output.children + compute-pseudo-ess-button.disabled
-        # are both written from THIS click handler, from
-        # poll_pseudo_ess_completion (pseudo_ess_compute.py), and from
-        # the sidebar's Clear-data handler. Making the click handler
-        # ALSO use allow_duplicate=True means there's no "primary"
-        # for these Outputs — every writer is equal. This avoids the
-        # Dash 4.x output-dispatch quirk where a secondary write can
-        # be dropped if the primary hasn't fired in the same batch.
         Output("pseudo-ess-output", "children", allow_duplicate=True),
         Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("pseudo-ess-job-store", "data"),
         Input("compute-pseudo-ess-button", "n_clicks"),
         State("diagnostics-distmat-select", "value"),
@@ -864,7 +869,6 @@ def register_diagnostics_callbacks():
         State("ess-burnin-input", "value"),
         State({"type": "ess-run-checkbox", "index": ALL}, "checked"),
         State({"type": "ess-run-checkbox", "index": ALL}, "id"),
-        State("compute-applied-job-store", "data"),
         prevent_initial_call=True,
     )
     def compute_pseudo_ess_for_runs(
@@ -874,7 +878,6 @@ def register_diagnostics_callbacks():
         burnin,
         checks,
         ids,
-        applied_job,
     ):
         """Submit a Pseudo-ESS job to the persistent worker.
 
@@ -883,26 +886,18 @@ def register_diagnostics_callbacks():
         worker needs. The actual eigendecomp-heavy ESS compute lives
         in the worker subprocess — see ``ess._subprocess_worker``.
 
-        Returns immediately with a spinner in ``pseudo-ess-output``,
-        the compute button disabled, and the shared poll interval
-        enabled so ``poll_pseudo_ess_completion`` will pick up the
-        worker's response.
+        Returns immediately with a spinner, a disabled originating button,
+        and an immutable job identity that wakes the central reconciler.
         """
         from . import pseudo_ess_compute
-        from .compute import _ack_applied_job
 
         if not n_clicks or not selected_matrix:
-            return (no_update,) * 4
-
-        # The visible terminal result and this marker arrived in one previous
-        # browser response. A fast next click can precede the dedicated ack
-        # callback, so acknowledge it idempotently before requesting a new job.
-        _ack_applied_job(applied_job)
+            return (no_update,) * 3
 
         ticked = [i["index"] for i, c in zip(ids, checks) if c]
         if not ticked:
             return (dmc.Text("No runs selected.", c="dimmed", size="sm"),
-                    no_update, no_update, no_update)
+                    no_update, no_update)
 
         try:
             # Only labels are needed to form per-run row indices. Avoid loading
@@ -911,7 +906,7 @@ def register_diagnostics_callbacks():
         except KeyError:
             return (dmc.Text(f"Matrix {selected_matrix!r} is no longer available.",
                              c="red", size="sm"),
-                    no_update, no_update, no_update)
+                    no_update, no_update)
 
         # Bucket row indices by group prefix once (matrix-row order
         # matches MCMC iteration order within each chain).
@@ -959,11 +954,11 @@ def register_diagnostics_callbacks():
             return (dmc.Text(
                 "Burn-in leaves fewer than 4 trees per run; nothing to compute.",
                 c="dimmed", size="sm",
-            ), no_update, no_update, no_update)
+            ), no_update, no_update)
 
-        # Hand off to the subprocess. The poll callback in
-        # pseudo_ess_compute.py picks up the result and replaces the
-        # spinner with the result table.
+        # Hand off to the subprocess. The central reconciler publishes the
+        # terminal event; pseudo_ess_compute.py replaces the spinner with the
+        # matching result table.
         try:
             job_ref = pseudo_ess_compute.submit_pseudo_ess_job(
                 distmat_path=str(state.get_distmat_file_path(selected_matrix)),
@@ -987,7 +982,6 @@ def register_diagnostics_callbacks():
                 ),
                 False,
                 no_update,
-                no_update,
             )
 
         spinner = dmc.Group([
@@ -999,5 +993,4 @@ def register_diagnostics_callbacks():
             stop_button("ess"),
         ], gap="sm")
 
-        # Spinner, button disabled, polling enabled, and immutable job identity.
-        return spinner, True, False, job_ref.as_dict()
+        return spinner, True, job_ref.as_dict()

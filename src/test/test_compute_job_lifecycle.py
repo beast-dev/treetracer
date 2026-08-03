@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from treetracer.background_jobs import JobManager, JobState
-from treetracer.callbacks import compute
+from treetracer.callbacks import compute, job_reconcile
 
 
 def _wait_for_terminal(manager, ref, timeout=2.0):
@@ -22,7 +22,7 @@ def _wait_for_terminal(manager, ref, timeout=2.0):
     pytest.fail("background job did not become terminal")
 
 
-def _registered_callback(name):
+def _registered_callback(name, register=compute.register_compute_callbacks):
     from dash import _callback
 
     matches = []
@@ -34,12 +34,12 @@ def _registered_callback(name):
         if original.__name__ == name:
             matches.append(original)
     if not matches:
-        compute.register_compute_callbacks()
-        return _registered_callback(name)
+        register()
+        return _registered_callback(name, register)
     return matches[-1]
 
 
-def test_latest_job_ref_uses_generation_and_rejects_invalid_data():
+def test_job_ref_parser_rejects_invalid_and_unknown_kinds():
     rf = {
         "job_id": "rf-job",
         "generation": 4,
@@ -53,13 +53,46 @@ def test_latest_job_ref_uses_generation_and_rejects_invalid_data():
         "owner_id": None,
     }
 
-    assert compute._latest_rf_mds_ref(rf, mds).job_id == "mds-job"
-    assert compute._latest_rf_mds_ref(rf, None).job_id == "rf-job"
-    assert compute._latest_rf_mds_ref({"kind": "rf"}, None) is None
-    assert compute._latest_rf_mds_ref(
-        {**rf, "kind": "pseudo_ess"},
-        None,
+    assert job_reconcile.job_ref_from_store(rf).job_id == "rf-job"
+    assert job_reconcile.job_ref_from_store(mds).job_id == "mds-job"
+    assert job_reconcile.job_ref_from_store({"kind": "rf"}) is None
+    assert job_reconcile.job_ref_from_store(
+        {**rf, "kind": "unknown"},
     ) is None
+
+
+def test_terminal_event_must_match_the_current_browser_generation():
+    old_ref = {
+        "job_id": "old-rf-job",
+        "generation": 4,
+        "kind": "rf",
+        "owner_id": None,
+    }
+    current_ref = {
+        "job_id": "current-rf-job",
+        "generation": 5,
+        "kind": "rf",
+        "owner_id": None,
+    }
+    event = {
+        **old_ref,
+        "state": "succeeded",
+        "terminal_revision": 1,
+        "delivery_attempt": 2,
+        "payload": {},
+        "metadata": {},
+    }
+
+    assert job_reconcile.terminal_event_for_job(
+        event,
+        current_ref,
+        expected_kind="rf",
+    ) is None
+    assert job_reconcile.terminal_event_for_job(
+        event,
+        old_ref,
+        expected_kind="rf",
+    ) == event
 
 
 def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
@@ -74,6 +107,7 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
         }
     }
     monkeypatch.setattr(compute, "job_manager", manager)
+    monkeypatch.setattr(job_reconcile, "job_manager", manager)
     monkeypatch.setattr(compute, "add_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(compute, "_wlog", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -106,25 +140,75 @@ def test_rf_terminal_replays_until_applied_marker_is_acknowledged(monkeypatch):
     assert len(register_calls) == 1
     assert terminal.terminal.payload["distmat_index"] == expected_index
 
-    poll = _registered_callback("poll_completion")
-    acknowledge = _registered_callback("acknowledge_terminal_job")
-    first = poll(10, ref.as_dict(), None, False)
-    second = poll(11, ref.as_dict(), None, False)
+    reconcile = _registered_callback(
+        "reconcile_compute_job",
+        job_reconcile.register_job_reconciliation_callbacks,
+    )
+    render = _registered_callback("render_rf_mds_terminal_event")
+    acknowledge = _registered_callback(
+        "acknowledge_terminal_receipt",
+        job_reconcile.register_job_reconciliation_callbacks,
+    )
 
-    assert len(first) == 16
+    first_reconcile = reconcile(
+        10,
+        ref.as_dict(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        {"busy": False},
+        None,
+        None,
+    )
+    first = render(first_reconcile[1], ref.as_dict(), None, False)
+    second_reconcile = reconcile(
+        11,
+        ref.as_dict(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        first_reconcile[2],
+        None,
+        None,
+    )
+    second = render(second_reconcile[1], ref.as_dict(), None, False)
+
+    assert len(first_reconcile) == 7
+    assert first_reconcile[0] is False
+    assert first_reconcile[2]["busy"] is True
+    assert first_reconcile[3:5] == (100.0, "complete")
+    assert len(first) == 12
     assert first[1] == expected_index
-    assert first[4] is False
-    assert first[11] is True
-    assert first[12]["terminal_revision"] == terminal.terminal.revision
-    assert first[12]["delivery_attempt"] == 1
-    assert second[12]["delivery_attempt"] == 2
+    assert first[2] is False
+    assert first[8]["terminal_revision"] == terminal.terminal.revision
+    assert first[8]["delivery_attempt"] == 1
+    assert second[8]["delivery_attempt"] == 2
     assert len(register_calls) == 1
     assert manager.snapshot(ref).acknowledged is False
 
-    ack_store = acknowledge(second[12])
+    ack_store = acknowledge([second[8], None, None, None, None])
     assert ack_store["acknowledged"] is True
     assert manager.snapshot(ref).acknowledged is True
     assert manager.active_ref() is None
+
+    settled = reconcile(
+        12,
+        ref.as_dict(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        first_reconcile[2],
+        None,
+        None,
+    )
+    assert settled[0] is True
+    assert settled[2] == {"busy": False}
 
 
 def test_mds_finalization_stores_full_result_once_and_replays_small_index(

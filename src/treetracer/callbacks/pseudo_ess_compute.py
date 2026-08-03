@@ -1,9 +1,9 @@
-"""Managed Pseudo-ESS dispatch, finalization, and terminal polling.
+"""Managed Pseudo-ESS dispatch, finalization, and terminal presentation.
 
 The Diagnostics tab prepares small per-run index lists and submits one worker
-request. ``JobManager`` owns the job identity and terminal state, so polling is
-read-only and a completed result remains replayable until the browser confirms
-that it applied the matching UI response.
+request. ``JobManager`` owns the job identity and terminal state; the central
+reconciler publishes a read-only event, and the completed result remains
+replayable until the browser confirms that it applied the matching UI response.
 """
 
 from __future__ import annotations
@@ -18,7 +18,11 @@ from ..background_jobs import JobRef, JobState, job_manager
 from ..logger import add_log
 from .._worker_log import log as _wlog
 from . import persistent_worker
-from .compute import _get_executor, _job_ref_from_store
+from .compute import _get_executor
+from .job_reconcile import (
+    terminal_delivery_marker,
+    terminal_event_for_job,
+)
 
 
 def reset() -> None:
@@ -158,34 +162,28 @@ def _build_result_table(results: list[dict[str, Any]]):
 def register_pseudo_ess_compute_callbacks():
     @callback(
         Output("pseudo-ess-output", "children", allow_duplicate=True),
-        Output("compute-pseudo-ess-button", "disabled", allow_duplicate=True),
-        Output("compute-poll-interval", "disabled", allow_duplicate=True),
-        Output("compute-applied-job-store", "data", allow_duplicate=True),
-        Input("compute-poll-interval", "n_intervals"),
+        Output(
+            {"type": "compute-terminal-receipt", "kind": "pseudo-ess"},
+            "data",
+        ),
+        Input("compute-terminal-event-store", "data"),
         Input("pseudo-ess-job-store", "data"),
         prevent_initial_call=True,
     )
-    def poll_pseudo_ess_completion(n_intervals, job_data):
-        ref = _job_ref_from_store(job_data, expected_kind="pseudo_ess")
-        if ref is None:
-            return (no_update,) * 4
+    def render_pseudo_ess_terminal_event(terminal_event, job_data):
+        event = terminal_event_for_job(
+            terminal_event,
+            job_data,
+            expected_kind="pseudo_ess",
+        )
+        if event is None:
+            return (no_update,) * 2
 
-        snapshot = job_manager.snapshot_for_delivery(ref)
-        if snapshot is None or snapshot.acknowledged:
-            return (no_update,) * 4
-        if snapshot.terminal is None:
-            if (n_intervals or 0) % 10 == 0:
-                _wlog(
-                    f"[parent] poll_pseudo_ess_completion tick={n_intervals}: "
-                    f"job={ref.job_id}/generation-{ref.generation}, "
-                    f"state={snapshot.state.value}"
-                )
-            return (no_update,) * 4
-
-        terminal = snapshot.terminal
-        applied = snapshot.terminal_delivery_marker()
-        if terminal.state is JobState.CANCELLED:
-            if snapshot.delivery_attempt == 1:
+        state = JobState(str(event["state"]))
+        payload = event["payload"]
+        first_delivery = int(event["delivery_attempt"]) == 1
+        if state is JobState.CANCELLED:
+            if first_delivery:
                 add_log("Pseudo-ESS computation cancelled by user.", "WARNING")
             output = dmc.Alert(
                 title="Pseudo-ESS computation cancelled",
@@ -193,20 +191,16 @@ def register_pseudo_ess_compute_callbacks():
                 color="gray",
                 variant="light",
             )
-        elif terminal.state is JobState.FAILED:
+        elif state is JobState.FAILED:
             msg = (
                 "Pseudo-ESS computation failed: "
-                f"{terminal.payload.get('message', 'Unknown error')}"
+                f"{payload.get('message', 'Unknown error')}"
             )
-            if snapshot.delivery_attempt == 1:
+            if first_delivery:
                 add_log(msg, "ERROR")
             output = dmc.Text(msg, c="red", size="sm")
         else:
-            rows = list(terminal.payload.get("results", []))
+            rows = list(payload.get("results", []))
             output = _build_result_table(rows)
 
-        # The terminal event remains server-side until the applied marker is
-        # processed by the shared acknowledgement callback. If this whole Dash
-        # response is lost, the still-enabled interval requests the same event
-        # again with a new delivery-attempt marker.
-        return output, False, True, applied
+        return output, terminal_delivery_marker(event)

@@ -218,7 +218,12 @@ def _add_treespace_panel():
                 # Hide Plotly's modebar — its toolbar overlaps the legend
                 # when many files are loaded, and the zoom/pan/export
                 # interactions are already exposed via the tab's buttons.
-                config={"doubleClick": False, "displayModeBar": False},
+                # ``responsive`` relayouts once the container reaches its real
+                # size — without it, the first paint lays out the figure at a
+                # transitional size and the top legend (wrapped wide by long
+                # file names) spills over the plot until the user resizes.
+                config={"doubleClick": False, "displayModeBar": False,
+                        "responsive": True},
             ),
         ], gap="xs"),
     ], style={"padding": "10px", "position": "relative"})

@@ -229,7 +229,11 @@ def _add_within_run_panel():
                 # Hide Plotly's modebar — its toolbar overlaps the legend
                 # when many files are loaded, and the zoom/pan/export
                 # interactions are already exposed via the tab's buttons.
-                config={"doubleClick": False, "displayModeBar": False},
+                # ``responsive`` relayouts once the container reaches its real
+                # size, so the top legend lands correctly on first paint
+                # instead of only after a manual window resize.
+                config={"doubleClick": False, "displayModeBar": False,
+                        "responsive": True},
             ),
         ], gap="xs"),
     ], style={"padding": "10px", "position": "relative"})

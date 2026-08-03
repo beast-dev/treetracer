@@ -390,6 +390,9 @@ def _make_within_run_figure(df, x, y, z, show_lines=True,
 
 
 def register_within_run_callbacks():
+    # Fix the first-paint legend overlap (see _helpers.register_autorelayout).
+    from ._helpers import register_autorelayout
+    register_autorelayout("within-run-graph")
 
     # ------ selectors ------
     @callback(

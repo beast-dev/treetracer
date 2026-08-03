@@ -78,6 +78,33 @@ def file_types_for_filename(filename):
     return known.get(ext, ("All files (*.*)",))
 
 
+def register_autorelayout(graph_id):
+    """Force one Plotly relayout right after ``graph_id``'s figure paints.
+
+    In pywebview, Plotly's first layout pass can skip legend *automargin*, so a
+    multi-row horizontal top legend (many files with long names) overlaps the
+    plot until a manual window resize forces a relayout. This fires that
+    relayout programmatically — the same thing the drag does — so the legend
+    lands correctly on first render. ``config.responsive`` doesn't help here
+    because the container is a stable viewport-height, so nothing triggers a
+    resize on its own.
+    """
+    from dash import clientside_callback, Input, Output
+    clientside_callback(
+        "function(fig){"
+        " if(fig){setTimeout(function(){"
+        f" var r=document.getElementById('{graph_id}');"
+        " var gd=r&&r.querySelector('.js-plotly-plot');"
+        " if(gd&&window.Plotly){window.Plotly.Plots.resize(gd);}"
+        " },50);}"
+        " return window.dash_clientside.no_update;"
+        "}",
+        Output(graph_id, "style", allow_duplicate=True),
+        Input(graph_id, "figure"),
+        prevent_initial_call=True,
+    )
+
+
 def _save_file_dialog(default_filename="output.tsv", file_types=None):
     """Open a native save-file dialog and return the chosen path, or
     ``None`` if the user cancelled / no dialog could be shown.

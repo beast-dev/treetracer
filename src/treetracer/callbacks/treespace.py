@@ -197,6 +197,10 @@ def _patch_overlay_bundle(patch, n_traces, panel_data, offsets):
 
 
 def register_treespace_callbacks():
+    # Fix the first-paint legend overlap (see _helpers.register_autorelayout).
+    from ._helpers import register_autorelayout
+    register_autorelayout("graph")
+
     # Populate the MDS-result selector dropdown
     @callback(
         Output("treespace-result-select", "data"),

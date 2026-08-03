@@ -86,6 +86,14 @@ def add_navbar():
                     dcc.Store(id="clade-freq-click-store", storage_type="memory"),
                     # Background computation polling
                     dcc.Interval(id="compute-poll-interval", interval=100, disabled=True),
+                    # RF/MDS job identities and two-phase terminal delivery.
+                    # The poll callback writes the applied marker atomically
+                    # with the visible result; only then does the ack callback
+                    # release the server-side sticky terminal event.
+                    dcc.Store(id="rf-job-store", storage_type="memory"),
+                    dcc.Store(id="mds-job-store", storage_type="memory"),
+                    dcc.Store(id="rf-mds-applied-job-store", storage_type="memory"),
+                    dcc.Store(id="rf-mds-job-ack-store", storage_type="memory"),
                     # consensus tree computation polls on its OWN interval. Dash derives an
                     # allow_duplicate output's disambiguation hash from the
                     # callback's Input signature (dash/_utils.py), so sharing

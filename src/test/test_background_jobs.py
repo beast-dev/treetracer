@@ -307,3 +307,31 @@ def test_acknowledgement_revision_must_match_and_forget_requires_ack():
     assert manager.acknowledge(ref, revision) is True
     assert manager.forget(ref) is True
     assert manager.snapshot(ref) is None
+
+
+def test_invalidate_discards_late_result_without_running_finalizer():
+    manager = JobManager()
+    task_started = threading.Event()
+    release_task = threading.Event()
+    finalizer_calls = 0
+
+    def work():
+        task_started.set()
+        assert release_task.wait(timeout=2)
+        return "stale result"
+
+    def finalize(_ref, _result):
+        nonlocal finalizer_calls
+        finalizer_calls += 1
+        return {"should_not": "appear"}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        ref = manager.submit(executor, "rf", work, finalizer=finalize)
+        assert task_started.wait(timeout=2)
+        assert manager.invalidate(ref) is True
+        assert manager.snapshot(ref) is None
+        assert manager.active_ref() is None
+        release_task.set()
+
+    assert finalizer_calls == 0
+    assert manager.snapshot(ref) is None

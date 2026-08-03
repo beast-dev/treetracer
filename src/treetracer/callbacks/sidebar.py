@@ -634,6 +634,15 @@ def register_sidebar_callbacks():
         Output("clade-freq-consensus-tree-select-1", "value", allow_duplicate=True),
         Output("clade-freq-consensus-tree-select-2", "value", allow_duplicate=True),
         Output("clade-freq-output-paper", "style", allow_duplicate=True),
+        # RF/MDS lifecycle state. Clear the browser identities together with
+        # the server-side job record so no terminal replay can resurrect data.
+        Output("rf-job-store", "data", allow_duplicate=True),
+        Output("mds-job-store", "data", allow_duplicate=True),
+        Output("rf-mds-applied-job-store", "data", allow_duplicate=True),
+        Output("rf-mds-job-ack-store", "data", allow_duplicate=True),
+        Output("rf-progress-path", "data", allow_duplicate=True),
+        Output("mds-progress-path", "data", allow_duplicate=True),
+        Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Input("clear-data-button", "n_clicks"),
         prevent_initial_call=True,
     )
@@ -643,12 +652,20 @@ def register_sidebar_callbacks():
             # Cancel any in-flight subprocess job — descriptors point
             # into the DB we're about to wipe, and we don't want the
             # poll callbacks to write results based on stale state.
-            try:
-                from . import consensus_tree_compute, pseudo_ess_compute
-                consensus_tree_compute.reset()
-                pseudo_ess_compute.reset()
-            except Exception:
-                pass
+            from . import compute, consensus_tree_compute, pseudo_ess_compute
+            resetters = (
+                ("RF/MDS", compute.reset),
+                ("consensus tree", consensus_tree_compute.reset),
+                ("Pseudo-ESS", pseudo_ess_compute.reset),
+            )
+            for label, resetter in resetters:
+                try:
+                    resetter()
+                except Exception as exc:
+                    add_log(
+                        f"Could not reset {label} computation: {exc}",
+                        "WARNING",
+                    )
             # Clear all server-side distance matrices from disk
             clear_all_distmats()
             clear_all_mds_results()
@@ -720,5 +737,12 @@ def register_sidebar_callbacks():
                 None,            # clade-freq-consensus-tree-select-1.value
                 None,            # clade-freq-consensus-tree-select-2.value
                 {"display": "none"},  # clade-freq-output-paper.style
+                None,            # rf-job-store
+                None,            # mds-job-store
+                None,            # rf-mds-applied-job-store
+                None,            # rf-mds-job-ack-store
+                None,            # rf-progress-path
+                None,            # mds-progress-path
+                True,            # compute-poll-interval disabled
             )
-        return (no_update,) * 33
+        return (no_update,) * 40

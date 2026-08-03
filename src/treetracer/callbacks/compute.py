@@ -1,17 +1,16 @@
 from dash import html, callback, Input, Output, State, no_update, ALL, ctx
 import dash_mantine_components as dmc
-import os
 from concurrent.futures import ThreadPoolExecutor
-import numpy as np
+from threading import RLock
 import pandas as pd
 
 from ..logger import add_log, notif_id
+from ..background_jobs import JobBusyError, JobRef, JobState, job_manager
 from ..db.tree_service import get_tree_service
 from ..state import (load_distmat, get_distmat_index, next_distmat_name,
                       get_distmat_path, register_distmat, get_distmat_file_path,
-                      get_distmat_groups_per_file,
-                      store_mds_result, get_mds_results_index,
-                      clear_all_mds_results)
+                      get_distmat_names, store_mds_result,
+                      get_mds_results_index)
 from ..ui.widgets import computing_banner
 from ._helpers import _save_file_dialog, extract_group
 from .._worker_log import log as _wlog
@@ -33,15 +32,74 @@ from . import persistent_worker
 # work runs in the worker subprocess, keeping the pywebview/Dash process
 # responsive while compute jobs are in flight.
 _executor = None
-_rf_future = None      # concurrent.futures.Future for RF job
-_rf_meta = {}          # metadata needed by poll_completion to save RF result
-_mds_future = None     # concurrent.futures.Future for between-run MDS job
-_mds_meta = {}         # metadata needed by poll_completion to build MDS result
+_publication_lock = RLock()
 
 
 def _mds_export_filename(source_distmat):
     stem = source_distmat[:-4] if source_distmat.endswith(".tsv") else source_distmat
     return f"{stem}_MDS.tsv"
+
+
+def _job_ref_from_store(data, *, expected_kind=None):
+    """Parse a browser job reference defensively.
+
+    Browser stores can be empty, stale, or manually modified.  Invalid data is
+    treated as absent; ``JobManager`` performs the authoritative generation
+    check on every operation.
+    """
+    if not isinstance(data, dict):
+        return None
+    try:
+        ref = JobRef.from_dict(data)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if expected_kind is not None and ref.kind != expected_kind:
+        return None
+    if ref.kind not in {"rf", "mds"}:
+        return None
+    return ref
+
+
+def _latest_rf_mds_ref(rf_job_data, mds_job_data):
+    refs = [
+        ref
+        for ref in (
+            _job_ref_from_store(rf_job_data, expected_kind="rf"),
+            _job_ref_from_store(mds_job_data, expected_kind="mds"),
+        )
+        if ref is not None
+    ]
+    return max(refs, key=lambda ref: ref.generation, default=None)
+
+
+def _ack_applied_job(applied_data):
+    """Acknowledge a terminal event known to have reached browser state."""
+    ref = _job_ref_from_store(applied_data)
+    if ref is None:
+        return False
+    try:
+        revision = int(applied_data["terminal_revision"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return job_manager.acknowledge(ref, revision)
+
+
+def _terminal_progress_from_store(job_data, expected_kind):
+    ref = _job_ref_from_store(job_data, expected_kind=expected_kind)
+    if ref is None:
+        return None
+    snapshot = job_manager.snapshot(ref)
+    if snapshot is None or snapshot.terminal is None:
+        return None
+    progress = snapshot.progress
+    if progress is None:
+        return None
+    label = {
+        JobState.SUCCEEDED: "complete",
+        JobState.FAILED: "failed",
+        JobState.CANCELLED: "cancelled",
+    }[snapshot.state]
+    return progress.fraction * 100.0, label
 
 
 def _get_executor():
@@ -139,8 +197,137 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     result["total_elapsed"] = time.time() - t0
     result["is_rooted"] = is_rooted
     result["progress_path"] = progress_path
+    result["save_path"] = save_path
     _wlog(f"[parent] _rf_pipeline: returning result; total_elapsed={result['total_elapsed']:.3f}s")
     return result
+
+
+def _job_can_publish(ref):
+    snapshot = job_manager.snapshot(ref)
+    return snapshot is not None and snapshot.state is JobState.FINALIZING
+
+
+def _finalize_rf_job(ref, pipeline):
+    """Persist one RF result and return its small terminal UI payload."""
+    with _publication_lock:
+        if not _job_can_publish(ref):
+            return {}
+        return _publish_rf_result(pipeline)
+
+
+def _publish_rf_result(pipeline):
+    rf_name = pipeline["rf_name"]
+    result_names = pipeline["result_names"]
+    file_breakdown = pipeline["file_breakdown"]
+    groups_per_file = pipeline["groups_per_file"]
+    elapsed = pipeline["total_elapsed"]
+    compute_elapsed = pipeline["compute_elapsed"]
+    is_rooted = pipeline.get("is_rooted", True)
+
+    # The matrix is already on disk; this is the exactly-once publication step.
+    register_distmat(
+        rf_name,
+        result_names,
+        pipeline["save_path"],
+        file_breakdown=file_breakdown,
+        groups_per_file=groups_per_file,
+        is_rooted=is_rooted,
+    )
+    add_log(
+        f"Stored RF distance matrix as '{rf_name}' "
+        f"({len(result_names)}x{len(result_names)})"
+    )
+    add_log(
+        f"RF pipeline took {elapsed:.2f}s "
+        f"(rapidtrees compute {compute_elapsed:.2f}s)"
+    )
+    return {
+        "rf_name": rf_name,
+        "n_trees": len(result_names),
+        "elapsed": elapsed,
+        "compute_elapsed": compute_elapsed,
+        "distmat_index": get_distmat_index(),
+    }
+
+
+def _mds_pipeline(
+    matrix_path,
+    progress_path,
+    tree_names,
+    selected_distmat,
+    n_components,
+):
+    embedding_list, elapsed = persistent_worker.submit_job(
+        "compute_mds",
+        matrix_path=str(matrix_path),
+        n_components=n_components,
+        progress_path=progress_path,
+    )
+    return {
+        "embedding": embedding_list,
+        "elapsed": elapsed,
+        "tree_names": [str(name) for name in tree_names],
+        "selected_distmat": selected_distmat,
+        "n_components": n_components,
+    }
+
+
+def _finalize_mds_job(ref, result):
+    """Persist one MDS result and return its small terminal UI payload."""
+    with _publication_lock:
+        if not _job_can_publish(ref):
+            return {}
+        return _publish_mds_result(result)
+
+
+def _publish_mds_result(result):
+    embedding_list = result["embedding"]
+    elapsed = result["elapsed"]
+    tree_names = result["tree_names"]
+    selected_distmat = result["selected_distmat"]
+    n_components = result["n_components"]
+
+    mdscols = [f"MDS{i + 1}" for i in range(n_components)]
+    mds_df = pd.DataFrame(embedding_list, columns=mdscols)
+    mds_df["tree"] = tree_names
+    mds_df["group"] = mds_df["tree"].apply(extract_group).astype(str)
+    group_mapping = {
+        value: index
+        for index, value in enumerate(sorted(mds_df["group"].unique()))
+    }
+    mds_df["group_col"] = mds_df["group"].map(group_mapping)
+    mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
+    mds_df["size"] = 6
+    mds_filename = _mds_export_filename(selected_distmat)
+    mds_df["file"] = mds_filename
+
+    metadata = {
+        "filename": mds_filename,
+        "source_distmat": selected_distmat,
+        "rows": len(mds_df),
+        "dimensions": mdscols,
+        "groups": mds_df["group"].unique().tolist(),
+        "MIN_TREENUM": int(mds_df["treenum"].min()),
+        "MAX_TREENUM": int(mds_df["treenum"].max()),
+    }
+    store_mds_result(
+        mds_filename,
+        {"metadata": metadata, "data": mds_df.to_dict("records")},
+    )
+
+    n_groups = len(metadata["groups"])
+    add_log(
+        f"PCoA completed in {elapsed:.2f}s: {len(mds_df)} points, "
+        f"{n_components}D, {n_groups} groups"
+    )
+    return {
+        "mds_results_index": get_mds_results_index(),
+        "mds_filename": mds_filename,
+        "n_points": len(mds_df),
+        "n_components": n_components,
+        "n_groups": n_groups,
+        "elapsed": elapsed,
+    }
 
 
 def _shutdown_executor():
@@ -148,6 +335,25 @@ def _shutdown_executor():
     if _executor is not None:
         _executor.shutdown(wait=False, cancel_futures=True)
         _executor = None
+
+
+def reset():
+    """Invalidate any RF/MDS job before Clear Data wipes its inputs.
+
+    Removing the manager record prevents a late worker result from
+    re-registering a matrix or MDS result after the application state has been
+    cleared.  The persistent-worker kill interrupts native work when possible.
+    """
+    active = job_manager.active_ref()
+    if active is None or active.kind not in {"rf", "mds"}:
+        return
+    persistent_worker.cancel_current_job()
+    job_manager.invalidate(active)
+    # If a finalizer acquired the publication lock just before invalidation,
+    # let it finish before Clear Data removes published state. If it acquires
+    # the lock afterward, its identity re-check rejects the invalidated job.
+    with _publication_lock:
+        pass
 
 
 def register_compute_callbacks():
@@ -172,7 +378,17 @@ def register_compute_callbacks():
         # n_clicks in the trigger; layout-change fires carry None.
         if not any(t.get("value") for t in ctx.triggered):
             return no_update
-        if persistent_worker.cancel_current_job():
+        active = job_manager.active_ref()
+        managed_cancelled = (
+            active is not None
+            and active.kind in {"rf", "mds"}
+            and job_manager.mark_cancelled(
+                active,
+                message="Computation cancelled by user",
+            )
+        )
+        worker_cancelled = persistent_worker.cancel_current_job()
+        if managed_cancelled or worker_cancelled:
             # Cancel hard-kills the worker subprocess, so the progress
             # writer thread's ``finally`` block (which normally unlinks
             # the sidecar file) never runs. Tidy up here. The file is
@@ -293,15 +509,28 @@ def register_compute_callbacks():
         # starts so ``update_rf_progress`` knows which sidecar file to
         # tail. Early returns leave it at no_update.
         Output("rf-progress-path", "data", allow_duplicate=True),
+        Output("rf-job-store", "data"),
         Input("compute-rf-button", "n_clicks"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "checked"),
         State({"type": "compute-tree-checkbox", "index": ALL}, "id"),
         State("tree-offset-store", "data"),
+        State("rf-mds-applied-job-store", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_rf(n_clicks, checked_list, id_list, stored_summaries):
+    def handle_compute_rf(
+        n_clicks,
+        checked_list,
+        id_list,
+        stored_summaries,
+        applied_job,
+    ):
         if not n_clicks or not stored_summaries:
-            return no_update, no_update, no_update, no_update, no_update
+            return (no_update,) * 6
+
+        # The marker is written in the same browser response that rendered the
+        # prior terminal UI. A fast next click may beat the acknowledgement
+        # callback, so acknowledge idempotently here before submitting too.
+        _ack_applied_job(applied_job)
 
         # Determine which files are selected
         selected_files = [
@@ -322,7 +551,7 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id=notif_id(),
-            ), no_update, no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update, no_update
 
         # Collect taxa counts for selected files
         taxa_counts = {}
@@ -346,7 +575,7 @@ def register_compute_callbacks():
                 action="show",
                 autoClose=6000,
                 id=notif_id(),
-            ), no_update, no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update, no_update
 
         # --- Rooting consistency check ---
         # RF over rooted clades and RF over bipartitions are different
@@ -371,7 +600,7 @@ def register_compute_callbacks():
                 title="Rooting Mismatch",
                 message=msg,
                 color="red", action="show", autoClose=8000, id=notif_id(),
-            ), no_update, no_update, no_update, no_update
+            ), no_update, no_update, no_update, no_update, no_update
         selected_is_rooted = unique_rootings.pop()
 
         # --- Taxa validation passed — submit the pipeline to a worker thread ---
@@ -394,14 +623,44 @@ def register_compute_callbacks():
 
         rf_name = next_distmat_name()
         save_path = get_distmat_path(rf_name)
-        _rf_meta["name"] = rf_name
-        _rf_meta["save_path"] = save_path
-        _rf_meta["is_rooted"] = selected_is_rooted
-
-        global _rf_future
-        _rf_future = _get_executor().submit(
-            _rf_pipeline, selected_files, save_path, rf_name, selected_is_rooted,
-        )
+        progress_path = save_path + ".progress"
+        try:
+            job_ref = job_manager.submit(
+                _get_executor(),
+                "rf",
+                _rf_pipeline,
+                selected_files,
+                save_path,
+                rf_name,
+                selected_is_rooted,
+                metadata={
+                    "display_name": rf_name,
+                    "progress_path": progress_path,
+                },
+                finalizer=_finalize_rf_job,
+                cancel_exceptions=(persistent_worker.JobCancelled,),
+            )
+        except JobBusyError as exc:
+            msg = (
+                f"Another computation ({exc.active.kind.upper()}) is still "
+                "finishing. Please wait for it to complete."
+            )
+            add_log(msg, "WARNING")
+            return (
+                dmc.Notification(
+                    title="Computation already running",
+                    message=msg,
+                    color="yellow",
+                    action="show",
+                    autoClose=4000,
+                    id=notif_id(),
+                ),
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            )
 
         computing_indicator = computing_banner(
             title=f"Computing RF Distances ({rf_name})...",
@@ -414,8 +673,14 @@ def register_compute_callbacks():
         )
         # Hand the same path ``_rf_pipeline`` derives down to the
         # Store so ``update_rf_progress`` reads from the right file.
-        progress_path = save_path + ".progress"
-        return no_update, computing_indicator, False, True, progress_path
+        return (
+            no_update,
+            computing_indicator,
+            False,
+            True,
+            progress_path,
+            job_ref.as_dict(),
+        )
 
     # Per-tick reader for the RF progress sidecar file. Runs off the
     # same ``compute-poll-interval`` as ``poll_completion`` but writes
@@ -426,9 +691,13 @@ def register_compute_callbacks():
         Output("rf-progress-label", "children"),
         Input("compute-poll-interval", "n_intervals"),
         State("rf-progress-path", "data"),
+        State("rf-job-store", "data"),
         prevent_initial_call=True,
     )
-    def update_rf_progress(_n, progress_path):
+    def update_rf_progress(_n, progress_path, job_data):
+        terminal_progress = _terminal_progress_from_store(job_data, "rf")
+        if terminal_progress is not None:
+            return terminal_progress
         if not progress_path:
             return no_update, no_update
         import json
@@ -439,14 +708,18 @@ def register_compute_callbacks():
             # File doesn't exist yet, was just deleted, or caught
             # mid-write — try again next tick. ValueError covers
             # JSONDecodeError (subclass) too.
-            return no_update, no_update
+            terminal_progress = _terminal_progress_from_store(job_data, "rf")
+            return terminal_progress or (no_update, no_update)
         val = int(data.get("value", 0))
         tot = int(data.get("total", 0))
-        frac = float(data.get("fraction", 0.0))
+        frac = max(0.0, min(float(data.get("fraction", 0.0)), 1.0))
         phase = data.get("phase", "computing")
+        ref = _job_ref_from_store(job_data, expected_kind="rf")
+        if ref is not None:
+            job_manager.update_progress(ref, frac, phase)
         if tot == 0:
             return 0, "starting…"
-        pct = max(0.0, min(100.0, frac * 100.0))
+        pct = frac * 100.0
         if phase == "finalizing":
             label = f"{val:,} / {tot:,} pairs — finalizing…"
         else:
@@ -458,9 +731,13 @@ def register_compute_callbacks():
         Output("mds-progress-label", "children"),
         Input("compute-poll-interval", "n_intervals"),
         State("mds-progress-path", "data"),
+        State("mds-job-store", "data"),
         prevent_initial_call=True,
     )
-    def update_mds_progress(_n, progress_path):
+    def update_mds_progress(_n, progress_path, job_data):
+        terminal_progress = _terminal_progress_from_store(job_data, "mds")
+        if terminal_progress is not None:
+            return terminal_progress
         if not progress_path:
             return no_update, no_update
         import json
@@ -468,12 +745,16 @@ def register_compute_callbacks():
         try:
             data = json.loads(Path(progress_path).read_text())
         except (OSError, ValueError):
-            return no_update, no_update
+            terminal_progress = _terminal_progress_from_store(job_data, "mds")
+            return terminal_progress or (no_update, no_update)
 
         frac = max(0.0, min(float(data.get("fraction", 0.0)), 1.0))
         pct = frac * 100.0
         phase = data.get("phase", "computing")
         label = data.get("label") or phase.replace("_", " ")
+        ref = _job_ref_from_store(job_data, expected_kind="mds")
+        if ref is not None:
+            job_manager.update_progress(ref, frac, phase, label)
         return pct, f"{label} ({pct:.0f}%)"
 
     # ------ RF MATRIX LIST (right column) ------
@@ -568,45 +849,73 @@ def register_compute_callbacks():
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
         Output("mds-progress-path", "data", allow_duplicate=True),
+        Output("mds-job-store", "data"),
         Input("compute-mds-button", "n_clicks"),
         State("mds-distmat-select", "value"),
+        State("rf-mds-applied-job-store", "data"),
         prevent_initial_call=True,
     )
-    def handle_compute_mds(n_clicks, selected_distmat):
+    def handle_compute_mds(n_clicks, selected_distmat, applied_job):
         if not n_clicks or not selected_distmat:
-            return no_update, no_update, no_update, no_update
+            return (no_update,) * 5
+
+        _ack_applied_job(applied_job)
 
         try:
-            tree_names, _ = load_distmat(selected_distmat)
+            # The worker loads the matrix from its registered path. Pull only
+            # the small name vector here instead of reading the full n×n array
+            # into the UI process just to determine dimensions and labels.
+            tree_names = list(get_distmat_names(selected_distmat))
         except KeyError:
             msg = "Selected distance matrix not available. Please recompute RF distances."
             add_log(msg, "ERROR")
-            return dmc.Text(msg, c="red"), no_update, no_update, no_update
+            return dmc.Text(msg, c="red"), no_update, no_update, no_update, no_update
 
         n = len(tree_names)
         n_components = min(6, n - 1)
         add_log(f"Computing MDS from {selected_distmat} ({n}x{n}) in background process...")
 
-        _mds_meta["tree_names"] = tree_names
-        _mds_meta["selected_distmat"] = selected_distmat
-        _mds_meta["n_components"] = n_components
-
         # Route through the persistent worker — same pattern as RF/consensus tree/
         # Pseudo-ESS. Per-compute IPC overhead is ~100ms, dwarfed by the
         # ARPACK eigsh on a 5k×5k matrix; the win is a single unified
         # background-compute pattern and clean process isolation.
-        from . import persistent_worker
         matrix_path = get_distmat_file_path(selected_distmat)
         progress_path = str(matrix_path) + ".mds.progress"
-        _mds_meta["progress_path"] = progress_path
-        global _mds_future
-        _mds_future = _get_executor().submit(
-            persistent_worker.submit_job,
-            "compute_mds",
-            matrix_path=str(matrix_path),
-            n_components=n_components,
-            progress_path=progress_path,
-        )
+        try:
+            job_ref = job_manager.submit(
+                _get_executor(),
+                "mds",
+                _mds_pipeline,
+                matrix_path,
+                progress_path,
+                tree_names,
+                selected_distmat,
+                n_components,
+                metadata={
+                    "display_name": _mds_export_filename(selected_distmat),
+                    "progress_path": progress_path,
+                },
+                finalizer=_finalize_mds_job,
+                cancel_exceptions=(persistent_worker.JobCancelled,),
+            )
+        except JobBusyError as exc:
+            msg = (
+                f"Another computation ({exc.active.kind.upper()}) is still "
+                "finishing. Please wait for it to complete."
+            )
+            add_log(msg, "WARNING")
+            return (
+                dmc.Alert(
+                    title="Computation already running",
+                    children=dmc.Text(msg, size="sm"),
+                    color="yellow",
+                    variant="light",
+                ),
+                no_update,
+                False,
+                no_update,
+                no_update,
+            )
 
         computing_indicator = computing_banner(
             title="Computing MDS Embedding...",
@@ -617,10 +926,9 @@ def register_compute_callbacks():
             which="mds",
             show_progress=True,
         )
-        return computing_indicator, False, True, progress_path
+        return computing_indicator, False, True, progress_path, job_ref.as_dict()
 
-    # ------ POLL + PROCESS: checks futures, processes results in one round trip ------
-    # Processing is fast (<20ms) since workers save to disk — no large pickle transfer.
+    # ------ POLL + RENDER: replay sticky terminal state until browser ack ------
 
     @callback(
         # RF outputs (5)
@@ -635,40 +943,54 @@ def register_compute_callbacks():
         Output("export-mds-button", "disabled"),
         Output("plot-config-store", "data", allow_duplicate=True),
         Output("compute-mds-button", "disabled", allow_duplicate=True),
-        # Shared outputs (2)
+        # Shared outputs (3). The applied marker lands in the same browser
+        # response as the result UI; only that marker authorizes the separate
+        # acknowledgement callback to consume the retained terminal event.
         Output("notifications-container", "children", allow_duplicate=True),
         Output("compute-poll-interval", "disabled", allow_duplicate=True),
+        Output("rf-mds-applied-job-store", "data"),
         # Auto-collapse sidebar on RF success (3 outputs mirror the
         # shell sidebar-toggle callback's outputs).
         Output("navbar", "style", allow_duplicate=True),
         Output("sidebar-visible", "data", allow_duplicate=True),
         Output("appshell", "navbar", allow_duplicate=True),
         Input("compute-poll-interval", "n_intervals"),
+        Input("rf-job-store", "data"),
+        Input("mds-job-store", "data"),
         State("sidebar-visible", "data"),
         prevent_initial_call=True,
     )
-    def poll_completion(n_intervals, sidebar_visible):
-        global _rf_future, _mds_future
+    def poll_completion(
+        n_intervals,
+        rf_job_data,
+        mds_job_data,
+        sidebar_visible,
+    ):
+        ref = _latest_rf_mds_ref(rf_job_data, mds_job_data)
+        if ref is None:
+            return (no_update,) * 16
 
-        rf_done = _rf_future is not None and _rf_future.done()
-        mds_done = _mds_future is not None and _mds_future.done()
+        snapshot = job_manager.snapshot_for_delivery(ref)
+        if snapshot is None or snapshot.acknowledged:
+            return (no_update,) * 16
 
-        # Sample the poll loop sparingly — every 10 ticks (~1 s) we
-        # log a heartbeat with the futures' state. Useful for telling
-        # "poll not firing" apart from "poll firing but future never
-        # done" when diagnosing a hung compute. Once a job IS done
-        # we always log so we can see the dispatch flowing.
-        if rf_done or mds_done or (n_intervals or 0) % 10 == 0:
-            _wlog(
-                f"[parent] poll_completion tick={n_intervals}: "
-                f"rf_future={'set' if _rf_future else 'none'}/"
-                f"{'done' if rf_done else 'pending'}, "
-                f"mds_future={'set' if _mds_future else 'none'}/"
-                f"{'done' if mds_done else 'pending'}"
-            )
+        if snapshot.terminal is None:
+            if (n_intervals or 0) % 10 == 0:
+                _wlog(
+                    f"[parent] poll_completion tick={n_intervals}: "
+                    f"job={ref.job_id}/{ref.kind}/generation-{ref.generation}, "
+                    f"state={snapshot.state.value}"
+                )
+            return (no_update,) * 16
 
-        if not rf_done and not mds_done:
-            return (no_update,) * 15
+        terminal = snapshot.terminal
+        payload = terminal.payload
+        _wlog(
+            f"[parent] poll_completion tick={n_intervals}: "
+            f"delivering job={ref.job_id}/{ref.kind}/generation-{ref.generation}, "
+            f"state={terminal.state.value}, revision={terminal.revision}, "
+            f"attempt={snapshot.delivery_attempt}"
+        )
 
         rf_out = [no_update] * 5
         mds_out = [no_update] * 5
@@ -679,14 +1001,8 @@ def register_compute_callbacks():
         # last toggle.
         sidebar_out = [no_update, no_update, no_update]
 
-        # --- Process RF ---
-        if rf_done:
-            _wlog("[parent] poll_completion: rf_future done; calling .result()")
-            try:
-                pipeline = _rf_future.result()
-                _wlog(f"[parent] poll_completion: .result() returned; keys={sorted(pipeline.keys())}")
-            except persistent_worker.JobCancelled:
-                _rf_future = None
+        if ref.kind == "rf":
+            if terminal.state is JobState.CANCELLED:
                 add_log("RF computation cancelled by user.", "WARNING")
                 rf_out = [
                     dmc.Alert(
@@ -696,42 +1012,40 @@ def register_compute_callbacks():
                     ),
                     no_update, no_update, no_update, False,
                 ]
-            except Exception as e:
-                msg = f"RF computation failed: {e}"
+            elif terminal.state is JobState.FAILED:
+                msg = f"RF computation failed: {payload.get('message', 'Unknown error')}"
                 add_log(msg, "ERROR")
-                _rf_future = None
                 rf_out = [dmc.Text(msg, c="red"), no_update, no_update, no_update, False]
-                notif = dmc.Notification(title="RF Computation Error", message=msg,
-                                         color="red", action="show", autoClose=6000,
-                                         id=notif_id())
+                notif = dmc.Notification(
+                    title="RF Computation Error",
+                    message=msg,
+                    color="red",
+                    action="show",
+                    autoClose=6000,
+                    id=f"rf-terminal-{ref.job_id}",
+                )
             else:
-                _rf_future = None
-                rf_name = _rf_meta.get("name", "RF")
-                result_names = pipeline["result_names"]
-                file_breakdown = pipeline["file_breakdown"]
-                groups_per_file = pipeline["groups_per_file"]
-                elapsed = pipeline["total_elapsed"]
-                compute_elapsed = pipeline["compute_elapsed"]
-                is_rooted = pipeline.get("is_rooted",
-                                          _rf_meta.get("is_rooted", True))
-                # Matrix already saved to disk by the worker — just register it
-                register_distmat(rf_name, result_names, _rf_meta["save_path"],
-                                 file_breakdown=file_breakdown,
-                                 groups_per_file=groups_per_file,
-                                 is_rooted=is_rooted)
-                add_log(f"Stored RF distance matrix as '{rf_name}' ({len(result_names)}x{len(result_names)})")
-                add_log(f"RF pipeline took {elapsed:.2f}s (rapidtrees compute {compute_elapsed:.2f}s)")
+                rf_name = payload["rf_name"]
+                n_trees = payload["n_trees"]
+                elapsed = payload["elapsed"]
                 rf_out = [
                     dmc.Alert(title=f"RF Distance Matrix ({rf_name})",
-                              children=dmc.Text(f"{len(result_names)} x {len(result_names)} trees", size="sm"),
+                              children=dmc.Text(f"{n_trees} x {n_trees} trees", size="sm"),
                               color="green", variant="light"),
-                    get_distmat_index(),
+                    payload["distmat_index"],
                     False, False, False,
                 ]
                 notif = dmc.Notification(
                     title=f"RF Distances Computed ({rf_name})",
-                    message=f"Computed {len(result_names)}x{len(result_names)} RF distance matrix in {elapsed:.2f}s.",
-                    color="green", action="show", autoClose=3000, id=notif_id())
+                    message=(
+                        f"Computed {n_trees}x{n_trees} RF distance matrix "
+                        f"in {elapsed:.2f}s."
+                    ),
+                    color="green",
+                    action="show",
+                    autoClose=3000,
+                    id=f"rf-terminal-{ref.job_id}",
+                )
                 # Auto-collapse the sidebar to give the results area room.
                 if sidebar_visible:
                     sidebar_out = [
@@ -741,12 +1055,8 @@ def register_compute_callbacks():
                          "collapsed": {"mobile": True}},
                     ]
 
-        # --- Process MDS ---
-        if mds_done:
-            try:
-                embedding_list, elapsed = _mds_future.result()
-            except persistent_worker.JobCancelled:
-                _mds_future = None
+        else:
+            if terminal.state is JobState.CANCELLED:
                 add_log("MDS computation cancelled by user.", "WARNING")
                 mds_out = [
                     no_update,
@@ -757,66 +1067,60 @@ def register_compute_callbacks():
                     ),
                     no_update, no_update, False,
                 ]
-            except Exception as e:
-                msg = f"MDS computation failed: {e}"
+            elif terminal.state is JobState.FAILED:
+                msg = f"MDS computation failed: {payload.get('message', 'Unknown error')}"
                 add_log(msg, "ERROR")
-                _mds_future = None
                 mds_out = [no_update, dmc.Text(msg, c="red"), no_update, no_update, False]
-                if notif is no_update:
-                    notif = dmc.Notification(title="MDS Error", message=msg, color="red",
-                                             action="show", autoClose=6000, id=notif_id())
+                notif = dmc.Notification(
+                    title="MDS Error",
+                    message=msg,
+                    color="red",
+                    action="show",
+                    autoClose=6000,
+                    id=f"mds-terminal-{ref.job_id}",
+                )
             else:
-                _mds_future = None
-                tree_names = [str(n) for n in _mds_meta["tree_names"]]
-                selected_distmat = _mds_meta["selected_distmat"]
-                n_components = _mds_meta["n_components"]
-
-                mdscols = [f"MDS{i+1}" for i in range(n_components)]
-                mds_df = pd.DataFrame(embedding_list, columns=mdscols)
-                mds_df["tree"] = tree_names
-                mds_df["group"] = mds_df["tree"].apply(extract_group)
-                mds_df["group"] = mds_df["group"].astype(str)
-                group_mapping = {val: idx for idx, val in enumerate(sorted(mds_df["group"].unique()))}
-                mds_df["group_col"] = mds_df["group"].map(group_mapping)
-                mds_df["treenum"] = mds_df.groupby("group").cumcount() + 1
-                mds_df["size"] = 6
-                mds_filename = _mds_export_filename(selected_distmat)
-                mds_df["file"] = mds_filename
-
-                metadata = {
-                    "filename": mds_filename, "source_distmat": selected_distmat,
-                    "rows": len(mds_df), "dimensions": mdscols,
-                    "groups": mds_df["group"].unique().tolist(),
-                    "MIN_TREENUM": int(mds_df["treenum"].min()),
-                    "MAX_TREENUM": int(mds_df["treenum"].max()),
-                }
-                mds_entry = {"metadata": metadata, "data": mds_df.to_dict("records")}
-
-                # Store full result server-side, send only metadata through dcc.Store
-                store_mds_result(mds_filename, mds_entry)
-
-                n_groups = len(mds_df["group"].unique())
-                add_log(f"PCoA completed in {elapsed:.2f}s: {len(mds_df)} points, {n_components}D, {n_groups} groups")
-
+                mds_filename = payload["mds_filename"]
+                n_points = payload["n_points"]
+                n_components = payload["n_components"]
+                n_groups = payload["n_groups"]
+                elapsed = payload["elapsed"]
                 mds_out = [
-                    get_mds_results_index(),  # lightweight metadata only
+                    payload["mds_results_index"],
                     dmc.Alert(title="MDS Embedding Complete",
-                              children=dmc.Text(f"{mds_filename}: {len(mds_df)} points, {n_components}D, {n_groups} groups", size="sm"),
+                              children=dmc.Text(f"{mds_filename}: {n_points} points, {n_components}D, {n_groups} groups", size="sm"),
                               color="green", variant="light"),
                     False, {}, False,
                 ]
-                if notif is no_update:
-                    notif = dmc.Notification(
-                        title="MDS Computed",
-                        message=f"PCoA: {len(mds_df)} points, {n_components}D in {elapsed:.2f}s.",
-                        color="green", action="show", autoClose=3000, id=notif_id())
+                notif = dmc.Notification(
+                    title="MDS Computed",
+                    message=(
+                        f"PCoA: {n_points} points, {n_components}D "
+                        f"in {elapsed:.2f}s."
+                    ),
+                    color="green",
+                    action="show",
+                    autoClose=3000,
+                    id=f"mds-terminal-{ref.job_id}",
+                )
 
-        # Re-enable interval if any jobs are still running
-        any_running = ((_rf_future is not None and not _rf_future.done()) or
-                       (_mds_future is not None and not _mds_future.done()))
-        poll_disabled = not any_running
+        applied = {
+            **ref.as_dict(),
+            "terminal_revision": terminal.revision,
+            "delivery_attempt": snapshot.delivery_attempt,
+        }
+        return (*rf_out, *mds_out, notif, True, applied, *sidebar_out)
 
-        return (*rf_out, *mds_out, notif, poll_disabled, *sidebar_out)
+    @callback(
+        Output("rf-mds-job-ack-store", "data"),
+        Input("rf-mds-applied-job-store", "data"),
+        prevent_initial_call=True,
+    )
+    def acknowledge_terminal_job(applied_job):
+        if not isinstance(applied_job, dict):
+            return no_update
+        acknowledged = _ack_applied_job(applied_job)
+        return {**applied_job, "acknowledged": acknowledged}
 
     # ------ EXPORT CALLBACKS ------
 

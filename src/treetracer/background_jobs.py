@@ -415,6 +415,27 @@ class JobManager:
             del self._records[ref.job_id]
             return True
 
+    def invalidate(self, ref: JobRef) -> bool:
+        """Forget a job immediately and reject any late completion.
+
+        This is the reset/clear-data operation, not normal browser delivery.
+        Removing the record makes every later state transition from the job's
+        wrapper fail its identity lookup, so a stale result cannot be finalized
+        into freshly cleared application state.  Running native work still has
+        to be interrupted separately by its owner.
+        """
+
+        with self._lock:
+            record = self._matching_record_locked(ref)
+            if record is None:
+                return False
+            future = record.future
+            del self._records[ref.job_id]
+
+        if future is not None:
+            future.cancel()
+        return True
+
     def _mark_running(self, ref: JobRef) -> bool:
         with self._lock:
             record = self._matching_record_locked(ref)

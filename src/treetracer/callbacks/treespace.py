@@ -1,6 +1,6 @@
 import re
 
-from dash import html, callback, clientside_callback, Input, Output, Patch, State, no_update
+from dash import html, callback, clientside_callback, ctx, Input, Output, Patch, State, no_update
 import dash_mantine_components as dmc
 import plotly.express as px
 import pandas as pd
@@ -317,21 +317,17 @@ def register_treespace_callbacks():
             html.Div(),
         )
 
-    # Auto-rebuild: any change to the dim selectors, the treenum range,
-    # or the lines toggle re-renders the multiplot. Matches the always-
-    # live UX of the within-run tab. When ``configure_for_selected_result``
-    # populates the dim defaults + slider range, Dash coalesces all
-    # changed Inputs into a single firing of this callback, so a fresh
-    # result switch costs one rebuild — not five.
+    # The plot config is an Input so a result switch cannot rebuild from the
+    # previous MDS payload while the new control values are being applied.
     @callback(
         Output("graph", "figure", allow_duplicate=True),
+        Input("plot-config-store", "data"),
         Input("dim-x-select", "value"),
         Input("dim-y-select", "value"),
         Input("dim-z-select", "value"),
         Input("treenum-slider", "value"),
         Input("show-lines-checkbox", "checked"),
         State("graph", "figure"),
-        State("plot-config-store", "data"),
         State("treespace-dragmode", "value"),
         State("treespace-selected-trees-store", "data"),
         State("consensus-tree-registry-store", "data"),
@@ -339,8 +335,8 @@ def register_treespace_callbacks():
         State("mds-result-store", "data"),
         prevent_initial_call=True,
     )
-    def auto_update_graph(dim_x, dim_y, dim_z, treenum_range,
-                          show_lines, current_fig, plot_config, dragmode,
+    def auto_update_graph(plot_config, dim_x, dim_y, dim_z, treenum_range,
+                          show_lines, current_fig, dragmode,
                           selected, consensus_tree_registry, selected_key,
                           mds_results):
         if not plot_config or not all([dim_x, dim_y, dim_z]) or not treenum_range:
@@ -512,15 +508,19 @@ def register_treespace_callbacks():
     @callback(
         Output("graph", "figure", allow_duplicate=True),
         Input("treespace-selected-trees-store", "data"),
+        Input("plot-config-store", "data"),
         State("graph", "figure"),
         State("dim-x-select", "value"),
         State("dim-y-select", "value"),
         State("dim-z-select", "value"),
-        State("plot-config-store", "data"),
         prevent_initial_call=True,
     )
-    def update_selection_overlay(selected, current_fig,
-                                 dim_x, dim_y, dim_z, plot_config):
+    def update_selection_overlay(selected, plot_config, current_fig,
+                                 dim_x, dim_y, dim_z):
+        # Result replacement clears the selection and rebuilds the full figure.
+        # Do not race that rebuild with a Patch based on the old trace count.
+        if "plot-config-store.data" in ctx.triggered_prop_ids:
+            return no_update
         if not current_fig or not plot_config:
             return no_update
         n_traces = len(current_fig.get("data", []))
@@ -546,7 +546,10 @@ def register_treespace_callbacks():
         # export).
         traces = current_fig.get("data", [])
         for i in range(n_traces):
-            if traces[i].get("type") == "scatter3d":
+            trace = traces[i]
+            if not isinstance(trace, dict):
+                return no_update
+            if trace.get("type") == "scatter3d":
                 continue
             patch["data"][i]["selectedpoints"] = None
 

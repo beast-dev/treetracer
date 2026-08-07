@@ -41,7 +41,7 @@ def _add_within_run_panel():
                                     data=[], value=None, size="xs",
                                     style={"width": "100%"},
                                 ),
-                                style={"width": "300px", "flexShrink": 0, "flexGrow": 0},
+                                style={"width": "270px", "flexShrink": 0, "flexGrow": 0},
                             ),
                             html.Div(
                                 dmc.Select(
@@ -51,25 +51,25 @@ def _add_within_run_panel():
                                     data=[], value=None, size="xs",
                                     style={"width": "100%"},
                                 ),
-                                style={"width": "180px", "flexShrink": 0, "flexGrow": 0},
+                                style={"width": "430px", "flexShrink": 0, "flexGrow": 0},
                             ),
                             html.Div(
                                 dmc.Select(label="X", id="within-run-dim-x",
                                            data=[], value=None, size="xs",
                                            style={"width": "100%"}),
-                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                                style={"width": "80px", "flexShrink": 0, "flexGrow": 0},
                             ),
                             html.Div(
                                 dmc.Select(label="Y", id="within-run-dim-y",
                                            data=[], value=None, size="xs",
                                            style={"width": "100%"}),
-                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                                style={"width": "80px", "flexShrink": 0, "flexGrow": 0},
                             ),
                             html.Div(
                                 dmc.Select(label="Z", id="within-run-dim-z",
                                            data=[], value=None, size="xs",
                                            style={"width": "100%"}),
-                                style={"width": "100px", "flexShrink": 0, "flexGrow": 0},
+                                style={"width": "80px", "flexShrink": 0, "flexGrow": 0},
                             ),
                         ], align="flex-end", gap="md", wrap="nowrap"),
                         dmc.Group(

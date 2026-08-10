@@ -25,7 +25,7 @@
 
 ## Overview
 
-TreeTracer checks whether an MCMC chain has converged and mixed well **in tree space**, not just in its parameter traces. Point it at the `.trees` files from a [BEAST X](https://beast.community/) run and it computes pairwise Robinson–Foulds distances, projects them with MDS, and plots the result so you can spot stuck chains, hidden modes, and poor mixing at a glance — between runs, within a run, and over time. The interface is quick to learn: load your trees, set a burn-in, and click through the tabs.
+TreeTracer checks whether an MCMC chain has converged and mixed well **in tree space**, not just in its parameter traces. Point it at the `.trees` files from a MCMC run (ie [BEAST X](https://beast.community/)) and it computes pairwise Robinson–Foulds distances, projects them with MDS, and plots the result so you can spot stuck chains, hidden modes, and poor mixing at a glance — between runs, within a run, and over time. The interface is quick to learn: load your trees, set a burn-in, and click through the tabs.
 
 It's the companion to [Tracer](https://github.com/beast-dev/tracer): your `.log` files go into Tracer, your `.trees` files go into TreeTracer.
 

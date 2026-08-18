@@ -86,7 +86,7 @@ def submit_pseudo_ess_job(
         n_refs=n_refs,
         seed=seed,
         metadata={
-            "display_name": "Pseudo-ESS",
+            "display_name": "Tree-ESS",
             "source_distmat_path": distmat_path,
             "n_rows": len(requests),
         },
@@ -117,8 +117,7 @@ def _ess_cell(v: float | None):
 
 
 def _build_result_table(results: list[dict[str, Any]]):
-    """Parent-side render of the per-row Pseudo-ESS table. The worker
-    only returns plain dicts; this turns them into Mantine table rows."""
+    """Render the per-row Pseudo-ESS and Fréchet ESS results."""
     if not results:
         return dmc.Text(
             "Burn-in leaves fewer than 4 trees per run; nothing to compute.",
@@ -135,6 +134,7 @@ def _build_result_table(results: list[dict[str, Any]]):
             _ess_cell(r.get("q2")),
             _ess_cell(r.get("max")),
             dmc.TableTd(str(r.get("n_refs_used", 0))),
+            _ess_cell(r.get("frechet")),
         ]))
 
     return dmc.Table(
@@ -148,6 +148,7 @@ def _build_result_table(results: list[dict[str, Any]]):
                     dmc.TableTh("Median"),
                     dmc.TableTh("Max"),
                     dmc.TableTh("# refs"),
+                    dmc.TableTh("Frechet"),
                 ])
             ),
             dmc.TableTbody(rows),
@@ -184,16 +185,16 @@ def register_pseudo_ess_compute_callbacks():
         first_delivery = int(event["delivery_attempt"]) == 1
         if state is JobState.CANCELLED:
             if first_delivery:
-                add_log("Pseudo-ESS computation cancelled by user.", "WARNING")
+                add_log("Tree-ESS computation cancelled by user.", "WARNING")
             output = dmc.Alert(
-                title="Pseudo-ESS computation cancelled",
+                title="Tree-ESS computation cancelled",
                 children=dmc.Text("Stopped before completion.", size="sm"),
                 color="gray",
                 variant="light",
             )
         elif state is JobState.FAILED:
             msg = (
-                "Pseudo-ESS computation failed: "
+                "Tree-ESS computation failed: "
                 f"{payload.get('message', 'Unknown error')}"
             )
             if first_delivery:

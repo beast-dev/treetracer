@@ -1,5 +1,5 @@
 """Diagnostics tab panel: log-posterior trace, RF-to-reference trace,
-and Pseudo-ESS — the MCMC-convergence diagnostics.
+and Tree-ESS — the MCMC-convergence diagnostics.
 
 The consensus tree clade-frequency comparison that used to live here now has its
 own tab — see ui/panels/clade_explore.py."""
@@ -145,9 +145,9 @@ def _add_diagnostics_panel():
                 ),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Section 3: Pseudo-ESS — picks the runs within the RF
-            # matrix selected at the top of the tab and (eventually)
-            # computes Lanfear-style pseudo-ESS for each.
+            # Section 3: Tree-ESS — picks the runs within the RF matrix
+            # selected at the top of the tab and computes both Lanfear-style
+            # Pseudo-ESS and Fréchet-correlation ESS for each.
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("Tree-ESS", order=5),

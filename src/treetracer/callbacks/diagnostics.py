@@ -782,7 +782,7 @@ def register_diagnostics_callbacks():
         ], gap="xs")
         return options, new_value, info
 
-    # ─── Pseudo-ESS section ────────────────────────────────────────────
+    # ─── Tree-ESS section ──────────────────────────────────────────────
     # Two callbacks own the per-run table + Compute button. Both react
     # to ``diagnostics-distmat-select`` (the shared header dropdown).
 
@@ -879,7 +879,7 @@ def register_diagnostics_callbacks():
         checks,
         ids,
     ):
-        """Submit a Pseudo-ESS job to the persistent worker.
+        """Submit a combined Pseudo-ESS and Fréchet ESS worker job.
 
         Parent-side: validates input, bins trees per run, applies
         per-chain burn-in, builds the list of slice descriptors the
@@ -987,7 +987,7 @@ def register_diagnostics_callbacks():
         spinner = dmc.Group([
             dmc.Loader(size="sm", type="dots"),
             dmc.Text(
-                f"Computing Pseudo-ESS for {len(requests)} row(s)…",
+                f"Computing Tree-ESS for {len(requests)} row(s)…",
                 size="sm", c="dimmed",
             ),
             stop_button("ess"),

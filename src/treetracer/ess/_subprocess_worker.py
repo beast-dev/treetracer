@@ -1,9 +1,9 @@
-"""Pseudo-ESS compute worker — runs in the persistent worker subprocess.
+"""Tree-ESS compute worker — runs in the persistent worker subprocess.
 
-Diagnostics-tab "Compute Pseudo-ESS" can tick multiple runs at once; we
-send a single job to the worker that does all ticked runs (+ optional
-Combined row) and returns aggregated per-row results. This keeps the
-IPC round-trip cost paid once per click, not N times.
+Diagnostics-tab "Compute Tree-ESS" can tick multiple runs at once; we send a
+single job to the worker that does all ticked runs (+ optional Combined row)
+and returns both the Pseudo-ESS summary and Fréchet-correlation ESS for each
+row. This keeps the IPC round-trip cost paid once per click, not N times.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def compute_pseudo_ess_worker_entry(
     n_refs: int,
     seed: int,
 ) -> Dict[str, Any]:
-    """Compute Pseudo-ESS for one or more slices of an RF distmat.
+    """Compute Pseudo-ESS and Fréchet ESS for slices of an RF distmat.
 
     Args:
         distmat_path: path to the saved RF matrix .npy on disk
@@ -48,6 +48,7 @@ def compute_pseudo_ess_worker_entry(
             "q3": float | None,
             "max": float | None,
             "n_refs_used": int,
+            "frechet": float | None,  # None when fewer than 7 trees
         }
 
     The Dash table is built parent-side from this — keeps the worker
@@ -55,6 +56,7 @@ def compute_pseudo_ess_worker_entry(
     """
     import numpy as np
 
+    from .frechet_ess import frechet_correlation_ess
     from .pseudo_ess import compute_pseudo_ess
 
     distmat = np.load(distmat_path)
@@ -70,11 +72,17 @@ def compute_pseudo_ess_worker_entry(
                 "burnin_label": req["burnin_label"],
                 "min": None, "q1": None, "q2": None, "q3": None, "max": None,
                 "n_refs_used": 0,
+                "frechet": None,
             })
             continue
 
         sub = distmat[np.ix_(idx, idx)]
         res = compute_pseudo_ess(sub, n_refs=n_refs, seed=seed)
+        frechet = (
+            float(frechet_correlation_ess(sub))
+            if len(idx) >= 7
+            else None
+        )
         valid = res["ess_values"][~np.isnan(res["ess_values"])]
         if valid.size:
             q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
@@ -93,6 +101,7 @@ def compute_pseudo_ess_worker_entry(
             "n_trees": len(idx),
             "burnin_label": req["burnin_label"],
             "n_refs_used": int(res["n_refs_used"]),
+            "frechet": frechet,
             **row,
         })
 

@@ -1,5 +1,5 @@
 """Diagnostics tab panel: log-posterior trace, RF-to-reference trace,
-and Pseudo-ESS — the MCMC-convergence diagnostics.
+and Tree-ESS — the MCMC-convergence diagnostics.
 
 The consensus tree clade-frequency comparison that used to live here now has its
 own tab — see ui/panels/clade_explore.py."""
@@ -145,9 +145,9 @@ def _add_diagnostics_panel():
                 ),
             ], p="md", withBorder=True, radius="sm"),
 
-            # Section 3: Pseudo-ESS — picks the runs within the RF
-            # matrix selected at the top of the tab and (eventually)
-            # computes Lanfear-style pseudo-ESS for each.
+            # Section 3: Tree-ESS — picks the runs within the RF matrix
+            # selected at the top of the tab and computes both Lanfear-style
+            # Pseudo-ESS and Fréchet-correlation ESS for each.
             dmc.Paper([
                 dmc.Group([
                     dmc.Title("Tree-ESS", order=5),
@@ -160,15 +160,17 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=140,
                     ),
-                    dmc.NumberInput(
-                        id="ess-n-refs-input",
-                        label="# Reference trees",
-                        value=100,
-                        min=10,
-                        step=10,
-                        size="xs",
-                        w=140,
-                    ),
+                    # Reference-count selection is temporarily deactivated;
+                    # Pseudo-ESS uses 50 reference trees by default.
+                    # dmc.NumberInput(
+                    #     id="ess-n-refs-input",
+                    #     label="# Reference trees",
+                    #     value=50,
+                    #     min=10,
+                    #     step=10,
+                    #     size="xs",
+                    #     w=140,
+                    # ),
                     dmc.Button(
                         "Compute Tree-ESS",
                         id="compute-pseudo-ess-button",

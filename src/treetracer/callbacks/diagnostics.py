@@ -865,7 +865,9 @@ def register_diagnostics_callbacks():
         Output("pseudo-ess-job-store", "data"),
         Input("compute-pseudo-ess-button", "n_clicks"),
         State("diagnostics-distmat-select", "value"),
-        State("ess-n-refs-input", "value"),
+        # Reference-count selection is temporarily deactivated. The submit
+        # helper uses 50 reference trees by default.
+        # State("ess-n-refs-input", "value"),
         State("ess-burnin-input", "value"),
         State({"type": "ess-run-checkbox", "index": ALL}, "checked"),
         State({"type": "ess-run-checkbox", "index": ALL}, "id"),
@@ -874,7 +876,7 @@ def register_diagnostics_callbacks():
     def compute_pseudo_ess_for_runs(
         n_clicks,
         selected_matrix,
-        n_refs,
+        # n_refs,
         burnin,
         checks,
         ids,
@@ -915,10 +917,12 @@ def register_diagnostics_callbacks():
             grp = str(tree_name).split("/", 1)[0]
             group_to_indices.setdefault(grp, []).append(i)
 
-        try:
-            n_refs_int = int(n_refs) if n_refs else 100
-        except (ValueError, TypeError):
-            n_refs_int = 100
+        # Reference-count selection is temporarily deactivated. These lines
+        # can be restored along with the State/argument above.
+        # try:
+        #     n_refs_int = int(n_refs) if n_refs else 50
+        # except (ValueError, TypeError):
+        #     n_refs_int = 50
 
         try:
             burnin_int = max(0, int(burnin)) if burnin else 0
@@ -964,7 +968,9 @@ def register_diagnostics_callbacks():
                 distmat_path=str(state.get_distmat_file_path(selected_matrix)),
                 names=names,
                 requests=requests,
-                n_refs=n_refs_int,
+                # Omitted while the control is deactivated; the submit helper
+                # supplies its default of 50 reference trees.
+                # n_refs=n_refs_int,
                 seed=0,
             )
         except JobBusyError as exc:

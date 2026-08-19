@@ -53,7 +53,7 @@ def submit_pseudo_ess_job(
     distmat_path: str,
     names: list[str],
     requests: list[dict[str, Any]],
-    n_refs: int,
+    n_refs: int = 50,
     seed: int = 0,
 ) -> JobRef:
     """Enqueue a Pseudo-ESS job covering all ticked runs (+ optional
@@ -64,7 +64,8 @@ def submit_pseudo_ess_job(
         names: row/column labels forwarded to the worker.
         requests: list of ``{"label", "indices", "burnin_label"}``
             dicts the worker iterates over.
-        n_refs: forwarded to ``compute_pseudo_ess``.
+        n_refs: forwarded to ``compute_pseudo_ess``; defaults to 50 while
+            the Diagnostics reference-count control is deactivated.
         seed: forwarded.
     """
     add_log(
@@ -117,7 +118,7 @@ def _ess_cell(v: float | None):
 
 
 def _build_result_table(results: list[dict[str, Any]]):
-    """Render the per-row Pseudo-ESS and Fréchet ESS results."""
+    """Render Fréchet ESS while Pseudo-ESS result columns are hidden."""
     if not results:
         return dmc.Text(
             "Burn-in leaves fewer than 4 trees per run; nothing to compute.",
@@ -130,10 +131,11 @@ def _build_result_table(results: list[dict[str, Any]]):
             dmc.TableTd(r["label"]),
             dmc.TableTd(str(r["n_trees"])),
             dmc.TableTd(r["burnin_label"]),
-            _ess_cell(r.get("min")),
-            _ess_cell(r.get("q2")),
-            _ess_cell(r.get("max")),
-            dmc.TableTd(str(r.get("n_refs_used", 0))),
+            # Pseudo-ESS summary columns are temporarily disabled.
+            # _ess_cell(r.get("min")),
+            # _ess_cell(r.get("q2")),
+            # _ess_cell(r.get("max")),
+            # dmc.TableTd(str(r.get("n_refs_used", 0))),
             _ess_cell(r.get("frechet")),
         ]))
 
@@ -144,10 +146,11 @@ def _build_result_table(results: list[dict[str, Any]]):
                     dmc.TableTh("Run"),
                     dmc.TableTh("Trees"),
                     dmc.TableTh("Burn-in"),
-                    dmc.TableTh("Min"),
-                    dmc.TableTh("Median"),
-                    dmc.TableTh("Max"),
-                    dmc.TableTh("# refs"),
+                    # Pseudo-ESS summary columns are temporarily disabled.
+                    # dmc.TableTh("Min"),
+                    # dmc.TableTh("Median"),
+                    # dmc.TableTh("Max"),
+                    # dmc.TableTh("# refs"),
                     dmc.TableTh("Frechet"),
                 ])
             ),

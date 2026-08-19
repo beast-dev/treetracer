@@ -160,15 +160,17 @@ def _add_diagnostics_panel():
                         size="xs",
                         w=140,
                     ),
-                    dmc.NumberInput(
-                        id="ess-n-refs-input",
-                        label="# Reference trees",
-                        value=100,
-                        min=10,
-                        step=10,
-                        size="xs",
-                        w=140,
-                    ),
+                    # Reference-count selection is temporarily deactivated;
+                    # Pseudo-ESS uses 50 reference trees by default.
+                    # dmc.NumberInput(
+                    #     id="ess-n-refs-input",
+                    #     label="# Reference trees",
+                    #     value=50,
+                    #     min=10,
+                    #     step=10,
+                    #     size="xs",
+                    #     w=140,
+                    # ),
                     dmc.Button(
                         "Compute Tree-ESS",
                         id="compute-pseudo-ess-button",

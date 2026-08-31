@@ -1,6 +1,6 @@
 [project]
 name = "treetracer"
-version = "0.96.1"
+version = "0.97"
 description = "An app to visualize phylogenetic tree topology convergence"
 readme = "README.md"
 authors = [
@@ -75,7 +75,7 @@ package = [
 [tool.briefcase]
 project_name = "TreeTracer"
 bundle = "community.beast"
-version = "0.96.1"
+version = "0.97"
 url = "https://github.com/beast-dev/treetracer"
 license = "GPL-3.0-or-later"
 author = "Sam Hong"

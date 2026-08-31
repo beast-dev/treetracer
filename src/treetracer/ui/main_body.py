@@ -21,7 +21,7 @@ def _add_about_modal():
         children=[
             dmc.Stack(
                 [
-                    dmc.Title("TreeTracer v0.96.1", order=3),
+                    dmc.Title("TreeTracer v0.97", order=3),
                     dmc.Text(
                         "TreeTracer is a diagnostic tool used to visualize convergence of tree topologies"
                     ),

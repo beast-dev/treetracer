@@ -105,9 +105,9 @@ def _ess_cell(v: float | None):
     Lanfear's rule of thumb."""
     if v is None or np.isnan(v):
         return dmc.TableTd("—")
-    if v < 100:
+    if v < 200:
         color = "red"
-    elif v < 200:
+    elif v < 500:
         color = "orange"
     else:
         color = "green"

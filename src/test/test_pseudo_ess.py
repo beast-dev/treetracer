@@ -19,6 +19,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from treetracer.ess import pseudo_ess as pseudo_ess_module
+from treetracer.ess._subprocess_worker import compute_pseudo_ess_worker_entry
+from treetracer.ess.frechet_ess import frechet_correlation_ess
 from treetracer.ess.pseudo_ess import compute_pseudo_ess
 
 
@@ -94,3 +97,37 @@ def test_too_few_trees_returns_nan():
     res = compute_pseudo_ess(D, n_refs=10, seed=0)
     assert res["n_refs_used"] == 0
     assert np.isnan(res["min"]) and np.isnan(res["median"]) and np.isnan(res["max"])
+
+
+def test_tree_ess_worker_skips_pseudo_ess_and_computes_frechet(
+    tmp_path,
+    monkeypatch,
+):
+    coordinates = np.arange(8, dtype=np.float64)
+    distmat = np.abs(coordinates[:, None] - coordinates[None, :])
+    path = tmp_path / "rf.npy"
+    np.save(path, distmat)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("Tree-ESS worker must not execute Pseudo-ESS")
+
+    monkeypatch.setattr(pseudo_ess_module, "compute_pseudo_ess", fail_if_called)
+
+    result = compute_pseudo_ess_worker_entry(
+        distmat_path=str(path),
+        names=[f"tree-{i}" for i in range(len(distmat))],
+        requests=[{
+            "label": "run-a",
+            "indices": list(range(len(distmat))),
+            "burnin_label": "0",
+        }],
+        n_refs=50,
+        seed=0,
+    )
+
+    row = result["results"][0]
+    assert row["frechet"] == pytest.approx(frechet_correlation_ess(distmat))
+    assert row["n_refs_used"] == 0
+    assert row["min"] is None
+    assert row["q2"] is None
+    assert row["max"] is None

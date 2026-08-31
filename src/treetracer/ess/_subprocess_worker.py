@@ -2,8 +2,8 @@
 
 Diagnostics-tab "Compute Tree-ESS" can tick multiple runs at once; we send a
 single job to the worker that does all ticked runs (+ optional Combined row)
-and returns both the Pseudo-ESS summary and Fréchet-correlation ESS for each
-row. This keeps the IPC round-trip cost paid once per click, not N times.
+and currently returns only Fréchet-correlation ESS for each row. This keeps the
+IPC round-trip cost paid once per click, not N times.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def compute_pseudo_ess_worker_entry(
     n_refs: int,
     seed: int,
 ) -> Dict[str, Any]:
-    """Compute Pseudo-ESS and Fréchet ESS for slices of an RF distmat.
+    """Compute Fréchet ESS for slices of an RF distmat.
 
     Args:
         distmat_path: path to the saved RF matrix .npy on disk
@@ -30,8 +30,10 @@ def compute_pseudo_ess_worker_entry(
             ``indices`` are post-burnin row indices into the full
             distmat; the parent already applied burn-in per chain so
             the worker just slices.
-        n_refs: passed through to ``compute_pseudo_ess``.
-        seed: passed through.
+        n_refs: retained for job-protocol compatibility while Pseudo-ESS is
+            disabled.
+        seed: retained for job-protocol compatibility while Pseudo-ESS is
+            disabled.
 
     Returns a dict:
         ``{"results": [per-request dict, …]}``
@@ -57,7 +59,8 @@ def compute_pseudo_ess_worker_entry(
     import numpy as np
 
     from .frechet_ess import frechet_correlation_ess
-    from .pseudo_ess import compute_pseudo_ess
+    # Pseudo-ESS is temporarily disabled for Tree-ESS jobs.
+    # from .pseudo_ess import compute_pseudo_ess
 
     distmat = np.load(distmat_path)
 
@@ -77,30 +80,36 @@ def compute_pseudo_ess_worker_entry(
             continue
 
         sub = distmat[np.ix_(idx, idx)]
-        res = compute_pseudo_ess(sub, n_refs=n_refs, seed=seed)
+        # Pseudo-ESS is temporarily disabled; keep this code in place so it can
+        # be restored without changing the worker protocol or result schema.
+        # res = compute_pseudo_ess(sub, n_refs=n_refs, seed=seed)
         frechet = (
             float(frechet_correlation_ess(sub))
             if len(idx) >= 7
             else None
         )
-        valid = res["ess_values"][~np.isnan(res["ess_values"])]
-        if valid.size:
-            q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
-            row = {
-                "min": float(valid.min()),
-                "q1": float(q1),
-                "q2": float(q2),
-                "q3": float(q3),
-                "max": float(valid.max()),
-            }
-        else:
-            row = {"min": None, "q1": None, "q2": None, "q3": None, "max": None}
+        # valid = res["ess_values"][~np.isnan(res["ess_values"])]
+        # if valid.size:
+        #     q1, q2, q3 = np.quantile(valid, [0.25, 0.5, 0.75])
+        #     row = {
+        #         "min": float(valid.min()),
+        #         "q1": float(q1),
+        #         "q2": float(q2),
+        #         "q3": float(q3),
+        #         "max": float(valid.max()),
+        #     }
+        # else:
+        #     row = {
+        #         "min": None, "q1": None, "q2": None,
+        #         "q3": None, "max": None,
+        #     }
+        row = {"min": None, "q1": None, "q2": None, "q3": None, "max": None}
 
         out.append({
             "label": req["label"],
             "n_trees": len(idx),
             "burnin_label": req["burnin_label"],
-            "n_refs_used": int(res["n_refs_used"]),
+            "n_refs_used": 0,
             "frechet": frechet,
             **row,
         })

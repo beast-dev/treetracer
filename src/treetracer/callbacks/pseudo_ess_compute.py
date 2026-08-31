@@ -44,7 +44,7 @@ def _finalize_pseudo_ess_job(
     rows = result.get("results")
     if not isinstance(rows, list):
         raise TypeError("Pseudo-ESS worker result is missing its results list")
-    add_log(f"Pseudo-ESS computed for {len(rows)} row(s).")
+    add_log(f"Fréchet ESS computed for {len(rows)} row(s).")
     return {"results": rows, "n_rows": len(rows)}
 
 
@@ -56,7 +56,7 @@ def submit_pseudo_ess_job(
     n_refs: int = 50,
     seed: int = 0,
 ) -> JobRef:
-    """Enqueue a Pseudo-ESS job covering all ticked runs (+ optional
+    """Enqueue a Tree-ESS job covering all ticked runs (+ optional
     Combined row) in a single subprocess round-trip.
 
     Args:
@@ -64,13 +64,12 @@ def submit_pseudo_ess_job(
         names: row/column labels forwarded to the worker.
         requests: list of ``{"label", "indices", "burnin_label"}``
             dicts the worker iterates over.
-        n_refs: forwarded to ``compute_pseudo_ess``; defaults to 50 while
-            the Diagnostics reference-count control is deactivated.
-        seed: forwarded.
+        n_refs: retained in the worker protocol while Pseudo-ESS is disabled.
+        seed: retained in the worker protocol while Pseudo-ESS is disabled.
     """
     add_log(
-        f"[Pseudo-ESS] Dispatching to persistent worker "
-        f"({len(requests)} row(s), n_refs={n_refs})..."
+        f"[Tree-ESS] Dispatching Fréchet ESS to persistent worker "
+        f"({len(requests)} row(s))..."
     )
     _wlog(
         f"[parent] submit_pseudo_ess_job: {len(requests)} requests, "

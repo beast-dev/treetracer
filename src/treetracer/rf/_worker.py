@@ -14,11 +14,10 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     a single rapidtrees call, and persist both to disk.
 
     Routes through ``rf_distance_with_snapshots_from_newick_iter``, which
-    calls rapidtrees' interned-snapshot pyfunction
-    (``pairwise_rf_with_snapshots_interned_from_newick_iter``). RF runs on
-    u32 split IDs against a globally-deduped bipartition table — at 1000+
-    taxa this is roughly 5–10× faster than the legacy bitset path because
-    the inner loop's working set fits in L1.
+    calls rapidtrees' ``pairwise_rf_with_snapshots_from_newick_iter``. RF
+    runs on u32 split IDs against a globally-deduped bipartition table, so
+    a comparison is a single integer compare and a large run's working set
+    stays in cache rather than DRAM.
 
     ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
       * True  → every internal-node descendant set is one clade. Honest

@@ -13,6 +13,18 @@ from dataclasses import dataclass
 import numpy as np
 
 
+_COUNT_CHUNK_ROWS = 64
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedCladeCounts:
+    """Clade counts over one non-empty selection of snapshot rows."""
+
+    counts: np.ndarray
+    active_columns: np.ndarray
+    n_trees: int
+
+
 @dataclass(frozen=True, slots=True)
 class RootedCladeCatalog:
     """Active rooted clades decoded from one RapidTrees snapshot.
@@ -44,6 +56,83 @@ def _normalise_snapshot_taxon_name(value: object) -> str:
         quote = name[0]
         name = name[1:-1].replace(quote + quote, quote)
     return name
+
+
+def count_selected_clades(
+    presence: np.ndarray,
+    selected_rows: Sequence[int] | np.ndarray,
+    *,
+    chunk_rows: int = _COUNT_CHUNK_ROWS,
+) -> SelectedCladeCounts:
+    """Count snapshot clades over selected rows using bounded memory.
+
+    The function never constructs ``presence[selected_rows]`` for the complete
+    selection. At most ``chunk_rows`` advanced-indexed rows are materialized at
+    once, bounding the temporary buffer to approximately
+    ``chunk_rows * n_columns * presence.itemsize`` bytes.
+
+    Args:
+        presence: RapidTrees binary ``(n_trees, n_columns)`` matrix.
+        selected_rows: Unique snapshot row IDs in the posterior selection.
+        chunk_rows: Maximum number of selected rows copied per summation block.
+
+    Returns:
+        Full per-column counts, the sorted IDs of columns with nonzero counts,
+        and the selected-tree count. Returned arrays are read-only.
+    """
+    matrix = np.asarray(presence)
+    if matrix.ndim != 2:
+        raise ValueError(
+            "presence must be a two-dimensional (n_trees, n_columns) matrix"
+        )
+    if matrix.dtype != np.uint8 and matrix.dtype != np.bool_:
+        raise TypeError(
+            "presence must have uint8 or bool dtype; "
+            f"got {matrix.dtype}"
+        )
+    if (
+        isinstance(chunk_rows, (bool, np.bool_))
+        or not isinstance(chunk_rows, (int, np.integer))
+        or int(chunk_rows) <= 0
+    ):
+        raise ValueError("chunk_rows must be a positive integer")
+    chunk_rows = int(chunk_rows)
+
+    rows = np.asarray(selected_rows)
+    if rows.ndim != 1:
+        raise ValueError("selected_rows must be a one-dimensional sequence")
+    if rows.size == 0:
+        raise ValueError("selected_rows is empty")
+    if rows.dtype.kind not in "iu":
+        raise TypeError("selected_rows must contain integer row IDs")
+    rows = rows.astype(np.intp, copy=False)
+    if np.any(rows < 0):
+        raise IndexError("selected snapshot row IDs must be non-negative")
+    if np.any(rows >= matrix.shape[0]):
+        bad_row = int(rows[rows >= matrix.shape[0]][0])
+        raise IndexError(
+            f"selected snapshot row {bad_row} is outside a "
+            f"{matrix.shape[0]}-row presence matrix"
+        )
+    if np.unique(rows).size != rows.size:
+        raise ValueError("selected_rows contains duplicate row IDs")
+
+    rows = np.sort(rows)
+    counts = np.zeros(matrix.shape[1], dtype=np.int64)
+    for start in range(0, rows.size, chunk_rows):
+        block = matrix[rows[start:start + chunk_rows]]
+        if np.any((block != 0) & (block != 1)):
+            raise ValueError("selected presence rows must contain only 0 or 1")
+        counts += block.sum(axis=0, dtype=np.int64)
+
+    active_columns = np.flatnonzero(counts).astype(np.intp, copy=False)
+    counts.setflags(write=False)
+    active_columns.setflags(write=False)
+    return SelectedCladeCounts(
+        counts=counts,
+        active_columns=active_columns,
+        n_trees=int(rows.size),
+    )
 
 
 def decode_rooted_clade_catalog(

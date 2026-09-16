@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from treetracer.consensus_tree.mrhipstr import decode_rooted_clade_catalog
+from treetracer.consensus_tree.mrhipstr import (
+    count_selected_clades,
+    decode_rooted_clade_catalog,
+)
 from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
 
 
@@ -13,6 +16,116 @@ def _bits(n_taxa: int, *taxon_indices: int) -> np.ndarray:
     row = np.zeros(n_taxa, dtype=np.uint8)
     row[list(taxon_indices)] = 1
     return row
+
+
+def test_count_selected_clades_sums_in_chunks_and_finds_active_columns():
+    presence = np.array(
+        [
+            [1, 0, 1, 0, 0],
+            [0, 1, 1, 0, 0],
+            [1, 1, 0, 1, 0],
+            [0, 1, 0, 1, 0],
+            [1, 0, 1, 1, 0],
+        ],
+        dtype=np.uint8,
+    )
+
+    result = count_selected_clades(
+        presence,
+        selected_rows=[4, 0, 2],
+        chunk_rows=2,
+    )
+
+    np.testing.assert_array_equal(result.counts, [3, 1, 2, 2, 0])
+    np.testing.assert_array_equal(result.active_columns, [0, 1, 2, 3])
+    assert result.n_trees == 3
+    assert not result.counts.flags.writeable
+    assert not result.active_columns.flags.writeable
+
+
+def test_count_selected_clades_checks_only_selected_data_blocks():
+    presence = np.array(
+        [
+            [1, 0],
+            [2, 0],  # invalid, but deliberately outside this selection
+        ],
+        dtype=np.uint8,
+    )
+
+    result = count_selected_clades(presence, selected_rows=[0], chunk_rows=1)
+    np.testing.assert_array_equal(result.counts, [1, 0])
+
+    with pytest.raises(ValueError, match="only 0 or 1"):
+        count_selected_clades(presence, selected_rows=[1], chunk_rows=1)
+
+
+@pytest.mark.parametrize(
+    ("presence", "selected_rows", "chunk_rows", "error", "message"),
+    [
+        (
+            np.array([1, 0], dtype=np.uint8),
+            [0],
+            1,
+            ValueError,
+            "two-dimensional",
+        ),
+        (
+            np.eye(2, dtype=np.float64),
+            [0],
+            1,
+            TypeError,
+            "uint8 or bool",
+        ),
+        (
+            np.eye(2, dtype=np.uint8),
+            [],
+            1,
+            ValueError,
+            "empty",
+        ),
+        (
+            np.eye(2, dtype=np.uint8),
+            [0.0],
+            1,
+            TypeError,
+            "integer row IDs",
+        ),
+        (
+            np.eye(2, dtype=np.uint8),
+            [0, 0],
+            1,
+            ValueError,
+            "duplicate row",
+        ),
+        (
+            np.eye(2, dtype=np.uint8),
+            [2],
+            1,
+            IndexError,
+            "outside",
+        ),
+        (
+            np.eye(2, dtype=np.uint8),
+            [0],
+            0,
+            ValueError,
+            "positive integer",
+        ),
+    ],
+)
+def test_count_selected_clades_rejects_invalid_inputs(
+    presence,
+    selected_rows,
+    chunk_rows,
+    error,
+    message,
+):
+    with pytest.raises(error, match=message):
+        count_selected_clades(
+            presence,
+            selected_rows,
+            chunk_rows=chunk_rows,
+        )
 
 
 def test_decode_rooted_clade_catalog_maps_columns_and_adds_implicit_root():
@@ -93,14 +206,20 @@ def test_decode_rooted_clade_catalog_matches_rapidtrees_rooted_snapshot():
             rooted=True,
         )
     )
-    active_columns = np.flatnonzero(presence.sum(axis=0))
+    selection = count_selected_clades(
+        presence,
+        selected_rows=[1, 0],
+        chunk_rows=1,
+    )
 
     catalog = decode_rooted_clade_catalog(
         bipartition_bits=bipartition_bits,
         leaf_names=leaf_names,
-        active_columns=active_columns,
+        active_columns=selection.active_columns,
     )
 
+    np.testing.assert_array_equal(selection.counts, presence.sum(axis=0))
+    assert selection.n_trees == 2
     assert catalog.leaf_names == ("A", "B", "C", "D")
     assert catalog.root_bits == 0b1111
     assert catalog.root_bits not in catalog.column_by_clade

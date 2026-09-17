@@ -322,6 +322,41 @@ def test_ingest_source_trees_requires_snapshot_selection_tree_count():
         )
 
 
+def test_ingest_source_trees_is_iterative_for_deep_caterpillar():
+    n_taxa = 1_101
+    leaf_names = [f"T{index}" for index in range(n_taxa)]
+    n_snapshot_clades = 2 * n_taxa - 2
+    bipartition_bits = np.zeros(
+        (n_snapshot_clades, n_taxa),
+        dtype=np.uint8,
+    )
+    bipartition_bits[np.arange(n_taxa), np.arange(n_taxa)] = 1
+    for clade_size in range(2, n_taxa):
+        column = n_taxa + clade_size - 2
+        bipartition_bits[column, :clade_size] = 1
+
+    presence = np.ones((1, n_snapshot_clades), dtype=np.uint8)
+    counts = count_selected_clades(presence, selected_rows=[0])
+    catalog = decode_rooted_clade_catalog(
+        bipartition_bits=bipartition_bits,
+        leaf_names=leaf_names,
+        active_columns=counts.active_columns,
+    )
+
+    newick = "(T0:1,T1:1):1"
+    for index in range(2, n_taxa):
+        newick = f"({newick},T{index}:1):1"
+    summary = ingest_source_trees(
+        [SourceTreeRecord(newick=newick + ";")],
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+
+    assert summary.n_trees == 1
+    assert len(summary.observation_counts) == n_snapshot_clades + 1
+    assert len(summary.observed_splits) == n_taxa - 1
+
+
 def test_decode_rooted_clade_catalog_maps_columns_and_adds_implicit_root():
     rows = np.stack(
         [

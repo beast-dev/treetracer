@@ -65,6 +65,45 @@ def test_public_parser_forwards_strict_branch_length_validation():
         parse_newick("(A,B:2):0", require_branch_lengths=True)
 
 
+def test_strict_parser_accepts_supported_labels_annotations_and_lengths():
+    root = parse_newick(
+        "[&R] ('A taxon'[&rate=2]:+1e-3,\"B\"\"taxon\":-2.5E+1):0;",
+        require_branch_lengths=True,
+    )
+
+    tips = {node.name: node for node in _collect_nodes(root) if node.is_tip}
+    assert set(tips) == {"A taxon", 'B"taxon'}
+    assert tips["A taxon"].length == pytest.approx(0.001)
+    assert tips['B"taxon'].length == pytest.approx(-25.0)
+
+
+@pytest.mark.parametrize(
+    ("newick", "message"),
+    [
+        ("(A:,B:1):0;", "missing value"),
+        ("(A:not-a-number,B:1):0;", "malformed branch length"),
+        ("(A:nan,B:1):0;", "non-finite branch length"),
+        ("(A:inf,B:1):0;", "non-finite branch length"),
+    ],
+)
+def test_strict_parser_rejects_invalid_branch_lengths(newick, message):
+    with pytest.raises(ValueError, match=message):
+        parse_newick(newick, require_branch_lengths=True)
+
+
+def test_parser_handles_a_caterpillar_deeper_than_recursion_limit():
+    n_taxa = 1_101
+    newick = "(T0:1,T1:1):1"
+    for index in range(2, n_taxa):
+        newick = f"({newick},T{index}:1):1"
+
+    root = parse_newick(newick + ";", require_branch_lengths=True)
+    nodes = _collect_nodes(root)
+
+    assert len(nodes) == 2 * n_taxa - 1
+    assert sum(node.is_tip for node in nodes) == n_taxa
+
+
 # ---------------------------------------------------------------------------
 # 2. Metadata comments [&...] stripped during tokenisation
 # ---------------------------------------------------------------------------

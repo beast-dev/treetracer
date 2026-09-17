@@ -307,9 +307,13 @@ def _validate_ingestion_inputs(
     counts = np.asarray(snapshot_counts.counts)
     active_columns = np.asarray(snapshot_counts.active_columns)
     if counts.ndim != 1 or counts.dtype.kind not in "iu":
-        raise ValueError("snapshot clade counts must be a one-dimensional integer array")
+        raise ValueError(
+            "snapshot clade counts must be a one-dimensional integer array"
+        )
     if active_columns.ndim != 1 or active_columns.dtype.kind not in "iu":
-        raise ValueError("active snapshot columns must be a one-dimensional integer array")
+        raise ValueError(
+            "active snapshot columns must be a one-dimensional integer array"
+        )
     if snapshot_counts.n_trees <= 0:
         raise ValueError("snapshot tree count must be positive")
     if np.any(counts < 0) or np.any(counts > snapshot_counts.n_trees):
@@ -378,7 +382,9 @@ def _extract_tree_facts(
             tips.append(node)
 
     tip_counts = Counter(tip.name for tip in tips)
-    duplicate_taxa = sorted(name for name, count in tip_counts.items() if count != 1)
+    duplicate_taxa = sorted(
+        name for name, count in tip_counts.items() if count != 1
+    )
     unexpected_taxa = sorted(set(tip_counts) - set(taxon_index))
     missing_taxa = [name for name in catalog.leaf_names if name not in tip_counts]
     if duplicate_taxa or unexpected_taxa or missing_taxa:
@@ -516,8 +522,7 @@ def ingest_source_trees(
     return SourceTreeSummary(
         observed_splits=observed_splits,
         height_sums={
-            clade_bits: height_sums[clade_bits]
-            for clade_bits in ordered_clades
+            clade_bits: height_sums[clade_bits] for clade_bits in ordered_clades
         },
         observation_counts={
             clade_bits: observation_counts[clade_bits]

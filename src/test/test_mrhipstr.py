@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from treetracer.consensus_tree.mrhipstr import (
+    MAJORITY_RULE_REWARD,
     SourceTreeRecord,
+    compute_hipstr_topology,
+    compute_mrhipstr_topology,
     count_selected_clades,
     decode_rooted_clade_catalog,
     ingest_source_trees,
@@ -35,6 +41,51 @@ def _snapshot_inputs(leaf_names, clades, presence):
         active_columns=counts.active_columns,
     )
     return catalog, counts
+
+
+def _topology_inputs(newicks, *, column_order=None, record_order=None):
+    newicks = list(newicks)
+    names = [f"tree-{index}" for index in range(len(newicks))]
+    _, _, presence, leaf_names, _, bipartition_bits = (
+        rf_distance_with_snapshots_from_newick_iter(
+            names,
+            iter(newicks),
+            [{}],
+            [0] * len(newicks),
+            rooted=True,
+        )
+    )
+    if column_order is not None:
+        column_order = np.asarray(column_order, dtype=np.intp)
+        presence = presence[:, column_order]
+        bipartition_bits = bipartition_bits[column_order]
+
+    counts = count_selected_clades(
+        presence,
+        selected_rows=np.arange(len(newicks)),
+    )
+    catalog = decode_rooted_clade_catalog(
+        bipartition_bits=bipartition_bits,
+        leaf_names=leaf_names,
+        active_columns=counts.active_columns,
+    )
+    if record_order is None:
+        record_order = range(len(newicks))
+    records = [
+        SourceTreeRecord(name=names[index], newick=newicks[index])
+        for index in record_order
+    ]
+    summary = ingest_source_trees(
+        records,
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+    return catalog, counts, summary
+
+
+def _named_clade(catalog, *names):
+    indices = {name: index for index, name in enumerate(catalog.leaf_names)}
+    return sum(1 << indices[name] for name in names)
 
 
 def test_count_selected_clades_sums_in_chunks_and_finds_active_columns():
@@ -355,6 +406,234 @@ def test_ingest_source_trees_is_iterative_for_deep_caterpillar():
     assert summary.n_trees == 1
     assert len(summary.observation_counts) == n_snapshot_clades + 1
     assert len(summary.observed_splits) == n_taxa - 1
+
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+    assert len(topology.selected_clades) == 2 * n_taxa - 1
+    assert len(topology.selected_splits) == n_taxa - 1
+    assert len(topology.cols_in_consensus_tree) == n_snapshot_clades
+
+
+def test_hipstr_derivation_example_returns_unsampled_amalgamation():
+    tree_1 = "(((A:1,B:1):1,C:2):1,(D:1,E:1):2):0;"
+    tree_2 = "((((B:1,C:1):1,A:2):1,D:3):1,E:4):0;"
+    tree_3 = "((((B:1,C:1):1,A:2):1,E:3):1,D:4):0;"
+    catalog, counts, summary = _topology_inputs(
+        [tree_1] * 3 + [tree_2] * 2 + [tree_3] * 2
+    )
+
+    result = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    a = _named_clade(catalog, "A")
+    b = _named_clade(catalog, "B")
+    c = _named_clade(catalog, "C")
+    d = _named_clade(catalog, "D")
+    e = _named_clade(catalog, "E")
+    bc = b | c
+    de = d | e
+    abc = a | b | c
+    root = a | b | c | d | e
+    assert result.selected_splits == {
+        bc: tuple(sorted((b, c))),
+        de: tuple(sorted((d, e))),
+        abc: tuple(sorted((a, bc))),
+        root: tuple(sorted((abc, de))),
+    }
+    assert result.log_clade_credibility == pytest.approx(math.log(12 / 49))
+    assert result.majority_clade_count == 2
+    assert result.objective_score == pytest.approx(
+        math.log(12 / 49) + 3 * MAJORITY_RULE_REWARD
+    )
+    assert result.cols_in_consensus_tree == frozenset(
+        catalog.column_by_clade[clade_bits]
+        for clade_bits in result.selected_clades
+        if clade_bits != catalog.root_bits
+    )
+
+
+def test_java_majority_reward_can_change_the_hipstr_topology():
+    # AC occurs in three of five trees. Ordinary HIPSTR prefers A|(B,(C,D))
+    # by clade product, while the Java 1E10 reward makes MrHIPSTR retain AC.
+    tree_1 = "(A:1,(B:1,(C:1,D:1):1):1):0;"
+    tree_2 = "((A:1,C:1):1,(B:1,D:1):1):0;"
+    tree_3 = "(((A:1,C:1):1,B:1):1,D:1):0;"
+    tree_4 = "(((A:1,C:1):1,D:1):1,B:1):0;"
+    catalog, counts, summary = _topology_inputs(
+        [tree_1, tree_1, tree_2, tree_3, tree_4]
+    )
+
+    hipstr = compute_hipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+        majority_rule=False,
+    )
+    mrhipstr = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    ac = _named_clade(catalog, "A", "C")
+    assert ac not in hipstr.selected_clades
+    assert ac in mrhipstr.selected_clades
+    assert hipstr.log_clade_credibility > mrhipstr.log_clade_credibility
+    assert hipstr.majority_clade_count == 0
+    assert mrhipstr.majority_clade_count == 1
+    assert hipstr.objective_score == pytest.approx(
+        hipstr.log_clade_credibility
+    )
+    assert mrhipstr.objective_score == pytest.approx(
+        mrhipstr.log_clade_credibility + 2 * MAJORITY_RULE_REWARD
+    )
+
+
+def test_mrhipstr_uses_strict_majority_threshold_and_stable_ties():
+    newicks = [
+        "((A:1,B:1):1,C:2):0;",
+        "((A:1,C:1):1,B:2):0;",
+    ]
+    catalog, counts, summary = _topology_inputs(newicks)
+    reversed_summary = replace(
+        summary,
+        observed_splits={
+            parent: tuple(reversed(splits))
+            for parent, splits in reversed(tuple(summary.observed_splits.items()))
+        },
+    )
+
+    result = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+    reordered = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=reversed_summary,
+    )
+
+    assert result.selected_splits == reordered.selected_splits
+    assert result.selected_splits[catalog.root_bits] == min(
+        summary.observed_splits[catalog.root_bits]
+    )
+    assert result.majority_clade_count == 0
+    assert result.log_clade_credibility == pytest.approx(math.log(0.5))
+    # Only the always-present root receives the reward: a clade at exactly
+    # 0.5 must not receive it.
+    assert result.objective_score == pytest.approx(
+        MAJORITY_RULE_REWARD + math.log(0.5)
+    )
+
+
+def test_mrhipstr_never_invents_an_unobserved_parent_child_split():
+    catalog, counts, summary = _topology_inputs(
+        [
+            "(((A:1,B:1):1,C:1):1,D:1):0;",
+            "(A:1,(B:1,(C:1,D:1):1):1):0;",
+        ]
+    )
+    result = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    ab = _named_clade(catalog, "A", "B")
+    cd = _named_clade(catalog, "C", "D")
+    hypothetical_unobserved_split = tuple(sorted((ab, cd)))
+    assert hypothetical_unobserved_split not in summary.observed_splits[
+        catalog.root_bits
+    ]
+    assert result.selected_splits[catalog.root_bits] != hypothetical_unobserved_split
+    assert all(
+        child_pair in summary.observed_splits[parent_bits]
+        for parent_bits, child_pair in result.selected_splits.items()
+    )
+
+
+def test_mrhipstr_is_stable_under_source_and_snapshot_column_permutations():
+    tree_1 = "(((A:1,B:1):1,C:2):1,(D:1,E:1):2):0;"
+    tree_2 = "((((B:1,C:1):1,A:2):1,D:3):1,E:4):0;"
+    tree_3 = "((((B:1,C:1):1,A:2):1,E:3):1,D:4):0;"
+    newicks = [tree_1] * 3 + [tree_2] * 2 + [tree_3] * 2
+    catalog, counts, summary = _topology_inputs(newicks)
+
+    _, _, raw_presence, _, _, _ = rf_distance_with_snapshots_from_newick_iter(
+        [f"tree-{index}" for index in range(len(newicks))],
+        iter(newicks),
+        [{}],
+        [0] * len(newicks),
+        rooted=True,
+    )
+    reverse_columns = np.arange(raw_presence.shape[1] - 1, -1, -1)
+    permuted_catalog, permuted_counts, permuted_summary = _topology_inputs(
+        newicks,
+        column_order=reverse_columns,
+        record_order=range(len(newicks) - 1, -1, -1),
+    )
+
+    result = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+    permuted = compute_mrhipstr_topology(
+        catalog=permuted_catalog,
+        snapshot_counts=permuted_counts,
+        source_summary=permuted_summary,
+    )
+
+    assert result.selected_clades == permuted.selected_clades
+    assert result.selected_splits == permuted.selected_splits
+    assert result.objective_score == pytest.approx(permuted.objective_score)
+    assert result.log_clade_credibility == pytest.approx(
+        permuted.log_clade_credibility
+    )
+    assert result.majority_clade_count == permuted.majority_clade_count
+
+
+def test_mrhipstr_rejects_missing_or_malformed_observed_splits():
+    catalog, counts, summary = _topology_inputs(
+        ["((A:1,B:1):1,C:2):0;"] * 2
+    )
+    without_root = replace(
+        summary,
+        observed_splits={
+            parent: splits
+            for parent, splits in summary.observed_splits.items()
+            if parent != catalog.root_bits
+        },
+    )
+    with pytest.raises(ValueError, match="has no observed child split"):
+        compute_mrhipstr_topology(
+            catalog=catalog,
+            snapshot_counts=counts,
+            source_summary=without_root,
+        )
+
+    a = _named_clade(catalog, "A")
+    ab = _named_clade(catalog, "A", "B")
+    malformed = replace(
+        summary,
+        observed_splits={
+            **summary.observed_splits,
+            catalog.root_bits: ((a, ab),),
+        },
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        compute_mrhipstr_topology(
+            catalog=catalog,
+            snapshot_counts=counts,
+            source_summary=malformed,
+        )
 
 
 def test_decode_rooted_clade_catalog_maps_columns_and_adds_implicit_root():

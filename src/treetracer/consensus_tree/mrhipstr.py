@@ -1,8 +1,9 @@
 """Core data structures and algorithms for MrHIPSTR summary trees.
 
 This module is deliberately independent of Dash and worker-process state. It
-decodes RapidTrees' rooted-clade snapshot and ingests source Newicks into the
-compact sufficient statistics used by the MrHIPSTR optimizer.
+decodes RapidTrees' rooted-clade snapshot, ingests source Newicks into compact
+sufficient statistics, and selects HIPSTR/MrHIPSTR topologies with the supplied
+Java formulation.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from ..clade_freq.layout import Node, parse_newick
 
 
 _COUNT_CHUNK_ROWS = 64
+MAJORITY_RULE_REWARD = 1e10
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,27 @@ class SourceTreeSummary:
     def mean_height(self, clade_bits: int) -> float:
         """Return the exact-clade arithmetic mean height."""
         return self.height_sums[clade_bits] / self.observation_counts[clade_bits]
+
+
+@dataclass(frozen=True, slots=True)
+class HipstrTopology:
+    """A selected HIPSTR/MrHIPSTR topology and its score metadata.
+
+    ``selected_splits`` contains one canonical child pair for every selected
+    internal clade, including the implicit root. ``selected_clades`` contains
+    every node clade in cardinality/integer order. The bonus-augmented
+    ``objective_score`` is retained for reference validation only; it is not a
+    posterior probability or log posterior.
+    """
+
+    root_bits: int
+    selected_clades: tuple[int, ...]
+    selected_splits: dict[int, tuple[int, int]]
+    cols_in_consensus_tree: frozenset[int]
+    objective_score: float
+    log_clade_credibility: float
+    majority_clade_count: int
+    majority_rule: bool
 
 
 def _normalise_snapshot_taxon_name(value: object) -> str:
@@ -328,7 +351,9 @@ def _validate_ingestion_inputs(
         count=len(catalog.clade_by_column),
     )
     if not np.array_equal(active_columns, catalog_columns):
-        raise ValueError("snapshot counts and rooted clade catalog use different columns")
+        raise ValueError(
+            "snapshot counts and rooted clade catalog use different columns"
+        )
 
 
 def _tree_context(record: SourceTreeRecord, tree_number: int) -> str:
@@ -507,7 +532,9 @@ def ingest_source_trees(
     if mismatches:
         sample = "; ".join(mismatches[:3])
         suffix = "; …" if len(mismatches) > 3 else ""
-        raise ValueError(f"parsed clade counts disagree with snapshot: {sample}{suffix}")
+        raise ValueError(
+            f"parsed clade counts disagree with snapshot: {sample}{suffix}"
+        )
 
     ordered_clades = [
         clade_bits
@@ -529,4 +556,291 @@ def ingest_source_trees(
             for clade_bits in ordered_clades
         },
         n_trees=n_ingested,
+    )
+
+
+def _validate_topology_inputs(
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+    source_summary: SourceTreeSummary,
+) -> dict[int, tuple[tuple[int, int], ...]]:
+    """Validate and canonicalize the clade-split DAG used by HIPSTR."""
+    _validate_ingestion_inputs(catalog, snapshot_counts)
+    if not isinstance(source_summary, SourceTreeSummary):
+        raise TypeError("source_summary must be a SourceTreeSummary")
+    if source_summary.n_trees != snapshot_counts.n_trees:
+        raise ValueError(
+            "source summary and snapshot counts use different tree counts: "
+            f"{source_summary.n_trees} != {snapshot_counts.n_trees}"
+        )
+
+    expected_root = (1 << catalog.n_taxa) - 1
+    if catalog.root_bits != expected_root:
+        raise ValueError("rooted clade catalog has an invalid all-taxa root")
+
+    clade_set = set(catalog.clades)
+    if len(clade_set) != len(catalog.clades):
+        raise ValueError("rooted clade catalog contains duplicate clades")
+    if catalog.root_bits not in clade_set:
+        raise ValueError("rooted clade catalog is missing its implicit root")
+    if catalog.root_bits in catalog.column_by_clade:
+        raise ValueError("implicit root must not have a snapshot column")
+    if set(catalog.column_by_clade) != clade_set - {catalog.root_bits}:
+        raise ValueError("rooted clade catalog has incomplete column mappings")
+    for clade_bits, column in catalog.column_by_clade.items():
+        if catalog.clade_by_column.get(column) != clade_bits:
+            raise ValueError("rooted clade catalog column mappings disagree")
+
+    observed_count_clades = set(source_summary.observation_counts)
+    if observed_count_clades != clade_set:
+        missing = clade_set - observed_count_clades
+        extra = observed_count_clades - clade_set
+        raise ValueError(
+            "source summary observation counts do not match the rooted clade "
+            f"catalog (missing={len(missing)}, extra={len(extra)})"
+        )
+    for clade_bits, column in catalog.column_by_clade.items():
+        parsed_count = source_summary.observation_counts[clade_bits]
+        snapshot_count = int(snapshot_counts.counts[column])
+        if parsed_count != snapshot_count:
+            raise ValueError(
+                "source summary clade count disagrees with snapshot for "
+                f"clade 0x{clade_bits:x}: {parsed_count} != {snapshot_count}"
+            )
+        if clade_bits.bit_count() == 1 and snapshot_count != snapshot_counts.n_trees:
+            raise ValueError(
+                f"singleton clade 0x{clade_bits:x} is not present in every tree"
+            )
+    if (
+        source_summary.observation_counts[catalog.root_bits]
+        != snapshot_counts.n_trees
+    ):
+        raise ValueError("implicit root is not present in every source tree")
+
+    extra_split_parents = set(source_summary.observed_splits) - clade_set
+    if extra_split_parents:
+        raise ValueError("source summary contains splits for unknown parent clades")
+
+    canonical_splits: dict[int, tuple[tuple[int, int], ...]] = {}
+    for parent_bits in sorted(clade_set, key=lambda clade: (clade.bit_count(), clade)):
+        raw_splits = source_summary.observed_splits.get(parent_bits, ())
+        if parent_bits.bit_count() == 1:
+            if raw_splits:
+                raise ValueError(
+                    f"singleton clade 0x{parent_bits:x} cannot have child splits"
+                )
+            continue
+        if not raw_splits:
+            raise ValueError(
+                f"non-singleton clade 0x{parent_bits:x} has no observed child split"
+            )
+
+        parent_splits: set[tuple[int, int]] = set()
+        for raw_pair in raw_splits:
+            try:
+                left_bits, right_bits = raw_pair
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"clade 0x{parent_bits:x} has a malformed child split"
+                ) from exc
+            if (
+                isinstance(left_bits, (bool, np.bool_))
+                or isinstance(right_bits, (bool, np.bool_))
+                or not isinstance(left_bits, (int, np.integer))
+                or not isinstance(right_bits, (int, np.integer))
+            ):
+                raise ValueError(
+                    f"clade 0x{parent_bits:x} has non-integer child clades"
+                )
+            left_bits = int(left_bits)
+            right_bits = int(right_bits)
+            if left_bits <= 0 or right_bits <= 0:
+                raise ValueError("child clades must be non-empty")
+            if left_bits & right_bits:
+                raise ValueError(
+                    f"child clades overlap under parent 0x{parent_bits:x}"
+                )
+            if left_bits | right_bits != parent_bits:
+                raise ValueError(
+                    f"child clades do not partition parent 0x{parent_bits:x}"
+                )
+            if left_bits not in clade_set or right_bits not in clade_set:
+                raise ValueError(
+                    f"parent 0x{parent_bits:x} references an unknown child clade"
+                )
+            parent_splits.add(tuple(sorted((left_bits, right_bits))))
+        canonical_splits[parent_bits] = tuple(sorted(parent_splits))
+
+    return canonical_splits
+
+
+def compute_hipstr_topology(
+    *,
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+    source_summary: SourceTreeSummary,
+    majority_rule: bool,
+) -> HipstrTopology:
+    """Select a HIPSTR topology with the supplied Java recurrence.
+
+    When ``majority_rule`` is true this is MrHIPSTR: every reached
+    non-singleton clade with credibility strictly greater than ``0.5`` adds
+    ``MAJORITY_RULE_REWARD`` to the dynamic-programming score. When false, the
+    same observed-split search runs without that reward and yields HIPSTR.
+
+    Exact objective ties are resolved by the lexicographically smallest
+    canonical child-bitset pair. This makes the selected topology reproducible
+    without changing the Java formulation or its optimum score.
+    """
+    if not isinstance(majority_rule, bool):
+        raise TypeError("majority_rule must be a bool")
+    observed_splits = _validate_topology_inputs(
+        catalog,
+        snapshot_counts,
+        source_summary,
+    )
+
+    frequencies: dict[int, float] = {catalog.root_bits: 1.0}
+    for clade_bits, column in catalog.column_by_clade.items():
+        frequency = int(snapshot_counts.counts[column]) / snapshot_counts.n_trees
+        if not math.isfinite(frequency) or not 0.0 < frequency <= 1.0:
+            raise ValueError(
+                f"clade 0x{clade_bits:x} has invalid frequency {frequency!r}"
+            )
+        frequencies[clade_bits] = frequency
+
+    ordered_clades = tuple(
+        sorted(catalog.clades, key=lambda clade: (clade.bit_count(), clade))
+    )
+    scores: dict[int, float] = {}
+    backpointers: dict[int, tuple[int, int]] = {}
+    for clade_bits in ordered_clades:
+        if clade_bits.bit_count() == 1:
+            # The Java implementation uses log(1) for a tip whenever it is a
+            # child, so singleton subtrees contribute exactly zero.
+            scores[clade_bits] = 0.0
+            continue
+
+        best_subtree_score = -math.inf
+        best_split: tuple[int, int] | None = None
+        for child_pair in observed_splits[clade_bits]:
+            left_bits, right_bits = child_pair
+            if left_bits not in scores or right_bits not in scores:
+                raise ValueError(
+                    f"child score unavailable while processing clade "
+                    f"0x{clade_bits:x}"
+                )
+            candidate_score = scores[left_bits] + scores[right_bits]
+            if (
+                candidate_score > best_subtree_score
+                or (
+                    candidate_score == best_subtree_score
+                    and (best_split is None or child_pair < best_split)
+                )
+            ):
+                best_subtree_score = candidate_score
+                best_split = child_pair
+
+        if best_split is None:
+            raise ValueError(
+                f"non-singleton clade 0x{clade_bits:x} is unreachable"
+            )
+        frequency = frequencies[clade_bits]
+        clade_score = math.log(frequency)
+        if majority_rule and frequency > 0.5:
+            clade_score += MAJORITY_RULE_REWARD
+        score = clade_score + best_subtree_score
+        if not math.isfinite(score):
+            raise ValueError(
+                f"dynamic-programming score is non-finite for clade "
+                f"0x{clade_bits:x}"
+            )
+        scores[clade_bits] = score
+        backpointers[clade_bits] = best_split
+
+    selected: set[int] = set()
+    selected_splits: dict[int, tuple[int, int]] = {}
+    stack = [catalog.root_bits]
+    while stack:
+        clade_bits = stack.pop()
+        if clade_bits in selected:
+            raise ValueError(
+                f"backtracking reached clade 0x{clade_bits:x} more than once"
+            )
+        selected.add(clade_bits)
+        if clade_bits.bit_count() == 1:
+            continue
+        child_pair = backpointers.get(clade_bits)
+        if child_pair is None:
+            raise ValueError(
+                f"selected clade 0x{clade_bits:x} has no backpointer"
+            )
+        selected_splits[clade_bits] = child_pair
+        # Push the larger child first so the smaller canonical child is visited
+        # first. The returned mappings are sorted again below for stable output.
+        stack.append(child_pair[1])
+        stack.append(child_pair[0])
+
+    selected_singletons = {
+        clade_bits for clade_bits in selected if clade_bits.bit_count() == 1
+    }
+    expected_singletons = {1 << index for index in range(catalog.n_taxa)}
+    if selected_singletons != expected_singletons:
+        raise ValueError("selected topology does not contain every taxon exactly once")
+    if len(selected) != 2 * catalog.n_taxa - 1:
+        raise ValueError("selected topology is not a fully resolved binary tree")
+    if len(selected_splits) != catalog.n_taxa - 1:
+        raise ValueError("selected topology has an invalid number of internal splits")
+
+    selected_clades = tuple(
+        sorted(selected, key=lambda clade: (clade.bit_count(), clade))
+    )
+    selected_splits = {
+        clade_bits: selected_splits[clade_bits]
+        for clade_bits in selected_clades
+        if clade_bits in selected_splits
+    }
+    cols_in_consensus_tree = frozenset(
+        catalog.column_by_clade[clade_bits]
+        for clade_bits in selected_clades
+        if clade_bits != catalog.root_bits
+    )
+    log_clade_credibility = math.fsum(
+        math.log(frequencies[clade_bits])
+        for clade_bits in selected_clades
+        if clade_bits.bit_count() > 1
+    )
+    majority_clade_count = sum(
+        1
+        for clade_bits in selected_clades
+        if (
+            1 < clade_bits.bit_count() < catalog.n_taxa
+            and frequencies[clade_bits] > 0.5
+        )
+    )
+
+    return HipstrTopology(
+        root_bits=catalog.root_bits,
+        selected_clades=selected_clades,
+        selected_splits=selected_splits,
+        cols_in_consensus_tree=cols_in_consensus_tree,
+        objective_score=scores[catalog.root_bits],
+        log_clade_credibility=log_clade_credibility,
+        majority_clade_count=majority_clade_count,
+        majority_rule=majority_rule,
+    )
+
+
+def compute_mrhipstr_topology(
+    *,
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+    source_summary: SourceTreeSummary,
+) -> HipstrTopology:
+    """Select an MrHIPSTR topology using the Java ``1E10`` formulation."""
+    return compute_hipstr_topology(
+        catalog=catalog,
+        snapshot_counts=snapshot_counts,
+        source_summary=source_summary,
+        majority_rule=True,
     )

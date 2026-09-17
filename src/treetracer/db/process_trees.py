@@ -105,9 +105,15 @@ def _extract_tip_labels(newick: str) -> set:
     """Extract tip (leaf) labels from a newick string.
 
     Tips appear after '(' or ',' and before ':', ',', ')', or '['.
-    Internal node labels (after ')') are excluded by this pattern.
+    Internal node labels (after ')') are excluded by this pattern. Square-
+    bracket comments are consumed as whole matches so commas and parentheses
+    in TreeAnnotator/BEAST annotations cannot be mistaken for tip delimiters.
     """
-    return set(re.findall(r'(?<=[(,])\s*([^\s():,\[\]]+)', newick))
+    matches = re.findall(
+        r'\[[^\]]*\]|(?<=[(,])\s*([^\s():,\[\]]+)',
+        newick,
+    )
+    return {label for label in matches if label}
 
 
 def process_nexus_trees_streaming(nexus_file: str, db_manager, file_source: str,

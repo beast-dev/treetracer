@@ -43,6 +43,34 @@ def test_translate_map_present_and_well_formed(db_with_fixture):
         assert isinstance(v, str) and v, f"empty value for {k!r}"
 
 
+def test_no_translate_fallback_ignores_treeannotator_annotations(tmp_path):
+    """Metadata delimiters in square brackets are not taxon delimiters."""
+    trees_path = tmp_path / "treeannotator.trees"
+    trees_path.write_text(
+        "#NEXUS\n"
+        "Begin trees;\n"
+        "tree TREE1 = [&R] "
+        "((taxa_1[&rate=0.003,rate_95%_HPD={0.001,0.005}]:0.1,"
+        "taxa_2[&rate=0.004,note=(not_a_tip,also_not_a_tip)]:0.1)"
+        "[&height_mean=2.0,height_95%_HPD={1.5,2.5},posterior=0.9]:0.2,"
+        "taxa_3[&rate=0.002,rate_range={0.001,0.003}]:0.3)"
+        "[&height_mean=3.0,posterior=1.0];\n"
+        "End;\n",
+        encoding="utf-8",
+    )
+
+    db = TreeManagerPandas()
+    process_nexus_trees_streaming(
+        str(trees_path), db, file_source="treeannotator.trees"
+    )
+
+    assert db.get_translate_map("treeannotator.trees") == {
+        "taxa_1": "taxa_1",
+        "taxa_2": "taxa_2",
+        "taxa_3": "taxa_3",
+    }
+
+
 @pytest.mark.integration
 def test_byte_offset_read_matches_source_line(db_with_fixture, trees_path):
     """For a random tree row, the bytes at (offset, offset+length) in

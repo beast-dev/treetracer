@@ -5,17 +5,21 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
+import dendropy
 import numpy as np
 import pytest
 
+from treetracer.clade_freq.layout import _collect_nodes, parse_nexus
 from treetracer.consensus_tree.mrhipstr import (
     MAJORITY_RULE_REWARD,
+    NEGATIVE_BRANCH_TOLERANCE,
     SourceTreeRecord,
     compute_hipstr_topology,
     compute_mrhipstr_topology,
     count_selected_clades,
     decode_rooted_clade_catalog,
     ingest_source_trees,
+    serialize_mrhipstr_tree,
 )
 from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
 
@@ -86,6 +90,25 @@ def _topology_inputs(newicks, *, column_order=None, record_order=None):
 def _named_clade(catalog, *names):
     indices = {name: index for index, name in enumerate(catalog.leaf_names)}
     return sum(1 << indices[name] for name in names)
+
+
+def _parsed_clades(root, catalog):
+    taxon_index = {
+        name: index for index, name in enumerate(catalog.leaf_names)
+    }
+    nodes = _collect_nodes(root)
+    clade_by_node = {}
+    node_by_clade = {}
+    for node in reversed(nodes):
+        if node.children:
+            clade_bits = 0
+            for child in node.children:
+                clade_bits |= clade_by_node[id(child)]
+        else:
+            clade_bits = 1 << taxon_index[node.name]
+        clade_by_node[id(node)] = clade_bits
+        node_by_clade[clade_bits] = node
+    return node_by_clade
 
 
 def test_count_selected_clades_sums_in_chunks_and_finds_active_columns():
@@ -416,6 +439,17 @@ def test_ingest_source_trees_is_iterative_for_deep_caterpillar():
     assert len(topology.selected_splits) == n_taxa - 1
     assert len(topology.cols_in_consensus_tree) == n_snapshot_clades
 
+    exported = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+    assert len(exported.mean_heights) == 2 * n_taxa - 1
+    assert len(exported.branch_lengths) == 2 * n_taxa - 2
+    assert exported.newick.endswith(";")
+    assert exported.nexus_bytes.endswith(b"End;\n")
+
 
 def test_hipstr_derivation_example_returns_unsampled_amalgamation():
     tree_1 = "(((A:1,B:1):1,C:2):1,(D:1,E:1):2):0;"
@@ -633,6 +667,227 @@ def test_mrhipstr_rejects_missing_or_malformed_observed_splits():
             catalog=catalog,
             snapshot_counts=counts,
             source_summary=malformed,
+        )
+
+
+def test_serialize_mrhipstr_tree_uses_conditional_mean_heights_and_translate():
+    catalog, counts, summary = _topology_inputs(
+        [
+            "((A:1,B:1):1,C:2):0;",
+            "((A:3,B:3):2,C:5):0;",
+            "((A:1,C:1):4,B:5):0;",
+        ]
+    )
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    result = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+        canonical_translate={"7": "'A'", "2": "B", "9": "C"},
+    )
+
+    a = _named_clade(catalog, "A")
+    b = _named_clade(catalog, "B")
+    c = _named_clade(catalog, "C")
+    ab = a | b
+    root_bits = catalog.root_bits
+    assert ab in topology.selected_clades
+    assert result.mean_heights[root_bits] == pytest.approx(4.0)
+    # AB occurs only in the first two trees: (1 + 3) / 2, not / 3.
+    assert result.mean_heights[ab] == pytest.approx(2.0)
+    assert result.clade_frequencies[ab] == pytest.approx(2 / 3)
+    assert result.branch_lengths[ab] == pytest.approx(2.0)
+    assert result.branch_lengths[a] == pytest.approx(2.0)
+    assert result.branch_lengths[b] == pytest.approx(2.0)
+    assert result.branch_lengths[c] == pytest.approx(4.0)
+    assert result.negative_branch_count == 0
+    assert result.minimum_branch_length == pytest.approx(2.0)
+
+    text = result.nexus_bytes.decode("utf-8")
+    assert text.startswith("#NEXUS\n")
+    assert "tree MrHIPSTR" in text
+    assert "[&R]" in text
+    assert "summaryMethod=MrHIPSTR" in text
+    assert "heightMethod=mean" in text
+    assert "posterior=0.66666666666666663,height_mean=2" in text
+    assert text.endswith("End;\n")
+
+    parsed_root, parsed_translate = parse_nexus(result.nexus_bytes)
+    assert parsed_translate == {"7": "A", "2": "B", "9": "C"}
+    parsed = _parsed_clades(parsed_root, catalog)
+    assert set(parsed) == set(topology.selected_clades)
+    for clade_bits, branch_length in result.branch_lengths.items():
+        assert parsed[clade_bits].length == pytest.approx(branch_length)
+
+    reference_tree = dendropy.Tree.get(
+        data=text,
+        schema="nexus",
+        preserve_underscores=True,
+        extract_comment_metadata=True,
+    )
+    tree_annotations = {
+        annotation.name: annotation.value
+        for annotation in reference_tree.annotations
+    }
+    assert tree_annotations["summaryMethod"] == "MrHIPSTR"
+    assert tree_annotations["heightMethod"] == "mean"
+    assert len(reference_tree.leaf_nodes()) == catalog.n_taxa
+    assert all(
+        {annotation.name for annotation in node.annotations}
+        >= {"posterior", "height_mean"}
+        for node in reference_tree.internal_nodes()
+    )
+    assert all(
+        "height_mean" in {annotation.name for annotation in node.annotations}
+        for node in reference_tree.leaf_nodes()
+    )
+
+
+def test_serialize_mrhipstr_tree_retains_material_negative_branches():
+    catalog, counts, summary = _topology_inputs(
+        [
+            "((A:9,B:9):1,C:10):0;",
+            "((A:9,B:9):1,C:10):0;",
+            "((A:1,C:1):0,B:1):0;",
+        ]
+    )
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    result = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    ab = _named_clade(catalog, "A", "B")
+    assert result.mean_heights[catalog.root_bits] == pytest.approx(7.0)
+    assert result.mean_heights[ab] == pytest.approx(9.0)
+    assert result.branch_lengths[ab] == pytest.approx(-2.0)
+    assert result.negative_branch_count == 1
+    assert result.minimum_branch_length == pytest.approx(-2.0)
+    assert "negativeBranches=1" in result.tree_line
+    assert ":-2" in result.newick
+
+
+def test_serialize_mrhipstr_tree_clamps_only_tiny_negative_roundoff():
+    catalog, counts, summary = _topology_inputs(["(A:1,B:1):0;"] * 2)
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+    a = _named_clade(catalog, "A")
+    adjusted_sums = dict(summary.height_sums)
+    adjusted_sums[catalog.root_bits] = 2.0
+    adjusted_sums[a] = 2.0 + NEGATIVE_BRANCH_TOLERANCE
+
+    result = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=replace(summary, height_sums=adjusted_sums),
+    )
+
+    assert result.branch_lengths[a] == 0.0
+    assert result.negative_branch_count == 0
+    assert result.minimum_branch_length == 0.0
+
+
+def test_serialize_mrhipstr_tree_preserves_heterochronous_tip_heights():
+    catalog, counts, summary = _topology_inputs(["(A:1,B:2):0;"] * 2)
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    result = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    a = _named_clade(catalog, "A")
+    b = _named_clade(catalog, "B")
+    assert result.mean_heights[a] == pytest.approx(1.0)
+    assert result.mean_heights[b] == pytest.approx(0.0)
+    assert result.branch_lengths[a] == pytest.approx(1.0)
+    assert result.branch_lengths[b] == pytest.approx(2.0)
+    assert "'A'[&height_mean=1]:1" in result.newick
+    assert "'B'[&height_mean=0]:2" in result.newick
+
+
+def test_serialize_mrhipstr_tree_quotes_direct_taxon_labels():
+    catalog, counts = _snapshot_inputs(
+        ["A taxon", "B's taxon"],
+        [(0,), (1,)],
+        [[1, 1], [1, 1]],
+    )
+    summary = ingest_source_trees(
+        [
+            SourceTreeRecord(newick="('A taxon':1,'B''s taxon':1):0;"),
+            SourceTreeRecord(newick="('A taxon':1,'B''s taxon':1):0;"),
+        ],
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    result = serialize_mrhipstr_tree(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    assert "'A taxon'" in result.newick
+    assert "'B''s taxon'" in result.newick
+    parsed_root, parsed_translate = parse_nexus(result.nexus_bytes)
+    assert not parsed_translate
+    assert {
+        node.name for node in _collect_nodes(parsed_root) if node.is_tip
+    } == {"A taxon", "B's taxon"}
+
+
+def test_serialize_mrhipstr_tree_validates_translate_and_preamble():
+    catalog, counts, summary = _topology_inputs(["(A:1,B:1):0;"] * 2)
+    topology = compute_mrhipstr_topology(
+        catalog=catalog,
+        snapshot_counts=counts,
+        source_summary=summary,
+    )
+
+    with pytest.raises(ValueError, match="Translate map does not match"):
+        serialize_mrhipstr_tree(
+            topology=topology,
+            catalog=catalog,
+            snapshot_counts=counts,
+            source_summary=summary,
+            canonical_translate={"1": "A"},
+        )
+    with pytest.raises(ValueError, match="no open Begin trees"):
+        serialize_mrhipstr_tree(
+            topology=topology,
+            catalog=catalog,
+            snapshot_counts=counts,
+            source_summary=summary,
+            nexus_preamble=b"#NEXUS\n",
         )
 
 

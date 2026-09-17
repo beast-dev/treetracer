@@ -2,13 +2,14 @@
 
 This module is deliberately independent of Dash and worker-process state. It
 decodes RapidTrees' rooted-clade snapshot, ingests source Newicks into compact
-sufficient statistics, and selects HIPSTR/MrHIPSTR topologies with the supplied
-Java formulation.
+sufficient statistics, selects HIPSTR/MrHIPSTR topologies with the supplied
+Java formulation, and serializes mean-height MrHIPSTR trees as NEXUS.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from ..clade_freq.layout import Node, parse_newick
 
 _COUNT_CHUNK_ROWS = 64
 MAJORITY_RULE_REWARD = 1e10
+NEGATIVE_BRANCH_TOLERANCE = 1e-12
+_SAFE_NEXUS_TOKEN = re.compile(r"^[A-Za-z0-9_.+\-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +97,27 @@ class HipstrTopology:
     log_clade_credibility: float
     majority_clade_count: int
     majority_rule: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MrHipstrTree:
+    """A mean-height MrHIPSTR tree and its serialized NEXUS document.
+
+    Mapping keys are descendant-taxon clade bitsets. ``branch_lengths`` omits
+    the root because the root has no parent edge. Tiny negative lengths caused
+    by floating-point roundoff are written as zero; material negative lengths
+    are retained and counted.
+    """
+
+    topology: HipstrTopology
+    mean_heights: dict[int, float]
+    clade_frequencies: dict[int, float]
+    branch_lengths: dict[int, float]
+    newick: str
+    tree_line: str
+    nexus_bytes: bytes
+    negative_branch_count: int
+    minimum_branch_length: float | None
 
 
 def _normalise_snapshot_taxon_name(value: object) -> str:
@@ -843,4 +867,334 @@ def compute_mrhipstr_topology(
         snapshot_counts=snapshot_counts,
         source_summary=source_summary,
         majority_rule=True,
+    )
+
+
+def _validate_selected_topology(
+    *,
+    topology: HipstrTopology,
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+    source_summary: SourceTreeSummary,
+) -> dict[int, int]:
+    """Validate a selected topology and return each non-root clade's parent."""
+    if not isinstance(topology, HipstrTopology):
+        raise TypeError("topology must be a HipstrTopology")
+    if not topology.majority_rule:
+        raise ValueError("mean-height MrHIPSTR export requires majority_rule=True")
+    observed_splits = _validate_topology_inputs(
+        catalog,
+        snapshot_counts,
+        source_summary,
+    )
+    if topology.root_bits != catalog.root_bits:
+        raise ValueError("selected topology and rooted clade catalog disagree")
+
+    selected = set(topology.selected_clades)
+    if len(selected) != len(topology.selected_clades):
+        raise ValueError("selected topology contains duplicate clades")
+    if catalog.root_bits not in selected:
+        raise ValueError("selected topology is missing the all-taxa root")
+    unknown = selected - set(catalog.clades)
+    if unknown:
+        raise ValueError("selected topology contains clades outside the catalog")
+
+    selected_internal = {
+        clade_bits for clade_bits in selected if clade_bits.bit_count() > 1
+    }
+    if set(topology.selected_splits) != selected_internal:
+        raise ValueError(
+            "selected topology splits do not match its internal clades"
+        )
+
+    visited: set[int] = set()
+    parent_by_clade: dict[int, int] = {}
+    stack = [catalog.root_bits]
+    while stack:
+        parent_bits = stack.pop()
+        if parent_bits in visited:
+            raise ValueError(
+                f"selected topology reaches clade 0x{parent_bits:x} more than once"
+            )
+        visited.add(parent_bits)
+        if parent_bits.bit_count() == 1:
+            continue
+
+        child_pair = topology.selected_splits[parent_bits]
+        if child_pair not in observed_splits[parent_bits]:
+            raise ValueError(
+                f"selected split for clade 0x{parent_bits:x} was not observed"
+            )
+        left_bits, right_bits = child_pair
+        if left_bits not in selected or right_bits not in selected:
+            raise ValueError("selected split references an unselected child clade")
+        for child_bits in child_pair:
+            if child_bits in parent_by_clade:
+                raise ValueError(
+                    f"selected clade 0x{child_bits:x} has more than one parent"
+                )
+            parent_by_clade[child_bits] = parent_bits
+        stack.append(right_bits)
+        stack.append(left_bits)
+
+    if visited != selected:
+        raise ValueError("selected topology contains clades unreachable from the root")
+    expected_columns = frozenset(
+        catalog.column_by_clade[clade_bits]
+        for clade_bits in selected
+        if clade_bits != catalog.root_bits
+    )
+    if topology.cols_in_consensus_tree != expected_columns:
+        raise ValueError("selected topology snapshot columns are inconsistent")
+    return parent_by_clade
+
+
+def _quote_nexus_label(value: str) -> str:
+    """Quote one Newick/NEXUS label with doubled embedded apostrophes."""
+    if not value:
+        raise ValueError("NEXUS labels must not be empty")
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _format_nexus_token(value: str) -> str:
+    if not value:
+        raise ValueError("NEXUS tokens must not be empty")
+    if _SAFE_NEXUS_TOKEN.fullmatch(value):
+        return value
+    return _quote_nexus_label(value)
+
+
+def _resolve_output_tip_labels(
+    catalog: RootedCladeCatalog,
+    canonical_translate: Mapping[object, object] | None,
+) -> tuple[dict[int, str], tuple[tuple[str, str], ...]]:
+    """Return emitted tip labels and a canonical-order Translate table."""
+    if canonical_translate is not None and not isinstance(
+        canonical_translate,
+        Mapping,
+    ):
+        raise TypeError("canonical_translate must be a mapping or None")
+    if not canonical_translate:
+        return (
+            {
+                1 << index: _quote_nexus_label(taxon)
+                for index, taxon in enumerate(catalog.leaf_names)
+            },
+            (),
+        )
+
+    token_by_taxon: dict[str, str] = {}
+    seen_tokens: set[str] = set()
+    for raw_token, raw_taxon in canonical_translate.items():
+        token = str(raw_token)
+        taxon = _normalise_snapshot_taxon_name(raw_taxon)
+        if not token:
+            raise ValueError("canonical Translate map contains an empty token")
+        if token in seen_tokens:
+            raise ValueError("canonical Translate map contains duplicate tokens")
+        if taxon in token_by_taxon:
+            raise ValueError(
+                "canonical Translate map assigns multiple tokens to taxon "
+                f"{taxon!r}"
+            )
+        seen_tokens.add(token)
+        token_by_taxon[taxon] = token
+
+    expected_taxa = set(catalog.leaf_names)
+    translated_taxa = set(token_by_taxon)
+    if translated_taxa != expected_taxa:
+        missing = sorted(expected_taxa - translated_taxa)
+        extra = sorted(translated_taxa - expected_taxa)
+        raise ValueError(
+            "canonical Translate map does not match the rooted clade catalog "
+            f"(missing={missing[:3]!r}, extra={extra[:3]!r})"
+        )
+
+    entries = tuple(
+        (token_by_taxon[taxon], taxon) for taxon in catalog.leaf_names
+    )
+    labels = {
+        1 << index: _format_nexus_token(token_by_taxon[taxon])
+        for index, taxon in enumerate(catalog.leaf_names)
+    }
+    return labels, entries
+
+
+def _format_finite_float(value: float) -> str:
+    if not math.isfinite(value):
+        raise ValueError(f"cannot serialize non-finite value {value!r}")
+    if value == 0.0:
+        return "0"
+    return format(value, ".17g")
+
+
+def _new_nexus_preamble(
+    translate_entries: Sequence[tuple[str, str]],
+) -> bytes:
+    lines = ["#NEXUS", "", "Begin trees;"]
+    if translate_entries:
+        lines.append("    Translate")
+        last_index = len(translate_entries) - 1
+        for index, (token, taxon) in enumerate(translate_entries):
+            separator = "," if index != last_index else ""
+            lines.append(
+                f"        {_format_nexus_token(token)} "
+                f"{_quote_nexus_label(taxon)}{separator}"
+            )
+        lines.append("    ;")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def serialize_mrhipstr_tree(
+    *,
+    topology: HipstrTopology,
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+    source_summary: SourceTreeSummary,
+    canonical_translate: Mapping[object, object] | None = None,
+    nexus_preamble: bytes | None = None,
+    tree_name: str = "MrHIPSTR",
+) -> MrHipstrTree:
+    """Apply exact-clade mean heights and serialize an MrHIPSTR NEXUS tree.
+
+    ``canonical_translate`` maps emitted tip tokens to taxon names. When it is
+    omitted, the Newick uses quoted taxon names directly. ``nexus_preamble``
+    may supply an existing canonical preamble ending inside a ``Begin trees``
+    block; otherwise a complete minimal preamble is generated.
+    """
+    parent_by_clade = _validate_selected_topology(
+        topology=topology,
+        catalog=catalog,
+        snapshot_counts=snapshot_counts,
+        source_summary=source_summary,
+    )
+    if not isinstance(tree_name, str):
+        raise TypeError("tree_name must be a string")
+    formatted_tree_name = _format_nexus_token(tree_name)
+    tip_labels, translate_entries = _resolve_output_tip_labels(
+        catalog,
+        canonical_translate,
+    )
+
+    mean_heights: dict[int, float] = {}
+    clade_frequencies: dict[int, float] = {}
+    for clade_bits in topology.selected_clades:
+        observation_count = source_summary.observation_counts.get(clade_bits)
+        if observation_count is None or observation_count <= 0:
+            raise ValueError(
+                f"selected clade 0x{clade_bits:x} has no height observations"
+            )
+        if clade_bits not in source_summary.height_sums:
+            raise ValueError(
+                f"selected clade 0x{clade_bits:x} has no height sum"
+            )
+        mean_height = (
+            source_summary.height_sums[clade_bits] / observation_count
+        )
+        if not math.isfinite(mean_height):
+            raise ValueError(
+                f"selected clade 0x{clade_bits:x} has non-finite mean height"
+            )
+        mean_heights[clade_bits] = mean_height
+        clade_frequencies[clade_bits] = (
+            observation_count / snapshot_counts.n_trees
+        )
+
+    branch_lengths: dict[int, float] = {}
+    negative_branch_count = 0
+    for child_bits in topology.selected_clades:
+        if child_bits == catalog.root_bits:
+            continue
+        parent_bits = parent_by_clade[child_bits]
+        branch_length = mean_heights[parent_bits] - mean_heights[child_bits]
+        if not math.isfinite(branch_length):
+            raise ValueError(
+                f"edge to clade 0x{child_bits:x} has non-finite length"
+            )
+        if -NEGATIVE_BRANCH_TOLERANCE <= branch_length < 0.0:
+            branch_length = 0.0
+        elif branch_length < -NEGATIVE_BRANCH_TOLERANCE:
+            negative_branch_count += 1
+        branch_lengths[child_bits] = branch_length
+    minimum_branch_length = (
+        min(branch_lengths.values()) if branch_lengths else None
+    )
+
+    def node_suffix(clade_bits: int) -> str:
+        annotations = []
+        if clade_bits.bit_count() > 1:
+            annotations.append(
+                "posterior="
+                + _format_finite_float(clade_frequencies[clade_bits])
+            )
+        annotations.append(
+            "height_mean=" + _format_finite_float(mean_heights[clade_bits])
+        )
+        suffix = "[&" + ",".join(annotations) + "]"
+        if clade_bits != catalog.root_bits:
+            suffix += ":" + _format_finite_float(branch_lengths[clade_bits])
+        return suffix
+
+    parts: list[str] = []
+    emit_stack: list[tuple[str, int | str]] = [
+        ("node", catalog.root_bits)
+    ]
+    while emit_stack:
+        action, value = emit_stack.pop()
+        if action == "text":
+            parts.append(str(value))
+            continue
+
+        clade_bits = int(value)
+        if clade_bits.bit_count() == 1:
+            parts.append(tip_labels[clade_bits] + node_suffix(clade_bits))
+            continue
+
+        left_bits, right_bits = topology.selected_splits[clade_bits]
+        parts.append("(")
+        emit_stack.append(("text", node_suffix(clade_bits)))
+        emit_stack.append(("text", ")"))
+        emit_stack.append(("node", right_bits))
+        emit_stack.append(("text", ","))
+        emit_stack.append(("node", left_bits))
+
+    newick = "".join(parts) + ";"
+    tree_metadata = ",".join(
+        (
+            "lnCladeCred="
+            + _format_finite_float(topology.log_clade_credibility),
+            "summaryMethod=MrHIPSTR",
+            "heightMethod=mean",
+            f"majorityClades={topology.majority_clade_count}",
+            f"negativeBranches={negative_branch_count}",
+        )
+    )
+    tree_line = (
+        f"tree {formatted_tree_name} [&{tree_metadata}] = [&R] {newick}"
+    )
+
+    if nexus_preamble is None:
+        preamble = _new_nexus_preamble(translate_entries)
+    else:
+        if not isinstance(nexus_preamble, bytes):
+            raise TypeError("nexus_preamble must be bytes or None")
+        preamble = nexus_preamble
+        if not re.search(rb"(?i)\bbegin\s+trees\s*;", preamble):
+            raise ValueError("nexus_preamble has no open Begin trees block")
+        if preamble.rstrip().lower().endswith(b"end;"):
+            raise ValueError("nexus_preamble already closes its final block")
+        if not preamble.endswith(b"\n"):
+            preamble += b"\n"
+    nexus_bytes = preamble + tree_line.encode("utf-8") + b"\nEnd;\n"
+
+    return MrHipstrTree(
+        topology=topology,
+        mean_heights=mean_heights,
+        clade_frequencies=clade_frequencies,
+        branch_lengths=branch_lengths,
+        newick=newick,
+        tree_line=tree_line,
+        nexus_bytes=nexus_bytes,
+        negative_branch_count=negative_branch_count,
+        minimum_branch_length=minimum_branch_length,
     )

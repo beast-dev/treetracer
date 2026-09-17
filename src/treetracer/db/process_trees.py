@@ -16,6 +16,20 @@ from typing import Tuple, Dict, Any
 from ..logger import add_log
 
 
+def _strip_outer_quotes(label: str) -> str:
+    """Decode one balanced quoted NEXUS label.
+
+    NEXUS quotes delimit a label and are not part of its taxon name. A doubled
+    delimiter inside the quoted value represents one literal quote. Leave
+    unquoted and malformed values unchanged so a stray quote is not silently
+    hidden during taxa validation.
+    """
+    if len(label) >= 2 and label[0] == label[-1] and label[0] in ("'", '"'):
+        quote = label[0]
+        return label[1:-1].replace(quote + quote, quote)
+    return label
+
+
 def parse_tree_line_metadata(left_part: str) -> Tuple[str, Dict[str, Any]]:
     """Parse tree line to extract name and metadata from square brackets.
 
@@ -96,7 +110,7 @@ def _parse_translate_block(preamble_text: str) -> Dict[str, str]:
         # Split on first whitespace: "1 TaxonName"
         parts = line.split(None, 1)
         if len(parts) == 2:
-            translate_map[parts[0]] = parts[1]
+            translate_map[parts[0]] = _strip_outer_quotes(parts[1])
 
     return translate_map
 

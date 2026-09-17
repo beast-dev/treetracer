@@ -43,6 +43,36 @@ def test_translate_map_present_and_well_formed(db_with_fixture):
         assert isinstance(v, str) and v, f"empty value for {k!r}"
 
 
+def test_streaming_normalizes_quoted_translate_values(tmp_path):
+    """NEXUS quote syntax must not become part of stored taxon names."""
+    trees_path = tmp_path / "quoted-translate.trees"
+    trees_path.write_text(
+        "#NEXUS\n"
+        "Begin trees;\n"
+        "    Translate\n"
+        "        1 'taxa_1',\n"
+        "        2 'taxon with spaces',\n"
+        "        3 'O''Brien',\n"
+        '        4 "double ""quote"" taxon"\n'
+        "    ;\n"
+        "tree TREE1 = [&R] ((1:1,2:1):1,(3:1,4:1):1):0;\n"
+        "End;\n",
+        encoding="utf-8",
+    )
+
+    db = TreeManagerPandas()
+    process_nexus_trees_streaming(
+        str(trees_path), db, file_source="quoted-translate.trees"
+    )
+
+    assert db.get_translate_map("quoted-translate.trees") == {
+        "1": "taxa_1",
+        "2": "taxon with spaces",
+        "3": "O'Brien",
+        "4": 'double "quote" taxon',
+    }
+
+
 def test_no_translate_fallback_ignores_treeannotator_annotations(tmp_path):
     """Metadata delimiters in square brackets are not taxon delimiters."""
     trees_path = tmp_path / "treeannotator.trees"

@@ -6,8 +6,10 @@ import numpy as np
 import pytest
 
 from treetracer.consensus_tree.mrhipstr import (
+    SourceTreeRecord,
     count_selected_clades,
     decode_rooted_clade_catalog,
+    ingest_source_trees,
 )
 from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
 
@@ -16,6 +18,23 @@ def _bits(n_taxa: int, *taxon_indices: int) -> np.ndarray:
     row = np.zeros(n_taxa, dtype=np.uint8)
     row[list(taxon_indices)] = 1
     return row
+
+
+def _snapshot_inputs(leaf_names, clades, presence):
+    bipartition_bits = np.stack(
+        [_bits(len(leaf_names), *clade) for clade in clades]
+    )
+    counts = count_selected_clades(
+        np.asarray(presence, dtype=np.uint8),
+        selected_rows=np.arange(len(presence)),
+        chunk_rows=1,
+    )
+    catalog = decode_rooted_clade_catalog(
+        bipartition_bits=bipartition_bits,
+        leaf_names=leaf_names,
+        active_columns=counts.active_columns,
+    )
+    return catalog, counts
 
 
 def test_count_selected_clades_sums_in_chunks_and_finds_active_columns():
@@ -128,6 +147,181 @@ def test_count_selected_clades_rejects_invalid_inputs(
         )
 
 
+def test_ingest_source_trees_collects_splits_and_exact_clade_mean_heights():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B", "C"],
+        [(0,), (1,), (2,), (0, 1)],
+        [
+            [1, 1, 1, 1],
+            [1, 1, 1, 1],
+        ],
+    )
+    records = [
+        SourceTreeRecord(
+            name="tree-one",
+            newick=(
+                "[&R] ((1[&rate=1]:1,2:1)[&posterior=.9]:2,3:3):0;"
+            ),
+            translate={"1": "'A'", "2": "'B'", "3": "'C'"},
+        ),
+        SourceTreeRecord(
+            name="tree-two",
+            newick="[&R] ((2:2,3:2):2,1:4):0;",
+            translate={"1": "C", "2": "A", "3": "B"},
+        ),
+    ]
+
+    summary = ingest_source_trees(
+        iter(records),
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+
+    assert summary.n_trees == 2
+    assert summary.observed_splits == {
+        0b011: ((0b001, 0b010),),
+        0b111: ((0b011, 0b100),),
+    }
+    assert summary.observation_counts == {
+        0b001: 2,
+        0b010: 2,
+        0b100: 2,
+        0b011: 2,
+        0b111: 2,
+    }
+    assert summary.height_sums[0b001] == pytest.approx(0.0)
+    assert summary.height_sums[0b010] == pytest.approx(0.0)
+    assert summary.height_sums[0b100] == pytest.approx(0.0)
+    assert summary.height_sums[0b011] == pytest.approx(3.0)
+    assert summary.height_sums[0b111] == pytest.approx(7.0)
+    assert summary.mean_height(0b011) == pytest.approx(1.5)
+    assert summary.mean_height(0b111) == pytest.approx(3.5)
+
+
+def test_ingest_source_trees_keeps_heterochronous_tip_heights():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B"],
+        [(0,), (1,)],
+        [[1, 1]],
+    )
+
+    summary = ingest_source_trees(
+        [SourceTreeRecord(newick="(A:1,B:2):0;")],
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+
+    assert summary.mean_height(0b01) == pytest.approx(1.0)
+    assert summary.mean_height(0b10) == pytest.approx(0.0)
+    assert summary.mean_height(0b11) == pytest.approx(2.0)
+    assert summary.observed_splits[0b11] == ((0b01, 0b10),)
+
+
+def test_ingest_source_trees_records_only_observed_parent_child_splits():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B", "C"],
+        [(0,), (1,), (2,), (0, 1), (0, 2)],
+        [
+            [1, 1, 1, 1, 0],
+            [1, 1, 1, 0, 1],
+        ],
+    )
+
+    summary = ingest_source_trees(
+        [
+            SourceTreeRecord(newick="((A:1,B:1):1,C:2):0;"),
+            SourceTreeRecord(newick="((A:1,C:1):1,B:2):0;"),
+        ],
+        catalog=catalog,
+        snapshot_counts=counts,
+    )
+
+    assert summary.observed_splits == {
+        0b011: ((0b001, 0b010),),
+        0b101: ((0b001, 0b100),),
+        0b111: (
+            (0b010, 0b101),
+            (0b011, 0b100),
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("newick", "message"),
+    [
+        ("(A,B:1):0;", "explicit branch length required"),
+        ("(A:1,A:1):0;", "duplicate taxa"),
+        ("(A:1,X:1):0;", "unexpected taxa"),
+        ("(A:1,B:1,C:1):0;", "exactly two children"),
+    ],
+)
+def test_ingest_source_trees_rejects_invalid_source_tree(newick, message):
+    leaf_names = ["A", "B", "C"] if ",C:" in newick else ["A", "B"]
+    catalog, counts = _snapshot_inputs(
+        leaf_names,
+        [(index,) for index in range(len(leaf_names))],
+        [[1] * len(leaf_names)],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ingest_source_trees(
+            [SourceTreeRecord(name="bad-tree", newick=newick)],
+            catalog=catalog,
+            snapshot_counts=counts,
+        )
+
+
+def test_ingest_source_trees_rejects_clade_absent_from_snapshot_catalog():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B", "C"],
+        [(0,), (1,), (2,), (0, 2)],
+        [[1, 1, 1, 1]],
+    )
+
+    with pytest.raises(ValueError, match="has no active RapidTrees"):
+        ingest_source_trees(
+            [SourceTreeRecord(newick="((A:1,B:1):1,C:2):0;")],
+            catalog=catalog,
+            snapshot_counts=counts,
+        )
+
+
+def test_ingest_source_trees_cross_checks_all_snapshot_clade_counts():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B", "C"],
+        [(0,), (1,), (2,), (0, 1)],
+        [
+            [1, 1, 1, 1],
+            [1, 1, 1, 0],
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"parsed=2, snapshot=1"):
+        ingest_source_trees(
+            [
+                SourceTreeRecord(newick="((A:1,B:1):1,C:2):0;"),
+                SourceTreeRecord(newick="((A:1,B:1):1,C:2):0;"),
+            ],
+            catalog=catalog,
+            snapshot_counts=counts,
+        )
+
+
+def test_ingest_source_trees_requires_snapshot_selection_tree_count():
+    catalog, counts = _snapshot_inputs(
+        ["A", "B"],
+        [(0,), (1,)],
+        [[1, 1], [1, 1]],
+    )
+
+    with pytest.raises(ValueError, match="yielded 1 trees.*contains 2"):
+        ingest_source_trees(
+            [SourceTreeRecord(newick="(A:1,B:1):0;")],
+            catalog=catalog,
+            snapshot_counts=counts,
+        )
+
+
 def test_decode_rooted_clade_catalog_maps_columns_and_adds_implicit_root():
     rows = np.stack(
         [
@@ -225,6 +419,16 @@ def test_decode_rooted_clade_catalog_matches_rapidtrees_rooted_snapshot():
     assert catalog.root_bits not in catalog.column_by_clade
     assert {1 << index for index in range(4)} <= set(catalog.clades)
     assert presence.sum(axis=1).tolist() == [6, 6]
+
+    summary = ingest_source_trees(
+        [SourceTreeRecord(newick=newick) for newick in newicks],
+        catalog=catalog,
+        snapshot_counts=selection,
+    )
+    assert summary.n_trees == 2
+    for clade_bits, column in catalog.column_by_clade.items():
+        assert summary.observation_counts[clade_bits] == selection.counts[column]
+    assert summary.observation_counts[catalog.root_bits] == 2
 
 
 def test_decode_rooted_clade_catalog_rejects_missing_singletons():

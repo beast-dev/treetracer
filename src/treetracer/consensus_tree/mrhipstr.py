@@ -1,16 +1,20 @@
 """Core data structures and algorithms for MrHIPSTR summary trees.
 
-This module is deliberately independent of Dash and worker-process state.  The
-first implementation stage decodes the rooted-clade catalog stored in a
-RapidTrees snapshot into compact Python integer bitsets.
+This module is deliberately independent of Dash and worker-process state. It
+decodes RapidTrees' rooted-clade snapshot and ingests source Newicks into the
+compact sufficient statistics used by the MrHIPSTR optimizer.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+
+from ..clade_freq.layout import Node, parse_newick
 
 
 _COUNT_CHUNK_ROWS = 64
@@ -44,6 +48,29 @@ class RootedCladeCatalog:
     @property
     def n_taxa(self) -> int:
         return len(self.leaf_names)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTreeRecord:
+    """One raw source Newick and the Translate map belonging to its file."""
+
+    newick: str
+    translate: Mapping[str, str] | None = None
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTreeSummary:
+    """Streaming aggregates extracted from selected source trees."""
+
+    observed_splits: dict[int, tuple[tuple[int, int], ...]]
+    height_sums: dict[int, float]
+    observation_counts: dict[int, int]
+    n_trees: int
+
+    def mean_height(self, clade_bits: int) -> float:
+        """Return the exact-clade arithmetic mean height."""
+        return self.height_sums[clade_bits] / self.observation_counts[clade_bits]
 
 
 def _normalise_snapshot_taxon_name(value: object) -> str:
@@ -270,4 +297,231 @@ def decode_rooted_clade_catalog(
         clades=clades,
         clade_by_column=clade_by_column,
         column_by_clade=column_by_clade,
+    )
+
+
+def _validate_ingestion_inputs(
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+) -> None:
+    counts = np.asarray(snapshot_counts.counts)
+    active_columns = np.asarray(snapshot_counts.active_columns)
+    if counts.ndim != 1 or counts.dtype.kind not in "iu":
+        raise ValueError("snapshot clade counts must be a one-dimensional integer array")
+    if active_columns.ndim != 1 or active_columns.dtype.kind not in "iu":
+        raise ValueError("active snapshot columns must be a one-dimensional integer array")
+    if snapshot_counts.n_trees <= 0:
+        raise ValueError("snapshot tree count must be positive")
+    if np.any(counts < 0) or np.any(counts > snapshot_counts.n_trees):
+        raise ValueError("snapshot clade counts must lie between zero and n_trees")
+
+    counted_active = np.flatnonzero(counts)
+    if not np.array_equal(active_columns, counted_active):
+        raise ValueError("active snapshot columns do not match nonzero clade counts")
+    catalog_columns = np.fromiter(
+        catalog.clade_by_column,
+        dtype=np.intp,
+        count=len(catalog.clade_by_column),
+    )
+    if not np.array_equal(active_columns, catalog_columns):
+        raise ValueError("snapshot counts and rooted clade catalog use different columns")
+
+
+def _tree_context(record: SourceTreeRecord, tree_number: int) -> str:
+    return record.name or f"selected tree {tree_number}"
+
+
+def _extract_tree_facts(
+    record: SourceTreeRecord,
+    *,
+    tree_number: int,
+    catalog: RootedCladeCatalog,
+    taxon_index: Mapping[str, int],
+) -> tuple[dict[int, float], dict[int, tuple[int, int]]]:
+    """Parse and validate one tree, returning local heights and child splits."""
+    context = _tree_context(record, tree_number)
+    try:
+        root = parse_newick(
+            record.newick,
+            translate=record.translate,
+            require_branch_lengths=True,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{context}: {exc}") from exc
+
+    nodes: list[Node] = []
+    tips: list[Node] = []
+    distances: dict[int, float] = {}
+    internal_count = 0
+    stack: list[tuple[Node, float]] = [(root, 0.0)]
+    while stack:
+        node, distance = stack.pop()
+        if not math.isfinite(distance):
+            raise ValueError(f"{context}: non-finite cumulative root distance")
+        nodes.append(node)
+        distances[id(node)] = distance
+        if node.children:
+            if len(node.children) != 2:
+                raise ValueError(
+                    f"{context}: every internal node must have exactly two "
+                    f"children; found {len(node.children)}"
+                )
+            internal_count += 1
+            for child in reversed(node.children):
+                child_distance = distance + child.length
+                if not math.isfinite(child_distance):
+                    raise ValueError(
+                        f"{context}: branch lengths overflow cumulative distance"
+                    )
+                stack.append((child, child_distance))
+        else:
+            tips.append(node)
+
+    tip_counts = Counter(tip.name for tip in tips)
+    duplicate_taxa = sorted(name for name, count in tip_counts.items() if count != 1)
+    unexpected_taxa = sorted(set(tip_counts) - set(taxon_index))
+    missing_taxa = [name for name in catalog.leaf_names if name not in tip_counts]
+    if duplicate_taxa or unexpected_taxa or missing_taxa:
+        details = []
+        if duplicate_taxa:
+            details.append(f"duplicate taxa={duplicate_taxa[:3]!r}")
+        if unexpected_taxa:
+            details.append(f"unexpected taxa={unexpected_taxa[:3]!r}")
+        if missing_taxa:
+            details.append(f"missing taxa={missing_taxa[:3]!r}")
+        raise ValueError(f"{context}: taxon mismatch ({'; '.join(details)})")
+
+    expected_internal_count = catalog.n_taxa - 1
+    if internal_count != expected_internal_count:
+        raise ValueError(
+            f"{context}: expected {expected_internal_count} internal partitions; "
+            f"found {internal_count}"
+        )
+
+    root_height = max(distances[id(tip)] for tip in tips)
+    clade_by_node: dict[int, int] = {}
+    tree_heights: dict[int, float] = {}
+    tree_splits: dict[int, tuple[int, int]] = {}
+    for node in reversed(nodes):
+        if not node.children:
+            clade_bits = 1 << taxon_index[node.name]
+        else:
+            left_bits = clade_by_node[id(node.children[0])]
+            right_bits = clade_by_node[id(node.children[1])]
+            if left_bits & right_bits:
+                raise ValueError(f"{context}: child clades overlap")
+            clade_bits = left_bits | right_bits
+            tree_splits[clade_bits] = tuple(sorted((left_bits, right_bits)))
+
+        if clade_bits in tree_heights:
+            raise ValueError(f"{context}: the same clade occurs more than once")
+        if node is not root and clade_bits not in catalog.column_by_clade:
+            raise ValueError(
+                f"{context}: parsed clade 0x{clade_bits:x} has no active "
+                "RapidTrees snapshot column"
+            )
+        height = root_height - distances[id(node)]
+        if not math.isfinite(height):
+            raise ValueError(f"{context}: calculated a non-finite node height")
+        clade_by_node[id(node)] = clade_bits
+        tree_heights[clade_bits] = height
+
+    if clade_by_node[id(root)] != catalog.root_bits:
+        raise ValueError(f"{context}: root does not contain the complete taxon set")
+    if len(tree_splits) != expected_internal_count:
+        raise ValueError(
+            f"{context}: expected {expected_internal_count} direct child splits; "
+            f"found {len(tree_splits)}"
+        )
+    return tree_heights, tree_splits
+
+
+def ingest_source_trees(
+    records: Iterable[SourceTreeRecord],
+    *,
+    catalog: RootedCladeCatalog,
+    snapshot_counts: SelectedCladeCounts,
+) -> SourceTreeSummary:
+    """Stream selected Newicks into splits and exact-clade height aggregates.
+
+    Each record is parsed once and discarded after its local facts have been
+    merged. The completed aggregate is cross-checked against every active
+    RapidTrees snapshot count before it is returned.
+    """
+    _validate_ingestion_inputs(catalog, snapshot_counts)
+    taxon_index = {name: index for index, name in enumerate(catalog.leaf_names)}
+
+    split_sets: dict[int, set[tuple[int, int]]] = {}
+    height_sums: dict[int, float] = {}
+    observation_counts: dict[int, int] = {}
+    n_ingested = 0
+
+    for tree_number, record in enumerate(records, start=1):
+        if tree_number > snapshot_counts.n_trees:
+            raise ValueError(
+                "source tree stream contains more trees than the snapshot selection"
+            )
+        if not isinstance(record, SourceTreeRecord):
+            raise TypeError("source tree stream must yield SourceTreeRecord objects")
+        tree_heights, tree_splits = _extract_tree_facts(
+            record,
+            tree_number=tree_number,
+            catalog=catalog,
+            taxon_index=taxon_index,
+        )
+        for clade_bits, height in tree_heights.items():
+            height_sums[clade_bits] = height_sums.get(clade_bits, 0.0) + height
+            observation_counts[clade_bits] = (
+                observation_counts.get(clade_bits, 0) + 1
+            )
+        for parent_bits, child_pair in tree_splits.items():
+            split_sets.setdefault(parent_bits, set()).add(child_pair)
+        n_ingested = tree_number
+
+    if n_ingested != snapshot_counts.n_trees:
+        raise ValueError(
+            f"source tree stream yielded {n_ingested} trees; "
+            f"snapshot selection contains {snapshot_counts.n_trees}"
+        )
+
+    mismatches = []
+    for clade_bits, column in catalog.column_by_clade.items():
+        parsed_count = observation_counts.get(clade_bits, 0)
+        snapshot_count = int(snapshot_counts.counts[column])
+        if parsed_count != snapshot_count:
+            mismatches.append(
+                f"column {column} clade 0x{clade_bits:x}: "
+                f"parsed={parsed_count}, snapshot={snapshot_count}"
+            )
+    root_count = observation_counts.get(catalog.root_bits, 0)
+    if root_count != snapshot_counts.n_trees:
+        mismatches.append(
+            f"implicit root: parsed={root_count}, snapshot={snapshot_counts.n_trees}"
+        )
+    if mismatches:
+        sample = "; ".join(mismatches[:3])
+        suffix = "; …" if len(mismatches) > 3 else ""
+        raise ValueError(f"parsed clade counts disagree with snapshot: {sample}{suffix}")
+
+    ordered_clades = [
+        clade_bits
+        for clade_bits in catalog.clades
+        if clade_bits in observation_counts
+    ]
+    observed_splits = {
+        clade_bits: tuple(sorted(split_sets[clade_bits]))
+        for clade_bits in ordered_clades
+        if clade_bits in split_sets
+    }
+    return SourceTreeSummary(
+        observed_splits=observed_splits,
+        height_sums={
+            clade_bits: height_sums[clade_bits]
+            for clade_bits in ordered_clades
+        },
+        observation_counts={
+            clade_bits: observation_counts[clade_bits]
+            for clade_bits in ordered_clades
+        },
+        n_trees=n_ingested,
     )

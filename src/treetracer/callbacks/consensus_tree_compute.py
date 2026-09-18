@@ -23,6 +23,7 @@ metadata, and calling ``submit_consensus_tree_job`` here.
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -57,10 +58,185 @@ class _ConsensusFinalizationContext:
     selection: list[Any]
     tree_names: tuple[str, ...]
     coord_by_tree_name: dict[str, tuple[Any, int]]
+    summary_method: str = "mcc"
+    click_started_at: float | None = None
+    click_started_wall_time: float | None = None
+    submit_started_at: float | None = None
+    dispatch_started_at: float | None = None
+    dispatch_wall_time: float | None = None
 
 
 class ConsensusTaxaAlignmentError(ValueError):
     """Raised when selected source files cannot share one Translate table."""
+
+
+def _normalise_summary_method(value: object) -> str:
+    """Normalize method metadata, treating missing legacy values as MCC."""
+    method = "mcc" if value is None else str(value).strip().lower()
+    if method not in {"mcc", "mrhipstr"}:
+        raise ValueError(
+            f"unsupported summary_method {value!r}; "
+            "expected 'mcc' or 'mrhipstr'"
+        )
+    return method
+
+
+def _summary_method_label(value: object) -> str:
+    """Return the user-facing method label used in logs and notifications."""
+    try:
+        method = _normalise_summary_method(value)
+    except ValueError:
+        return "Summary tree"
+    return "MrHIPSTR" if method == "mrhipstr" else "MCC"
+
+
+def _format_mrhipstr_statistics(
+    statistics: object,
+    *,
+    log_clade_credibility: float,
+) -> str:
+    """Format the TreeAnnotator-style MrHIPSTR console report."""
+    if not isinstance(statistics, dict):
+        raise TypeError("MrHIPSTR worker result is missing its statistics")
+    try:
+        total_trees = int(statistics["total_trees"])
+        n_tips = int(statistics["n_tips"])
+        total_unique_clades = int(statistics["total_unique_clades"])
+        recurring_clades = int(
+            statistics["clades_in_more_than_one_tree"]
+        )
+        topology_seconds = float(statistics["topology_seconds"])
+        lowest = float(statistics["lowest_clade_credibility"])
+        mean = float(statistics["mean_clade_credibility"])
+        median = float(statistics["median_clade_credibility"])
+        credibility_1 = int(statistics["clades_with_credibility_1"])
+        credibility_0_99 = int(
+            statistics["clades_with_credibility_gt_0_99"]
+        )
+        credibility_0_95 = int(
+            statistics["clades_with_credibility_gt_0_95"]
+        )
+        credibility_0_5 = int(
+            statistics["clades_with_credibility_gt_0_5"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TypeError(
+            "MrHIPSTR worker returned malformed statistics"
+        ) from exc
+
+    return "\n".join(
+        [
+            f"Total trees read: {total_trees}",
+            f"Size of trees: {n_tips} tips",
+            f"Total unique clades: {total_unique_clades}",
+            "Total clades in more than one tree: "
+            f"{recurring_clades}",
+            "",
+            (
+                "Finding majority rule highest independent posterior "
+                "subtree reconstruction (MrHIPSTR) tree..."
+            ),
+            f"[{topology_seconds:.3f} secs]",
+            "",
+            "MrHIPSTR tree's log clade credibility: "
+            f"{log_clade_credibility:.4f}",
+            f"Lowest individual clade credibility: {lowest:.4f}",
+            f"Mean individual clade credibility: {mean:.4f}",
+            f"Median individual clade credibility: {median:.4f}",
+            "Number of clades with credibility 1.0: "
+            f"{credibility_1}",
+            "Number of clades with credibility > 0.99: "
+            f"{credibility_0_99}",
+            "Number of clades with credibility > 0.95: "
+            f"{credibility_0_95}",
+            "Number of clades with credibility > 0.5: "
+            f"{credibility_0_5}",
+        ]
+    )
+
+
+def _format_mrhipstr_timing_profile(profile: object) -> str:
+    """Format the end-to-end MrHIPSTR timings for the visible console."""
+    if not isinstance(profile, dict):
+        raise TypeError("MrHIPSTR timing profile is missing")
+
+    fields = (
+        (
+            "selection_and_database_seconds",
+            "Click callback — selection and database lookup",
+        ),
+        (
+            "request_preparation_seconds",
+            "Parent — worker request preparation",
+        ),
+        (
+            "dispatch_queue_seconds",
+            "Dispatch/queue — worker handoff and wait",
+        ),
+        ("worker_setup_seconds", "Worker — setup and imports"),
+        (
+            "taxon_alignment_seconds",
+            "Worker — canonical taxon alignment",
+        ),
+        (
+            "snapshot_selection_seconds",
+            "Worker — snapshot load and selected-row lookup",
+        ),
+        (
+            "clade_collection_seconds",
+            "Worker — clade counting and catalog decoding",
+        ),
+        (
+            "source_tree_ingestion_seconds",
+            "Worker — source-tree parsing, splits, and heights",
+        ),
+        (
+            "topology_search_seconds",
+            "Worker — MrHIPSTR topology search",
+        ),
+        (
+            "nexus_serialization_seconds",
+            "Worker — mean-height NEXUS construction",
+        ),
+        (
+            "statistics_seconds",
+            "Worker — summary-statistics calculation",
+        ),
+        (
+            "worker_unattributed_seconds",
+            "Worker — orchestration and cleanup",
+        ),
+        ("worker_total_seconds", "Worker subtotal"),
+        (
+            "result_handoff_seconds",
+            "Result transfer and finalizer scheduling",
+        ),
+        (
+            "publication_seconds",
+            "Parent — cache and registry publication",
+        ),
+    )
+    try:
+        rows = [
+            f"  {label}: {float(profile[key]):.4f} secs"
+            for key, label in fields
+        ]
+        click_to_nexus = float(profile["click_to_nexus_seconds"])
+        click_to_ready = float(profile["click_to_ready_seconds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TypeError("MrHIPSTR timing profile is malformed") from exc
+
+    return "\n".join(
+        [
+            "MrHIPSTR timing profile:",
+            *rows,
+            "",
+            "Total View Summary click to MrHIPSTR NEXUS creation: "
+            f"{click_to_nexus:.4f} secs",
+            "Total View Summary click to cached and registered tree: "
+            f"{click_to_ready:.4f} secs",
+        ]
+    )
 
 
 def reset() -> None:
@@ -89,6 +265,9 @@ def _finalize_consensus_tree_job(
     context: _ConsensusFinalizationContext,
 ) -> dict[str, Any]:
     """Publish one worker result and return a small browser payload."""
+    finalization_started_at = time.perf_counter()
+    finalization_started_wall_time = time.time()
+
     if not isinstance(result, dict):
         raise TypeError("consensus-tree worker returned a non-mapping result")
     if result.get("missing_taxa"):
@@ -97,24 +276,63 @@ def _finalize_consensus_tree_job(
         )
 
     nexus_bytes = result.get("nexus_bytes")
-    consensus_tree_row = result.get("consensus_tree_row")
     if not isinstance(nexus_bytes, (bytes, bytearray)):
         raise TypeError("consensus-tree worker result is missing NEXUS bytes")
-    if not isinstance(consensus_tree_row, dict):
-        raise TypeError("consensus-tree worker result is missing its tree row")
 
-    consensus_tree_name = str(consensus_tree_row["name"])
-    coord = context.coord_by_tree_name.get(consensus_tree_name)
-    if coord is None:
-        consensus_tree_group, consensus_treenum = None, None
+    expected_method = _normalise_summary_method(context.summary_method)
+    summary_method = _normalise_summary_method(
+        result.get("summary_method", expected_method)
+    )
+    if summary_method != expected_method:
+        raise ValueError(
+            "consensus-tree worker returned a different summary method "
+            f"({summary_method!r}) than requested ({expected_method!r})"
+        )
+
+    consensus_tree_row = result.get("consensus_tree_row")
+    if summary_method == "mcc":
+        if not isinstance(consensus_tree_row, dict):
+            raise TypeError("MCC worker result is missing its sampled tree row")
+        consensus_tree_name = str(
+            result.get("summary_tree_name") or consensus_tree_row["name"]
+        )
+        coord = context.coord_by_tree_name.get(consensus_tree_name)
+        if coord is None:
+            consensus_tree_group, consensus_treenum = None, None
+        else:
+            consensus_tree_group, consensus_treenum = coord
+        consensus_tree_log_posterior = extract_log_posterior(
+            consensus_tree_row
+        )
     else:
-        consensus_tree_group, consensus_treenum = coord
+        if consensus_tree_row is not None:
+            raise TypeError(
+                "MrHIPSTR worker result must not identify a sampled tree row"
+            )
+        consensus_tree_name = str(
+            result.get("summary_tree_name") or "MrHIPSTR"
+        )
+        consensus_tree_group, consensus_treenum = None, None
+        consensus_tree_log_posterior = None
 
     log_clade_cred = result.get("log_clade_credibility")
     log_clade_cred = (
         None if log_clade_cred is None else float(log_clade_cred)
     )
-    consensus_tree_log_posterior = extract_log_posterior(consensus_tree_row)
+    height_method = str(
+        result.get(
+            "height_method",
+            "sampled" if summary_method == "mcc" else "mean",
+        )
+    ).strip().lower()
+    majority_clade_count = result.get("majority_clade_count")
+    negative_branch_count = int(result.get("negative_branch_count") or 0)
+    minimum_branch_length = result.get("minimum_branch_length")
+    minimum_branch_length = (
+        None
+        if minimum_branch_length is None
+        else float(minimum_branch_length)
+    )
 
     # This finalizer runs behind JobManager's publication barrier and can only
     # be claimed once. Poll retries never execute these state mutations again.
@@ -130,17 +348,138 @@ def _finalize_consensus_tree_job(
             "tree_name": consensus_tree_name,
         },
         selection=context.selection,
+        summary_method=summary_method,
+        height_method=height_method,
         log_clade_credibility=log_clade_cred,
+        majority_clade_count=majority_clade_count,
+        negative_branch_count=negative_branch_count,
+        minimum_branch_length=minimum_branch_length,
         consensus_tree_log_posterior=consensus_tree_log_posterior,
         tree_names=context.tree_names,
         counts=result.get("counts"),
         cols_in_consensus_tree=result.get("cols_in_consensus_tree"),
     )
+    publication_finished_at = time.perf_counter()
     registered_name = entry["name"]
     n_trees = len(context.tree_names)
+    method_label = _summary_method_label(summary_method)
+    log_prefix = f"[{method_label}/{context.mode}]"
+    score_text = (
+        "n/a" if log_clade_cred is None else f"{log_clade_cred:.6g}"
+    )
+    if summary_method == "mrhipstr":
+        mrhipstr_statistics = result.get("mrhipstr_statistics")
+        if mrhipstr_statistics is None:
+            # Backward-compatible fallback for an in-flight result produced
+            # by an older worker during a development hot reload.
+            majority_text = (
+                "n/a"
+                if majority_clade_count is None
+                else str(int(majority_clade_count))
+            )
+            add_log(
+                f"{log_prefix} Completed clade-frequency collection, "
+                "source-tree split/height ingestion, dynamic-programming "
+                "topology construction, and mean-height NEXUS serialization "
+                f"for {n_trees} selected trees; log clade credibility="
+                f"{score_text}, majority clades={majority_text}."
+            )
+        else:
+            add_log(
+                _format_mrhipstr_statistics(
+                    mrhipstr_statistics,
+                    log_clade_credibility=log_clade_cred,
+                )
+            )
+        worker_profile = result.get("mrhipstr_profile")
+        if isinstance(worker_profile, dict):
+            try:
+                required_context_times = (
+                    context.click_started_at,
+                    context.click_started_wall_time,
+                    context.submit_started_at,
+                    context.dispatch_started_at,
+                    context.dispatch_wall_time,
+                )
+                if any(value is None for value in required_context_times):
+                    raise TypeError(
+                        "parent timing context is incomplete"
+                    )
+                timing_profile = dict(worker_profile)
+                timing_profile.update(
+                    {
+                        "selection_and_database_seconds": max(
+                            0.0,
+                            float(context.submit_started_at)
+                            - float(context.click_started_at),
+                        ),
+                        "request_preparation_seconds": max(
+                            0.0,
+                            float(context.dispatch_started_at)
+                            - float(context.submit_started_at),
+                        ),
+                        "dispatch_queue_seconds": max(
+                            0.0,
+                            float(
+                                worker_profile[
+                                    "worker_started_wall_time"
+                                ]
+                            )
+                            - float(context.dispatch_wall_time),
+                        ),
+                        "result_handoff_seconds": max(
+                            0.0,
+                            finalization_started_wall_time
+                            - float(
+                                worker_profile[
+                                    "worker_finished_wall_time"
+                                ]
+                            ),
+                        ),
+                        "publication_seconds": max(
+                            0.0,
+                            publication_finished_at
+                            - finalization_started_at,
+                        ),
+                        "click_to_nexus_seconds": max(
+                            0.0,
+                            float(
+                                worker_profile[
+                                    "nexus_created_wall_time"
+                                ]
+                            )
+                            - float(context.click_started_wall_time),
+                        ),
+                        "click_to_ready_seconds": max(
+                            0.0,
+                            publication_finished_at
+                            - float(context.click_started_at),
+                        ),
+                    }
+                )
+                add_log(_format_mrhipstr_timing_profile(timing_profile))
+            except (KeyError, TypeError, ValueError) as exc:
+                add_log(
+                    f"{log_prefix} Could not format the timing profile: "
+                    f"{exc}.",
+                    "WARNING",
+                )
+        branch_level = "WARNING" if negative_branch_count else "INFO"
+        add_log(
+            f"{log_prefix} Mean-height branch diagnostics: "
+            f"negative branches={negative_branch_count}, "
+            f"minimum branch length={minimum_branch_length!r}.",
+            branch_level,
+        )
+    else:
+        add_log(
+            f"{log_prefix} Completed clade-frequency scoring and source-tree "
+            f"serialization for {n_trees} selected trees; selected "
+            f"'{consensus_tree_name}', log clade credibility={score_text}."
+        )
     add_log(
-        f"Cached consensus tree '{consensus_tree_name}' "
-        f"(from {n_trees} selected) as {uid}; registered as {registered_name}"
+        f"{log_prefix} Cached summary tree as {uid}; registered as "
+        f"{registered_name}."
     )
     return {
         "uuid": uid,
@@ -148,6 +487,8 @@ def _finalize_consensus_tree_job(
         "consensus_tree_name": consensus_tree_name,
         "n_trees": n_trees,
         "mode": context.mode,
+        "summary_method": summary_method,
+        "negative_branch_count": negative_branch_count,
     }
 
 
@@ -160,13 +501,17 @@ def submit_consensus_tree_job(
     run: str | None,
     consensus_tree_coord_by_tree_name: dict[str, tuple],
     store_target: str,
+    summary_method: str = "mrhipstr",
+    click_started_at: float | None = None,
+    click_started_wall_time: float | None = None,
 ) -> JobRef:
     """Enqueue a consensus tree compute job. Called by both tab callbacks.
 
     Args:
         matched_records: per-tree dicts (``name``, ``file_source``,
-            ``line_offset``, ``line_length``, ``metadata``) in DB order.
-            The parent extracts these from a vectorised DataFrame slice.
+            ``newick_offset``, ``newick_length``, ``line_offset``,
+            ``line_length``, ``metadata``) in DB order. The parent extracts
+            these from a vectorised DataFrame slice.
         source_distmat: distmat name the selection was drawn from.
         mode: ``"Between"`` or ``"Within"`` — propagated into the
             registry entry's mode field and the per-tab labelling.
@@ -181,11 +526,30 @@ def submit_consensus_tree_job(
         store_target: ``"treespace-view-consensus-tree-store"`` or
             ``"within-run-view-consensus-tree-store"`` — tells the terminal
             adapter which tab's clientside ``window.open`` to fire.
+        summary_method: ``"mrhipstr"`` (default) or explicit ``"mcc"`` for
+            compatibility with the retained sampled-tree implementation.
     """
+    submit_started_at = time.perf_counter()
+    if click_started_at is None:
+        click_started_at = submit_started_at
+    if click_started_wall_time is None:
+        click_started_wall_time = time.time()
+
     if not matched_records:
         raise ValueError("matched_records must not be empty")
     if store_target not in _STORE_TARGETS:
         raise ValueError(f"unsupported consensus-tree store target: {store_target}")
+    summary_method = _normalise_summary_method(summary_method)
+
+    # Fail before touching source files or submitting work. MrHIPSTR's clade
+    # recurrence is rooted; midpoint-rooting an unrooted result afterward
+    # would not make the underlying frequencies rooted observations.
+    distmat_is_rooted = _state.get_distmat_is_rooted(source_distmat)
+    if summary_method == "mrhipstr" and not distmat_is_rooted:
+        raise ValueError(
+            "MrHIPSTR requires a rooted RF matrix; choose MCC or recompute "
+            "the RF matrix as rooted."
+        )
 
     tree_service = _get_tree_service()
     db_manager = tree_service.db_manager
@@ -211,27 +575,51 @@ def submit_consensus_tree_job(
     }
 
     tree_names = tuple(str(r["name"]) for r in matched_records)
+    context_selection = copy.deepcopy(selection)
+    context_coords = {
+        str(name): (coord[0], int(coord[1]))
+        for name, coord in consensus_tree_coord_by_tree_name.items()
+    }
+
+    method_label = _summary_method_label(summary_method)
+    log_prefix = f"[{method_label}/{mode}]"
+    rooting_text = (
+        "rooted"
+        if distmat_is_rooted
+        else "unrooted; MCC output will be midpoint-rooted"
+    )
+    add_log(
+        f"{log_prefix} Starting summary-tree computation for "
+        f"{len(matched_records)} selected trees from {source_distmat} "
+        f"({rooting_text})."
+    )
+    if summary_method == "mrhipstr":
+        add_log(
+            f"{log_prefix} Stages: collect selected clade frequencies → "
+            "ingest observed source-tree splits and node heights → run "
+            "the MrHIPSTR dynamic program → serialize mean-height NEXUS."
+        )
+    else:
+        add_log(
+            f"{log_prefix} Stages: load selected clade-presence rows → "
+            "score source topologies → serialize the highest-scoring "
+            "source tree."
+        )
+    dispatch_started_at = time.perf_counter()
+    dispatch_wall_time = time.time()
     context = _ConsensusFinalizationContext(
         mode=str(mode),
         run=None if run is None else str(run),
         source_distmat=str(source_distmat),
-        selection=copy.deepcopy(selection),
+        selection=context_selection,
         tree_names=tree_names,
-        coord_by_tree_name={
-            str(name): (coord[0], int(coord[1]))
-            for name, coord in consensus_tree_coord_by_tree_name.items()
-        },
-    )
-
-    # Lift the rooting flag off the distmat registry. Defaults to True
-    # for pre-feature distmats; the worker decides based on this whether
-    # to midpoint-root the chosen consensus tree newick before display.
-    distmat_is_rooted = _state.get_distmat_is_rooted(source_distmat)
-
-    add_log(
-        f"[consensus tree/{mode}] Dispatching to persistent worker "
-        f"({len(matched_records)} trees, source {source_distmat}, "
-        f"{'rooted' if distmat_is_rooted else 'unrooted+midpoint-root'} mode)..."
+        coord_by_tree_name=context_coords,
+        summary_method=summary_method,
+        click_started_at=float(click_started_at),
+        click_started_wall_time=float(click_started_wall_time),
+        submit_started_at=submit_started_at,
+        dispatch_started_at=dispatch_started_at,
+        dispatch_wall_time=dispatch_wall_time,
     )
     ref = job_manager.submit(
         _get_executor(),
@@ -246,10 +634,12 @@ def submit_consensus_tree_job(
         source_file_paths=source_file_paths,
         source_preambles=source_preambles,
         is_rooted=distmat_is_rooted,
+        summary_method=summary_method,
         metadata={
-            "display_name": f"{mode} consensus tree",
+            "display_name": f"{mode} {summary_method} summary tree",
             "mode": mode,
             "source_distmat": source_distmat,
+            "summary_method": summary_method,
             "store_target": store_target,
         },
         finalizer=partial(
@@ -301,7 +691,13 @@ def register_consensus_tree_compute_callbacks():
         ref = JobRef.from_dict(event)
         terminal_state = JobState(str(event["state"]))
         payload = event["payload"]
-        store_target = event["metadata"].get("store_target")
+        metadata = event.get("metadata") or {}
+        store_target = metadata.get("store_target")
+        method_label = _summary_method_label(
+            metadata.get("summary_method", payload.get("summary_method"))
+        )
+        mode = metadata.get("mode") or payload.get("mode") or "Summary"
+        log_prefix = f"[{method_label}/{mode}]"
         first_delivery = int(event["delivery_attempt"]) == 1
 
         out_treespace_store = no_update
@@ -315,13 +711,19 @@ def register_consensus_tree_compute_callbacks():
         notif = no_update
         if terminal_state is JobState.CANCELLED:
             if first_delivery:
-                add_log("Consensus tree computation cancelled by user.", "WARNING")
+                add_log(
+                    f"{log_prefix} Summary-tree computation cancelled by user.",
+                    "WARNING",
+                )
         elif terminal_state is JobState.FAILED:
             message = str(payload.get("message", "Unknown error"))
             if first_delivery:
-                add_log(f"Consensus tree computation failed: {message}", "ERROR")
+                add_log(
+                    f"{log_prefix} Summary-tree computation failed: {message}",
+                    "ERROR",
+                )
             notif = dmc.Notification(
-                title="Consensus tree Error",
+                title="Summary Tree Error",
                 message=message,
                 color="red",
                 action="show",
@@ -337,15 +739,34 @@ def register_consensus_tree_compute_callbacks():
                 out_within_store = view_payload
                 out_within_sel = []
             out_registry = _state.get_consensus_tree_registry()
+            negative_branch_count = int(
+                payload.get("negative_branch_count") or 0
+            )
+            if negative_branch_count:
+                title = "Summary Tree Ready with Warning"
+                message = (
+                    f"{method_label} summary tree {payload['name']} was "
+                    "computed from "
+                    f"{payload['n_trees']} selected trees, but mean heights "
+                    f"produced {negative_branch_count} negative branch"
+                    f"{'es' if negative_branch_count != 1 else ''}."
+                )
+                color = "yellow"
+                auto_close = 8000
+            else:
+                title = "Summary Tree Ready"
+                message = (
+                    f"{method_label} summary tree {payload['name']} computed "
+                    f"from {payload['n_trees']} selected trees."
+                )
+                color = "green"
+                auto_close = 3000
             notif = dmc.Notification(
-                title="Consensus Tree Ready",
-                message=(
-                    f"Consensus tree {payload['name']} computed from "
-                    f"{payload['n_trees']} selected trees."
-                ),
-                color="green",
+                title=title,
+                message=message,
+                color=color,
                 action="show",
-                autoClose=3000,
+                autoClose=auto_close,
                 id=f"consensus-terminal-{ref.job_id}",
             )
 

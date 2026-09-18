@@ -14,6 +14,26 @@ import json
 import pandas as pd
 
 
+def _walk_components(component):
+    """Yield every Dash component below *component*, including itself."""
+    if isinstance(component, (list, tuple)):
+        for child in component:
+            yield from _walk_components(child)
+        return
+    if component is None or isinstance(component, (str, int, float)):
+        return
+    yield component
+    yield from _walk_components(getattr(component, "children", None))
+
+
+def _component_by_id(component, component_id):
+    return next(
+        item
+        for item in _walk_components(component)
+        if getattr(item, "id", None) == component_id
+    )
+
+
 def test_app_imports_and_registers_callbacks():
     """Construct a real Dash app the way ``app.py`` does and register
     every callback. If any callback decorator throws on import (e.g.
@@ -32,6 +52,131 @@ def test_app_imports_and_registers_callbacks():
     )
     app.layout = ui.add_main_body()
     register_callbacks(app)
+
+
+def test_summary_method_dropdowns_are_absent_from_both_analysis_tabs():
+    from treetracer.ui.panels.treespace import _add_treespace_panel
+    from treetracer.ui.panels.within_run import _add_within_run_panel
+
+    component_ids = {
+        getattr(component, "id", None)
+        for panel in (_add_treespace_panel(), _add_within_run_panel())
+        for component in _walk_components(panel)
+    }
+    assert {
+        "treespace-summary-method",
+        "treespace-summary-method-tooltip",
+        "within-run-summary-method",
+        "within-run-summary-method-tooltip",
+    }.isdisjoint(component_ids)
+
+
+def test_summary_tree_callbacks_use_mrhipstr_without_method_selectors():
+    """Both View actions use the default without hidden selector state."""
+    import inspect
+
+    from dash import Dash, _callback
+    import dash_mantine_components as dmc
+    import treetracer.ui as ui
+    from treetracer.callbacks import register_callbacks
+    from treetracer.callbacks import consensus_tree_compute
+    from treetracer.consensus_tree._subprocess_worker import (
+        compute_consensus_tree_worker_entry,
+    )
+
+    app = Dash(
+        __name__,
+        external_stylesheets=dmc.styles.ALL,
+        suppress_callback_exceptions=True,
+        assets_ignore=r"peartree\.bundle\.min\.js",
+    )
+    app.layout = ui.add_main_body()
+    register_callbacks(app)
+
+    state_ids = set()
+    for callback_data in _callback.GLOBAL_CALLBACK_MAP.values():
+        callback_fn = callback_data.get("callback")
+        callback_fn = getattr(callback_fn, "__wrapped__", callback_fn)
+        if getattr(callback_fn, "__name__", "") != "view_consensus_tree":
+            continue
+        state_ids.update(item.get("id") for item in callback_data.get("state", []))
+
+    assert {
+        "treespace-summary-method",
+        "within-run-summary-method",
+    }.isdisjoint(state_ids)
+    assert inspect.signature(
+        consensus_tree_compute.submit_consensus_tree_job
+    ).parameters["summary_method"].default == "mrhipstr"
+    assert inspect.signature(
+        compute_consensus_tree_worker_entry
+    ).parameters["summary_method"].default == "mrhipstr"
+
+
+def test_summary_tree_registry_has_method_column_and_synthetic_dashes(
+    monkeypatch,
+):
+    from treetracer.callbacks import consensus_tree_list
+
+    monkeypatch.setattr(
+        consensus_tree_list.state,
+        "has_cached_consensus_tree",
+        lambda _uuid: True,
+    )
+    row = consensus_tree_list._entry_summary_row(
+        {
+            "name": "RF_001_Between_MrHIPSTR_1",
+            "uuid": "synthetic-uuid",
+            "mode": "Between",
+            "selection": [["run-a", 1], ["run-b", 2]],
+            "summary_method": "mrhipstr",
+            "consensus_tree": {
+                "group": None,
+                "treenum": None,
+                "tree_name": "MrHIPSTR",
+            },
+            "consensus_tree_log_posterior": None,
+        },
+        source="treespace",
+    )
+    cells = list(row.children)
+    method_cell = next(
+        cell
+        for cell in cells
+        if getattr(cell, "className", None) == "tt-consensus-tree-method-col"
+    )
+    assert method_cell.children.children == "MrHIPSTR"
+    assert next(
+        cell.children.children
+        for cell in cells
+        if getattr(cell, "className", None) == "tt-consensus-tree-run-col"
+    ) == "—"
+    assert next(
+        cell.children
+        for cell in cells
+        if getattr(cell, "className", None) == "tt-consensus-tree-col"
+    ) == "—"
+    assert next(
+        cell.children
+        for cell in cells
+        if getattr(cell, "className", None) == "tt-consensus-tree-lnp-col"
+    ) == "—"
+
+    table = consensus_tree_list._table_for(
+        [
+            {
+                "name": "legacy-mcc",
+                "uuid": "legacy-uuid",
+                "selection": [],
+                "consensus_tree": {},
+            }
+        ],
+        source="treespace",
+    )
+    assert any(
+        getattr(item, "children", None) == "Method"
+        for item in _walk_components(table)
+    )
 
 
 def test_compute_interval_has_one_reconciliation_owner():

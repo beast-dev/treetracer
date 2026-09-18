@@ -455,20 +455,40 @@ def clear_all_consensus_trees():
 # so the UI can list, re-open, and overlay them on the MDS plots.
 
 _consensus_tree_registry: list = []                # list of registry entry dicts
-_consensus_tree_registry_counters: dict = {}       # (distmat, mode, run|None) -> int
+_consensus_tree_registry_counters: dict = {}       # method-specific scope -> int
 _MAX_CONSENSUS_TREE_REGISTRY = _MAX_CONSENSUS_TREE_TREES      # mirror cache cap
 
 
-def _next_consensus_tree_name(source_distmat, mode, run):
-    """Allocate the next sequential consensus tree name for *(distmat, mode, run)*.
+def _normalise_summary_method(summary_method):
+    """Normalize a registry method, defaulting old callers to MCC."""
+    method = "mcc" if summary_method is None else str(summary_method).strip().lower()
+    if method not in {"mcc", "mrhipstr"}:
+        raise ValueError(
+            f"unsupported summary_method {summary_method!r}; "
+            "expected 'mcc' or 'mrhipstr'"
+        )
+    return method
+
+
+def _next_consensus_tree_name(source_distmat, mode, run, summary_method="mcc"):
+    """Allocate the next sequential name in a method-specific scope.
 
     Run is included in the key (and the resulting name) only for Within
-    so that consensus trees computed for different runs of the same matrix don't
-    collide.
+    so that summary trees computed for different runs of the same matrix don't
+    collide. MCC retains its historical key and generated name exactly.
     """
-    key = (source_distmat, mode, run)
+    method = _normalise_summary_method(summary_method)
+    key = (
+        (source_distmat, mode, run)
+        if method == "mcc"
+        else (source_distmat, mode, run, method)
+    )
     n = _consensus_tree_registry_counters.get(key, 0) + 1
     _consensus_tree_registry_counters[key] = n
+    if method == "mrhipstr":
+        if mode == "Within" and run:
+            return f"{source_distmat}_Within_{run}_MrHIPSTR_{n}"
+        return f"{source_distmat}_{mode}_MrHIPSTR_{n}"
     if mode == "Within" and run:
         return f"{source_distmat}_Within_{run}_consensus_tree_{n}"
     return f"{source_distmat}_{mode}_consensus_tree_{n}"
@@ -477,7 +497,10 @@ def _next_consensus_tree_name(source_distmat, mode, run):
 def register_consensus_tree(*, source_distmat, mode, run, uuid, consensus_tree,
                  selection, log_clade_credibility,
                  consensus_tree_log_posterior=None, tree_names=None,
-                 counts=None, cols_in_consensus_tree=None):
+                 counts=None, cols_in_consensus_tree=None,
+                 summary_method="mcc", height_method=None,
+                 majority_clade_count=None, negative_branch_count=0,
+                 minimum_branch_length=None):
     """Append a new consensus tree registry entry and return it.
 
     Evicts the oldest entry (and its uuid from the cache) if the
@@ -486,30 +509,48 @@ def register_consensus_tree(*, source_distmat, mode, run, uuid, consensus_tree,
     ``tree_names`` is the flat list of "group/STATE_N" tree names from
     the user's selection — kept for provenance.
 
+    ``summary_method`` and ``height_method`` distinguish sampled MCC trees
+    from synthetic mean-height MrHIPSTR trees. The remaining height fields
+    retain MrHIPSTR diagnostics; their defaults preserve legacy MCC callers.
+
     ``counts`` is the pre-computed column-sum of the snapshot's
     presence matrix over the selected rows: a numpy uint32/int32 array
-    of length ``n_bipartitions``. Caller computes this from
-    ``presence[row_idx].sum(axis=0)`` while it already has
-    ``presence_sub`` in scope (in ``consensus_tree.compute_consensus_tree_for_selection``).
-    Caching at registration time means Compare clicks don't pay the
-    row-sum cost. Optional — registry stays usable without it but
-    falls back to the slow recompute path in
+    of length ``n_bipartitions``. The summary-tree worker computes it while
+    the selected snapshot rows are already in scope. Caching at registration
+    time means Compare clicks don't pay the row-sum cost. Optional — registry
+    stays usable without it but falls back to the slow recompute path in
     ``clade_freq.compute_clade_frequencies``.
 
     ``cols_in_consensus_tree`` is an iterable of presence-matrix column indices
-    that appear in the chosen consensus tree itself (``np.flatnonzero(
-    presence_sub[consensus_tree_local])``). These are the interned bipartition IDs
-    of the consensus tree's own clades; the Clade Frequency Comparison filter wraps
-    them in a ``set`` once per Compare click for O(1) membership.
+    that appear in the summary topology. For MCC these come from the selected
+    source row; for MrHIPSTR they come from the synthesized topology. These are
+    the interned bipartition IDs of the summary tree's own clades; the Clade
+    Frequency Comparison filter wraps them in a ``set`` once per Compare click
+    for O(1) membership.
     Stored as a sorted list because the registry travels through the
     browser-side ``consensus-tree-registry-store`` and ``frozenset`` is not
     JSON-serialisable.
     """
+    method = _normalise_summary_method(summary_method)
+    if height_method is None:
+        height_method = "sampled" if method == "mcc" else "mean"
+    height_method = str(height_method).strip().lower()
+    if height_method not in {"sampled", "mean"}:
+        raise ValueError(
+            f"unsupported height_method {height_method!r}; "
+            "expected 'sampled' or 'mean'"
+        )
+
     global _consensus_tree_registry
     if len(_consensus_tree_registry) >= _MAX_CONSENSUS_TREE_REGISTRY:
         oldest = _consensus_tree_registry.pop(0)
         _consensus_tree_cache.pop(oldest.get("uuid"), None)
-    name = _next_consensus_tree_name(source_distmat, mode, run)
+    name = _next_consensus_tree_name(
+        source_distmat,
+        mode,
+        run,
+        summary_method=method,
+    )
     entry = {
         "name": name,
         "uuid": uuid,
@@ -518,7 +559,20 @@ def register_consensus_tree(*, source_distmat, mode, run, uuid, consensus_tree,
         "run": run,
         "consensus_tree": consensus_tree,
         "selection": selection,
+        "summary_method": method,
+        "height_method": height_method,
         "log_clade_credibility": log_clade_credibility,
+        "majority_clade_count": (
+            None
+            if majority_clade_count is None
+            else int(majority_clade_count)
+        ),
+        "negative_branch_count": int(negative_branch_count or 0),
+        "minimum_branch_length": (
+            None
+            if minimum_branch_length is None
+            else float(minimum_branch_length)
+        ),
         "consensus_tree_log_posterior": consensus_tree_log_posterior,
         "tree_names": list(tree_names) if tree_names is not None else [],
         "n_trees": len(tree_names) if tree_names is not None else 0,

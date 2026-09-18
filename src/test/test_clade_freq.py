@@ -53,7 +53,6 @@ def _register_fixture_and_build_entries(
     np.save(distmat_path, np.asarray(rf_matrix, dtype=np.uint16))
 
     # Mirror what ``rf._worker.compute_rf`` writes alongside the .npy.
-    bits = np.zeros((len(leaf_names), 0), dtype=np.uint8) if not len(leaf_names) else None
     # rapidtrees_full's wrapper doesn't return bipartition_bits directly,
     # so re-run the wrapper to get them. Cheap — the conftest fixture
     # is session-cached so the underlying RF computation was paid once.
@@ -175,6 +174,48 @@ def test_frequencies_round_trip_against_presence(
         expected_2 = int(presence[n1:, j].sum()) / n2
         assert row["freq_1"] == pytest.approx(expected_1)
         assert row["freq_2"] == pytest.approx(expected_2)
+
+
+def test_synthetic_mrhipstr_entry_uses_existing_clade_frequency_path(
+    tmp_path,
+    parsed_full,
+    rapidtrees_full,
+):
+    entry1, entry2, _ = _register_fixture_and_build_entries(
+        tmp_path,
+        parsed_full,
+        rapidtrees_full,
+    )
+    entry1.update(
+        {
+            "summary_method": "mrhipstr",
+            "height_method": "mean",
+            "consensus_tree": {
+                "group": None,
+                "treenum": None,
+                "tree_name": "MrHIPSTR",
+            },
+        }
+    )
+
+    result = compute_clade_frequencies(entry1, entry2)
+
+    assert len(result) > 0
+    assert set(entry1["cols_in_consensus_tree"]) <= set(result["column_j"])
+
+    entry2.update(
+        {
+            "summary_method": "mrhipstr",
+            "height_method": "mean",
+            "consensus_tree": {
+                "group": None,
+                "treenum": None,
+                "tree_name": "MrHIPSTR",
+            },
+        }
+    )
+    both_synthetic = compute_clade_frequencies(entry1, entry2)
+    assert both_synthetic.equals(result)
 
 
 def test_raises_on_cross_distmat():

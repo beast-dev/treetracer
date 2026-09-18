@@ -17,7 +17,6 @@ from dash import (
     State,
     callback,
     callback_context,
-    clientside_callback,
     html,
     no_update,
 )
@@ -72,6 +71,16 @@ def _entry_summary_row(entry, *, show_mode=False, source):
     different denominator (the size of the user's selection).
     """
     name = entry.get("name", "")
+    summary_method = str(entry.get("summary_method") or "mcc").strip().lower()
+    if summary_method == "mrhipstr":
+        method_text = "MrHIPSTR"
+        method_title = "MrHIPSTR (mean heights)"
+    elif summary_method == "mcc":
+        method_text = "MCC"
+        method_title = "Maximum clade credibility"
+    else:
+        method_text = summary_method.upper() or "—"
+        method_title = method_text
     n_sel = len(entry.get("selection") or [])
     mt = entry.get("consensus_tree") or {}
     consensus_tree_run = mt.get("group") or "—"
@@ -121,7 +130,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
             icon_name="tabler:tree",
             disabled=not cached,
             title=("View in PearTree" if cached
-                   else "consensus tree was evicted; recompute to view"),
+                   else "summary tree was evicted; recompute to view"),
         ),
         _row_action_button(
             kind="consensus-tree-row-delete",
@@ -160,6 +169,14 @@ def _entry_summary_row(entry, *, show_mode=False, source):
     if compact_table:
         cells.extend([
             dmc.TableTd(
+                html.Div(
+                    method_text,
+                    className="tt-consensus-tree-cell-ellipsis",
+                    title=method_title,
+                ),
+                className="tt-consensus-tree-method-col",
+            ),
+            dmc.TableTd(
                 html.Div(consensus_tree_run, className="tt-consensus-tree-cell-ellipsis", title=consensus_tree_run),
                 className="tt-consensus-tree-run-col",
             ),
@@ -170,6 +187,7 @@ def _entry_summary_row(entry, *, show_mode=False, source):
         ])
     else:
         cells.extend([
+            dmc.TableTd(method_text, title=method_title),
             dmc.TableTd(consensus_tree_run),
             dmc.TableTd(treenum_text),
             dmc.TableTd(lnp_text),
@@ -193,6 +211,7 @@ def _table_for(entries, *, show_mode=False, source):
         if show_mode:
             headers.append(dmc.TableTh("Mode", className="tt-consensus-tree-mode-col"))
         headers.extend([
+            dmc.TableTh("Method", className="tt-consensus-tree-method-col"),
             dmc.TableTh("Run", className="tt-consensus-tree-run-col"),
             dmc.TableTh("Tree #", className="tt-consensus-tree-col"),
             dmc.TableTh("lnP", className="tt-consensus-tree-lnp-col"),
@@ -204,6 +223,7 @@ def _table_for(entries, *, show_mode=False, source):
         if show_mode:
             headers.append(dmc.TableTh("Mode"))
         headers.extend([
+            dmc.TableTh("Method"),
             dmc.TableTh("Run"),
             dmc.TableTh("Tree #"),
             dmc.TableTh("lnP"),

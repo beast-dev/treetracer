@@ -94,6 +94,80 @@ def test_consensus_tree_naming_per_distmat_mode_run():
     assert f["name"] == "RF_002_Between_consensus_tree_1"
 
 
+def test_mrhipstr_registry_fields_and_method_specific_names():
+    sampled = _entry("RF_001", "Between")
+    uid = state.cache_consensus_tree(
+        b"#NEXUS\nbegin trees;\ntree MrHIPSTR = (A:1,B:1);\nEnd;\n"
+    )
+    synthetic = state.register_consensus_tree(
+        source_distmat="RF_001",
+        mode="Between",
+        run=None,
+        uuid=uid,
+        consensus_tree={
+            "group": None,
+            "treenum": None,
+            "tree_name": "MrHIPSTR",
+        },
+        selection=[["g", 1], ["g", 2]],
+        summary_method="mrhipstr",
+        height_method="mean",
+        log_clade_credibility=-1.25,
+        majority_clade_count=3,
+        negative_branch_count=1,
+        minimum_branch_length=-0.125,
+        consensus_tree_log_posterior=None,
+        tree_names=["g/STATE_1", "g/STATE_2"],
+        counts=np.array([2, 1, 2], dtype=np.int32),
+        cols_in_consensus_tree={0, 2},
+    )
+
+    # MCC's historical sequence and spelling stay independent and unchanged.
+    assert sampled["name"] == "RF_001_Between_consensus_tree_1"
+    assert synthetic["name"] == "RF_001_Between_MrHIPSTR_1"
+    assert synthetic["summary_method"] == "mrhipstr"
+    assert synthetic["height_method"] == "mean"
+    assert synthetic["consensus_tree"]["treenum"] is None
+    assert synthetic["consensus_tree_log_posterior"] is None
+    assert synthetic["majority_clade_count"] == 3
+    assert synthetic["negative_branch_count"] == 1
+    assert synthetic["minimum_branch_length"] == pytest.approx(-0.125)
+    assert synthetic["cols_in_consensus_tree"] == [0, 2]
+
+    within_uid = state.cache_consensus_tree(b"#NEXUS\n")
+    within = state.register_consensus_tree(
+        source_distmat="RF_001",
+        mode="Within",
+        run="runA",
+        uuid=within_uid,
+        consensus_tree={"group": None, "treenum": None},
+        selection=[],
+        summary_method="mrhipstr",
+        log_clade_credibility=0.0,
+    )
+    assert within["name"] == "RF_001_Within_runA_MrHIPSTR_1"
+
+    renamed, error = state.rename_consensus_tree(
+        synthetic["uuid"],
+        "mean-height-summary",
+    )
+    assert error is None
+    assert renamed is synthetic
+    assert state.has_cached_consensus_tree(uid)
+    assert state.delete_consensus_tree("mean-height-summary") is True
+    assert not state.has_cached_consensus_tree(uid)
+
+
+def test_registry_defaults_legacy_callers_to_sampled_mcc():
+    entry = _entry()
+
+    assert entry["summary_method"] == "mcc"
+    assert entry["height_method"] == "sampled"
+    assert entry["majority_clade_count"] is None
+    assert entry["negative_branch_count"] == 0
+    assert entry["minimum_branch_length"] is None
+
+
 def test_consensus_tree_get_filtered():
     a = _entry("RF_001", "Between")
     b = _entry("RF_001", "Within", "runA")

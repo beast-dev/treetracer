@@ -7,6 +7,79 @@ from it without reaching into the callback layer.
 import dash_mantine_components as dmc
 
 
+SUMMARY_METHOD_MCC = "mcc"
+SUMMARY_METHOD_MRHIPSTR = "mrhipstr"
+
+
+def summary_method_options(*, is_rooted: bool = True) -> list[dict]:
+    """Return the shared summary-tree method options for an analysis tab.
+
+    MrHIPSTR is defined only for rooted clades.  Keeping the option visible
+    but disabled for an unrooted RF matrix makes that constraint discoverable
+    without silently removing the user's previous choice.
+    """
+    return [
+        {"value": SUMMARY_METHOD_MCC, "label": "MCC"},
+        {
+            "value": SUMMARY_METHOD_MRHIPSTR,
+            "label": "MrHIPSTR (mean heights)",
+            "disabled": not is_rooted,
+        },
+    ]
+
+
+def summary_method_ui_state(
+    current_value: object,
+    *,
+    is_rooted: bool,
+) -> tuple[list[dict], str, bool]:
+    """Build ``(options, value, tooltip_disabled)`` for a method select."""
+    method = str(current_value or SUMMARY_METHOD_MRHIPSTR).strip().lower()
+    if method not in {SUMMARY_METHOD_MCC, SUMMARY_METHOD_MRHIPSTR}:
+        method = SUMMARY_METHOD_MRHIPSTR
+    if not is_rooted and method == SUMMARY_METHOD_MRHIPSTR:
+        method = SUMMARY_METHOD_MCC
+    return summary_method_options(is_rooted=is_rooted), method, is_rooted
+
+
+def summary_method_control(select_id: str, tooltip_id: str):
+    """Build the compact summary-method control shared by both MDS tabs."""
+    selector = dmc.Select(
+        id=select_id,
+        data=summary_method_options(),
+        value=SUMMARY_METHOD_MRHIPSTR,
+        allowDeselect=False,
+        size="xs",
+        w=190,
+        className="tt-summary-method-select",
+        **{"aria-label": "Summary tree method"},
+    )
+    return dmc.Group(
+        [
+            dmc.Text(
+                "Method:",
+                size="xs",
+                fw=500,
+                className="tt-summary-method-label",
+            ),
+            dmc.Tooltip(
+                selector,
+                id=tooltip_id,
+                label=(
+                    "MrHIPSTR requires a rooted RF matrix. "
+                    "MCC remains available for unrooted matrices."
+                ),
+                disabled=True,
+                withArrow=True,
+                position="top",
+            ),
+        ],
+        gap="xs",
+        wrap="nowrap",
+        className="tt-summary-method-control",
+    )
+
+
 def stop_button(which: str):
     """A red "Stop" button for a compute banner / loading overlay.
 

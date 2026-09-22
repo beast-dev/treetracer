@@ -44,8 +44,11 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     diagnostics. MrHIPSTR reads the compact facts when present and only
     reparses source trees for legacy/incompatible snapshots.
 
-    Returns (result_names, elapsed). Both matrices stay on disk, never
-    pickled across the process boundary.
+    Returns ``(result_names, elapsed, rf_details)``. ``rf_details`` records
+    the RF interpretation and whether the optional rooted-facts endpoint
+    actually succeeded, so the parent console can report the observed path
+    rather than infer it from the requested rooting mode. The large arrays
+    stay on disk and are never pickled across the process boundary.
     """
     import time
     from pathlib import Path
@@ -79,6 +82,9 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     )
     call_t0 = time.time()
     rooted_facts = None
+    rooted_facts_status = (
+        "pending" if is_rooted else "not_applicable_unrooted"
+    )
     has_rooted_facts_endpoint = hasattr(
         rapidtrees,
         "pairwise_rf_with_rooted_facts_from_newick_iter",
@@ -95,6 +101,7 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
                     progress=progress,
                 )
             )
+            rooted_facts_status = "used"
         except ValueError as exc:
             # Rooted facts deliberately require strict binary trees and an
             # explicit finite length on every non-root edge. Preserve RF/MCC
@@ -105,6 +112,9 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
                 f"falling back to dense rooted snapshots ({exc})"
             )
             rooted_facts = None
+            rooted_facts_status = "input_incompatible"
+    elif is_rooted:
+        rooted_facts_status = "endpoint_unavailable"
 
     if rooted_facts is not None:
         leaf_names = list(rooted_facts.leaf_names)
@@ -164,7 +174,14 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     wlog("compute_rf: both files written; returning")
 
     elapsed = time.time() - t0
-    return list(result_names), elapsed
+    rf_details = {
+        "rf_mode": (
+            "rooted_clades" if is_rooted else "unrooted_bipartitions"
+        ),
+        "rooted_facts_used": rooted_facts is not None,
+        "rooted_facts_status": rooted_facts_status,
+    }
+    return list(result_names), elapsed, rf_details
 
 
 def compute_mds_worker(matrix_path, n_components, progress_path=None):

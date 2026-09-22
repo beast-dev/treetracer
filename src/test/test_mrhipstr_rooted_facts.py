@@ -227,7 +227,7 @@ def test_rooted_facts_summary_cross_checks_selected_counts():
 
 def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
     matrix_path = tmp_path / "RF_TEST.npy"
-    result_names, _ = compute_rf(
+    result_names, _, rf_details = compute_rf(
         list(SOURCE_NAMES),
         list(SOURCE_TREES),
         [{}],
@@ -237,6 +237,11 @@ def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
     )
 
     assert result_names == list(SOURCE_NAMES)
+    assert rf_details == {
+        "rf_mode": "rooted_clades",
+        "rooted_facts_used": True,
+        "rooted_facts_status": "used",
+    }
     snapshot_path = tmp_path / "RF_TEST_snapshots.npz"
     with np.load(snapshot_path, allow_pickle=False) as persisted:
         assert snapshot_has_rooted_facts(persisted)

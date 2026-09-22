@@ -66,10 +66,9 @@ def _rf_pipeline(selected_files, save_path, rf_name, is_rooted):
     the macOS beach-ball threshold.
 
     ``is_rooted`` is the consensus tree rooting convention of the selected
-    files (caller validates that they all agree). The worker forwards
-    this to ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``
-    so the presence matrix's columns are rooted clades (True) or
-    bipartitions (False).
+    files (caller validates that they all agree). The worker returns the
+    actual RF path it used: rooted inputs prefer the optional rooted-facts
+    endpoint, while unrooted inputs use bipartition snapshots.
     """
     import time
     from . import persistent_worker
@@ -156,6 +155,20 @@ def _publish_rf_result(pipeline):
     elapsed = pipeline["total_elapsed"]
     compute_elapsed = pipeline["compute_elapsed"]
     is_rooted = pipeline.get("is_rooted", True)
+    rf_mode = pipeline.get(
+        "rf_mode",
+        "rooted_clades" if is_rooted else "unrooted_bipartitions",
+    )
+    rooted_facts_status = pipeline.get(
+        "rooted_facts_status",
+        "not_reported",
+    )
+    rooted_facts_used = bool(
+        pipeline.get(
+            "rooted_facts_used",
+            rooted_facts_status == "used",
+        )
+    )
 
     # The matrix is already on disk; this is the exactly-once publication step.
     register_distmat(
@@ -170,6 +183,43 @@ def _publish_rf_result(pipeline):
         f"Stored RF distance matrix as '{rf_name}' "
         f"({len(result_names)}x{len(result_names)})"
     )
+    rooting_label = "ROOTED" if is_rooted else "UNROOTED"
+    rf_mode_label = {
+        "rooted_clades": "rooted clades",
+        "unrooted_bipartitions": "unrooted bipartitions",
+    }.get(rf_mode, str(rf_mode).replace("_", " "))
+    add_log(
+        f"[{rf_name}] RF result: input trees were {rooting_label}; "
+        f"distances used {rf_mode_label}."
+    )
+    if rooted_facts_used:
+        add_log(
+            f"[{rf_name}] RapidTrees rooted facts: USED. The snapshot "
+            "contains rooted facts for MrHIPSTR and legacy dense arrays "
+            "for compatibility."
+        )
+    else:
+        reason = {
+            "not_applicable_unrooted": (
+                "not applicable to unrooted bipartition RF"
+            ),
+            "endpoint_unavailable": (
+                "the installed RapidTrees rooted-facts endpoint is unavailable"
+            ),
+            "input_incompatible": (
+                "the input did not satisfy the strict rooted-facts contract"
+            ),
+            "not_reported": "not reported by the worker",
+        }.get(rooted_facts_status, str(rooted_facts_status).replace("_", " "))
+        next_step = (
+            "View Summary will use MCC for this unrooted RF matrix."
+            if not is_rooted
+            else "MrHIPSTR will fall back to parsing the source trees."
+        )
+        add_log(
+            f"[{rf_name}] RapidTrees rooted facts: NOT USED ({reason}). "
+            f"The snapshot contains legacy dense arrays; {next_step}"
+        )
     add_log(
         f"RF pipeline took {elapsed:.2f}s "
         f"(rapidtrees compute {compute_elapsed:.2f}s)"
@@ -179,6 +229,10 @@ def _publish_rf_result(pipeline):
         "n_trees": len(result_names),
         "elapsed": elapsed,
         "compute_elapsed": compute_elapsed,
+        "is_rooted": is_rooted,
+        "rf_mode": rf_mode,
+        "rooted_facts_used": rooted_facts_used,
+        "rooted_facts_status": rooted_facts_status,
         "distmat_index": get_distmat_index(),
     }
 

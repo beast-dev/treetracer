@@ -305,6 +305,7 @@ def test_consensus_finalizer_registers_synthetic_mrhipstr_without_mds_row(
             "clades_with_credibility_gt_0_5": 2,
         },
         "mrhipstr_profile": {
+            "input_mode": "rooted_facts",
             "worker_started_wall_time": now_wall - 0.7,
             "worker_setup_seconds": 0.01,
             "taxon_alignment_seconds": 0.01,
@@ -363,6 +364,12 @@ def test_consensus_finalizer_registers_synthetic_mrhipstr_without_mds_row(
         for message, level in log_calls
     )
     assert any(
+        "Summary path: ROOTED clade RF → MrHIPSTR" in message
+        and "splits/heights from RapidTrees rooted facts" in message
+        and "synthetic mean-height rooted tree" in message
+        for message, _level in log_calls
+    )
+    assert any(
         "MrHIPSTR timing profile:" in message
         and "Total View Summary click to MrHIPSTR NEXUS creation:"
         in message
@@ -414,6 +421,7 @@ Number of clades with credibility > 0.5: 915"""
 def test_mrhipstr_console_timing_profile_lists_every_stage():
     report = consensus_tree_compute._format_mrhipstr_timing_profile(
         {
+            "input_mode": "source_newicks",
             "selection_and_database_seconds": 0.01,
             "request_preparation_seconds": 0.02,
             "dispatch_queue_seconds": 0.03,
@@ -435,6 +443,7 @@ def test_mrhipstr_console_timing_profile_lists_every_stage():
     )
 
     assert report == """MrHIPSTR timing profile:
+  Input path: legacy snapshot + source-tree parsing
   Click callback — selection and database lookup: 0.0100 secs
   Parent — worker request preparation: 0.0200 secs
   Dispatch/queue — worker handoff and wait: 0.0300 secs
@@ -669,6 +678,7 @@ def test_consensus_submit_uses_midpoint_rooted_mcc_for_unrooted_matrix(
     assert submitted["kwargs"]["metadata"]["summary_method"] == "mcc"
     context = submitted["kwargs"]["finalizer"].keywords["context"]
     assert context.summary_method == "mcc"
+    assert context.is_rooted is False
     assert any(
         "automatically using MCC instead of MrHIPSTR" in message
         and "midpoint-rooted for export" in message

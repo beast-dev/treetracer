@@ -192,7 +192,7 @@ def compute_rf_worker_entry(
     )
     compute_t0 = time.time()
     try:
-        result_names, compute_elapsed = compute_rf(
+        result_names, compute_elapsed, rf_details = compute_rf(
             names, newicks, map_list, map_indices, save_path,
             is_rooted=is_rooted, progress=counter,
         )
@@ -219,4 +219,5 @@ def compute_rf_worker_entry(
         "file_breakdown": file_breakdown,
         "groups_per_file": groups_per_file_sorted,
         "rf_name": rf_name,
+        **rf_details,
     }

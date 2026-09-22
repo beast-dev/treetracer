@@ -59,6 +59,7 @@ class _ConsensusFinalizationContext:
     tree_names: tuple[str, ...]
     coord_by_tree_name: dict[str, tuple[Any, int]]
     summary_method: str = "mcc"
+    is_rooted: bool = True
     click_started_at: float | None = None
     click_started_wall_time: float | None = None
     submit_started_at: float | None = None
@@ -161,7 +162,7 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
         raise TypeError("MrHIPSTR timing profile is missing")
 
     input_mode = profile.get("input_mode")
-    if input_mode is not None and input_mode != "rooted_facts":
+    if input_mode not in {None, "rooted_facts", "source_newicks"}:
         raise TypeError("MrHIPSTR timing profile has an unknown input mode")
     ingestion_label = (
         "Worker — rooted-facts aggregation (splits and heights)"
@@ -234,11 +235,13 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
     except (KeyError, TypeError, ValueError) as exc:
         raise TypeError("MrHIPSTR timing profile is malformed") from exc
 
-    mode_rows = (
-        ["  Input path: RapidTrees rooted facts"]
-        if input_mode == "rooted_facts"
-        else []
-    )
+    mode_rows = {
+        "rooted_facts": ["  Input path: RapidTrees rooted facts"],
+        "source_newicks": [
+            "  Input path: legacy snapshot + source-tree parsing"
+        ],
+        None: [],
+    }[input_mode]
     return "\n".join(
         [
             "MrHIPSTR timing profile:",
@@ -382,6 +385,23 @@ def _finalize_consensus_tree_job(
         "n/a" if log_clade_cred is None else f"{log_clade_cred:.6g}"
     )
     if summary_method == "mrhipstr":
+        worker_profile = result.get("mrhipstr_profile")
+        input_mode = (
+            worker_profile.get("input_mode")
+            if isinstance(worker_profile, dict)
+            else None
+        )
+        data_source = {
+            "rooted_facts": "RapidTrees rooted facts",
+            "source_newicks": (
+                "legacy dense snapshot plus source-tree parsing"
+            ),
+        }.get(input_mode, "worker-reported source unavailable")
+        add_log(
+            f"{log_prefix} Summary path: ROOTED clade RF → MrHIPSTR; "
+            f"splits/heights from {data_source}; output is a synthetic "
+            "mean-height rooted tree."
+        )
         mrhipstr_statistics = result.get("mrhipstr_statistics")
         if mrhipstr_statistics is None:
             # Backward-compatible fallback for an in-flight result produced
@@ -405,7 +425,6 @@ def _finalize_consensus_tree_job(
                     log_clade_credibility=log_clade_cred,
                 )
             )
-        worker_profile = result.get("mrhipstr_profile")
         if isinstance(worker_profile, dict):
             try:
                 required_context_times = (
@@ -486,9 +505,23 @@ def _finalize_consensus_tree_job(
             branch_level,
         )
     else:
+        if context.is_rooted:
+            add_log(
+                f"{log_prefix} Summary path: ROOTED clade RF → MCC; "
+                "output is the highest-scoring sampled source tree with "
+                "its rooting retained."
+            )
+            serialization_text = "source-tree serialization"
+        else:
+            add_log(
+                f"{log_prefix} Summary path: UNROOTED bipartition RF → "
+                "MCC; output is the highest-scoring sampled source tree, "
+                "midpoint-rooted for export."
+            )
+            serialization_text = "midpoint-rooted source-tree serialization"
         add_log(
-            f"{log_prefix} Completed clade-frequency scoring and source-tree "
-            f"serialization for {n_trees} selected trees; selected "
+            f"{log_prefix} Completed clade-frequency scoring and "
+            f"{serialization_text} for {n_trees} selected trees; selected "
             f"'{consensus_tree_name}', log clade credibility={score_text}."
         )
     add_log(
@@ -600,21 +633,22 @@ def submit_consensus_tree_job(
             "MCC instead of MrHIPSTR. The selected MCC tree will be "
             "midpoint-rooted for export."
         )
-    rooting_text = (
-        "rooted"
+    rf_input_text = (
+        "ROOTED clade RF"
         if distmat_is_rooted
-        else "unrooted; MCC output will be midpoint-rooted"
+        else "UNROOTED bipartition RF; MCC output will be midpoint-rooted"
     )
     add_log(
         f"{log_prefix} Starting summary-tree computation for "
         f"{len(matched_records)} selected trees from {source_distmat} "
-        f"({rooting_text})."
+        f"(input={rf_input_text})."
     )
     if summary_method == "mrhipstr":
         add_log(
-            f"{log_prefix} Stages: collect selected clade frequencies → "
-            "ingest observed source-tree splits and node heights → run "
-            "the MrHIPSTR dynamic program → serialize mean-height NEXUS."
+            f"{log_prefix} Stages: collect selected clade frequencies "
+            "from rooted RF data → obtain observed splits and node heights "
+            "from rooted facts (source-tree fallback) → run the MrHIPSTR "
+            "dynamic program → serialize mean-height NEXUS."
         )
     else:
         add_log(
@@ -632,6 +666,7 @@ def submit_consensus_tree_job(
         tree_names=tree_names,
         coord_by_tree_name=context_coords,
         summary_method=summary_method,
+        is_rooted=distmat_is_rooted,
         click_started_at=float(click_started_at),
         click_started_wall_time=float(click_started_wall_time),
         submit_started_at=submit_started_at,

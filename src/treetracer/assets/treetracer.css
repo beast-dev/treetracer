@@ -3,6 +3,19 @@
  * Dash auto-serves every .css file under assets/ and injects it into
  * the app's <head>. */
 
+/* Selectable console output.
+ *
+ * The native pywebview shell disables text selection on the document body.
+ * Override that only for the log content and its dynamically rendered spans,
+ * so users can select and copy console messages without making the rest of
+ * the application UI selectable. */
+#log-content,
+#log-content * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
+
 /* Loaded-tree card filename.
  *
  * Collapsed: clamped to 2 lines so a stack of cards stays compact.

@@ -333,7 +333,7 @@ def _compute_mrhipstr_result(
             selected_counts,
         )
         input_mode = "rooted_facts"
-        profile["input_mode"] = input_mode
+    profile["input_mode"] = input_mode
     profile["clade_collection_seconds"] = time.perf_counter() - started
     wlog(
         f"MrHIPSTR clades decoded from {input_mode}: "

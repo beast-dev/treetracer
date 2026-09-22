@@ -191,6 +191,7 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     assert mrhipstr_statistics["clades_with_credibility_gt_0_5"] == 3
     profile = result["mrhipstr_profile"]
     assert set(profile) == {
+        "input_mode",
         "worker_started_wall_time",
         "worker_setup_seconds",
         "taxon_alignment_seconds",
@@ -205,6 +206,7 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
         "worker_total_seconds",
         "worker_finished_wall_time",
     }
+    assert profile["input_mode"] == "source_newicks"
     duration_keys = {
         key for key in profile if key.endswith("_seconds")
     }

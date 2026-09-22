@@ -219,6 +219,94 @@ def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
     assert repeated_settle[2] == {"busy": False}
 
 
+@pytest.mark.parametrize(
+    (
+        "is_rooted",
+        "rf_mode",
+        "facts_status",
+        "facts_used",
+        "expected_fragments",
+    ),
+    [
+        (
+            True,
+            "rooted_clades",
+            "used",
+            True,
+            (
+                "input trees were ROOTED",
+                "distances used rooted clades",
+                "RapidTrees rooted facts: USED",
+                "rooted facts for MrHIPSTR",
+            ),
+        ),
+        (
+            True,
+            "rooted_clades",
+            "input_incompatible",
+            False,
+            (
+                "input trees were ROOTED",
+                "RapidTrees rooted facts: NOT USED",
+                "strict rooted-facts contract",
+                "MrHIPSTR will fall back to parsing the source trees",
+            ),
+        ),
+        (
+            False,
+            "unrooted_bipartitions",
+            "not_applicable_unrooted",
+            False,
+            (
+                "input trees were UNROOTED",
+                "distances used unrooted bipartitions",
+                "RapidTrees rooted facts: NOT USED",
+                "View Summary will use MCC",
+            ),
+        ),
+    ],
+)
+def test_rf_publication_logs_confirmed_computation_path(
+    monkeypatch,
+    is_rooted,
+    rf_mode,
+    facts_status,
+    facts_used,
+    expected_fragments,
+):
+    log_messages = []
+    monkeypatch.setattr(
+        compute,
+        "add_log",
+        lambda message, *_args, **_kwargs: log_messages.append(message),
+    )
+    monkeypatch.setattr(compute, "register_distmat", lambda *_a, **_k: None)
+    monkeypatch.setattr(compute, "get_distmat_index", lambda: {})
+
+    payload = compute._publish_rf_result(
+        {
+            "rf_name": "RF_TEST",
+            "result_names": ["run/tree-1", "run/tree-2"],
+            "file_breakdown": {"run.trees": 2},
+            "groups_per_file": {"run.trees": ["run"]},
+            "total_elapsed": 1.25,
+            "compute_elapsed": 1.0,
+            "is_rooted": is_rooted,
+            "rf_mode": rf_mode,
+            "rooted_facts_status": facts_status,
+            "rooted_facts_used": facts_used,
+            "save_path": "/tmp/rf-test.npy",
+        }
+    )
+
+    report = "\n".join(log_messages)
+    assert all(fragment in report for fragment in expected_fragments)
+    assert payload["is_rooted"] is is_rooted
+    assert payload["rf_mode"] == rf_mode
+    assert payload["rooted_facts_used"] is facts_used
+    assert payload["rooted_facts_status"] == facts_status
+
+
 def test_mds_finalization_stores_full_result_once_and_replays_small_index(
     monkeypatch,
 ):

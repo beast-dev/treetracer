@@ -160,6 +160,14 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
     if not isinstance(profile, dict):
         raise TypeError("MrHIPSTR timing profile is missing")
 
+    input_mode = profile.get("input_mode")
+    if input_mode is not None and input_mode != "rooted_facts":
+        raise TypeError("MrHIPSTR timing profile has an unknown input mode")
+    ingestion_label = (
+        "Worker — rooted-facts aggregation (splits and heights)"
+        if input_mode == "rooted_facts"
+        else "Worker — source-tree parsing, splits, and heights"
+    )
     fields = (
         (
             "selection_and_database_seconds",
@@ -188,7 +196,7 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
         ),
         (
             "source_tree_ingestion_seconds",
-            "Worker — source-tree parsing, splits, and heights",
+            ingestion_label,
         ),
         (
             "topology_search_seconds",
@@ -226,9 +234,15 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
     except (KeyError, TypeError, ValueError) as exc:
         raise TypeError("MrHIPSTR timing profile is malformed") from exc
 
+    mode_rows = (
+        ["  Input path: RapidTrees rooted facts"]
+        if input_mode == "rooted_facts"
+        else []
+    )
     return "\n".join(
         [
             "MrHIPSTR timing profile:",
+            *mode_rows,
             *rows,
             "",
             "Total View Summary click to MrHIPSTR NEXUS creation: "

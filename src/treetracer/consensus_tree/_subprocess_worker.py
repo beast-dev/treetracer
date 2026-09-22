@@ -38,10 +38,10 @@ def compute_consensus_tree_worker_entry(
 ) -> Dict[str, Any]:
     """Compute an MCC or MrHIPSTR summary and assemble its NEXUS bytes.
 
-    MrHIPSTR records additionally require ``newick_offset`` and
-    ``newick_length`` so the selected source Newicks can be streamed once.
-    Omitting ``summary_method`` selects MrHIPSTR. MCC remains available by
-    passing ``summary_method="mcc"`` explicitly.
+    MrHIPSTR prefers persisted RapidTrees rooted facts. Legacy snapshots still
+    use ``newick_offset`` and ``newick_length`` to stream selected source
+    Newicks once. Omitting ``summary_method`` selects MrHIPSTR. MCC remains
+    available by passing ``summary_method="mcc"`` explicitly.
     """
     import time
 
@@ -120,8 +120,24 @@ def compute_consensus_tree_worker_entry(
     snap = np.load(snapshots_path, allow_pickle=False)
     mrhipstr_result = None
     try:
-        required_snapshot_keys = {"presence"}
+        rooted_facts = None
         if method == "mrhipstr":
+            from ..rf.rooted_facts import (
+                rooted_facts_from_npz,
+                snapshot_has_rooted_facts,
+            )
+
+            if snapshot_has_rooted_facts(snap):
+                rooted_facts = rooted_facts_from_npz(snap)
+                if rooted_facts.tree_names != tuple(full_distmat_names):
+                    raise ValueError(
+                        "persisted rooted-facts tree names disagree with the "
+                        "RF registry ordering"
+                    )
+
+        required_snapshot_keys = {"presence"} if method == "mcc" else set()
+        if method == "mrhipstr" and rooted_facts is None:
+            required_snapshot_keys.add("presence")
             required_snapshot_keys.update({"bipartition_bits", "leaf_names"})
         missing_snapshot_keys = required_snapshot_keys.difference(snap.files)
         if missing_snapshot_keys:
@@ -129,11 +145,17 @@ def compute_consensus_tree_worker_entry(
             raise ValueError(
                 f"{method} snapshot is missing required arrays: {missing_list}"
             )
-        presence = snap["presence"]
+        presence = snap["presence"] if "presence" in snap.files else None
         bipartition_bits = (
-            snap["bipartition_bits"] if method == "mrhipstr" else None
+            snap["bipartition_bits"]
+            if method == "mrhipstr" and rooted_facts is None
+            else None
         )
-        leaf_names = snap["leaf_names"] if method == "mrhipstr" else None
+        leaf_names = (
+            snap["leaf_names"]
+            if method == "mrhipstr" and rooted_facts is None
+            else None
+        )
         name_to_idx = {
             name: index for index, name in enumerate(full_distmat_names)
         }
@@ -165,6 +187,7 @@ def compute_consensus_tree_worker_entry(
                 canonical_preamble=source_preambles.get(canonical_source),
                 profile=mrhipstr_profile,
                 wlog=wlog,
+                rooted_facts=rooted_facts,
             )
         else:
             # Preserve the original MCC objective and source-line
@@ -269,10 +292,11 @@ def _compute_mrhipstr_result(
     source_file_paths: Dict[str, str],
     canonical_source: str,
     canonical_preamble: Optional[bytes],
-    profile: Dict[str, float],
+    profile: Dict[str, Any],
     wlog: Any,
+    rooted_facts: Any = None,
 ) -> Dict[str, Any]:
-    """Run the rooted synthetic MrHIPSTR pipeline for one selection."""
+    """Run MrHIPSTR from rooted facts, falling back to source Newicks."""
     import statistics
     import time
 
@@ -284,43 +308,72 @@ def _compute_mrhipstr_result(
         ingest_source_trees,
         serialize_mrhipstr_tree,
     )
+    from .rooted_facts import (
+        count_selected_clades_from_rooted_facts,
+        decode_rooted_clade_catalog_from_rooted_facts,
+        source_summary_from_rooted_facts,
+    )
 
     started = time.perf_counter()
-    selected_counts = count_selected_clades(presence, selected_idx)
-    catalog = decode_rooted_clade_catalog(
-        bipartition_bits=bipartition_bits,
-        leaf_names=leaf_names,
-        active_columns=selected_counts.active_columns,
-    )
+    if rooted_facts is None:
+        selected_counts = count_selected_clades(presence, selected_idx)
+        catalog = decode_rooted_clade_catalog(
+            bipartition_bits=bipartition_bits,
+            leaf_names=leaf_names,
+            active_columns=selected_counts.active_columns,
+        )
+        input_mode = "source_newicks"
+    else:
+        selected_counts = count_selected_clades_from_rooted_facts(
+            rooted_facts,
+            selected_idx,
+        )
+        catalog = decode_rooted_clade_catalog_from_rooted_facts(
+            rooted_facts,
+            selected_counts,
+        )
+        input_mode = "rooted_facts"
+        profile["input_mode"] = input_mode
     profile["clade_collection_seconds"] = time.perf_counter() - started
     wlog(
-        "MrHIPSTR snapshot counts decoded: "
+        f"MrHIPSTR clades decoded from {input_mode}: "
         f"active_clades={len(selected_counts.active_columns)}, "
         f"taxa={catalog.n_taxa}, "
         f"elapsed={profile['clade_collection_seconds']:.3f}s"
     )
 
     started = time.perf_counter()
-    wlog("MrHIPSTR source-tree ingestion started")
-    source_records = _iter_source_tree_records(
-        matched_records,
-        source_file_paths=source_file_paths,
-        translate_maps=translate_maps,
-        record_type=SourceTreeRecord,
-    )
-    try:
-        source_summary = ingest_source_trees(
-            source_records,
+    if rooted_facts is None:
+        wlog("MrHIPSTR source-tree ingestion started")
+        source_records = _iter_source_tree_records(
+            matched_records,
+            source_file_paths=source_file_paths,
+            translate_maps=translate_maps,
+            record_type=SourceTreeRecord,
+        )
+        try:
+            source_summary = ingest_source_trees(
+                source_records,
+                catalog=catalog,
+                snapshot_counts=selected_counts,
+            )
+        finally:
+            source_records.close()
+        ingestion_label = "source-tree ingestion"
+    else:
+        wlog("MrHIPSTR rooted-facts aggregation started")
+        source_summary = source_summary_from_rooted_facts(
+            rooted_facts,
+            selected_idx,
             catalog=catalog,
             snapshot_counts=selected_counts,
         )
-    finally:
-        source_records.close()
+        ingestion_label = "rooted-facts aggregation"
     profile["source_tree_ingestion_seconds"] = (
         time.perf_counter() - started
     )
     wlog(
-        "MrHIPSTR source-tree ingestion finished: "
+        f"MrHIPSTR {ingestion_label} finished: "
         f"observed_split_parents={len(source_summary.observed_splits)}, "
         f"elapsed={profile['source_tree_ingestion_seconds']:.3f}s"
     )

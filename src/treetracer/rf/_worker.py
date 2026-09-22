@@ -13,12 +13,12 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     """Compute pairwise RF distances + the per-tree split presence matrix in
     a single rapidtrees call, and persist both to disk.
 
-    Routes through ``rf_distance_with_snapshots_from_newick_iter``, which
-    calls rapidtrees' interned-snapshot pyfunction
-    (``pairwise_rf_with_snapshots_interned_from_newick_iter``). RF runs on
-    u32 split IDs against a globally-deduped bipartition table — at 1000+
-    taxa this is roughly 5–10× faster than the legacy bitset path because
-    the inner loop's working set fits in L1.
+    Rooted inputs prefer ``rf_distance_with_rooted_facts_from_newick_iter`` so
+    the same RapidTrees parse also retains MrHIPSTR heights and directly
+    observed splits. Unrooted inputs, older RapidTrees installations, and
+    rooted inputs incompatible with the strict facts contract retain the
+    established dense-snapshot route. Both routes use RapidTrees' interned u32
+    clade IDs for RF computation.
 
     ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
       * True  → every internal-node descendant set is one clade. Honest
@@ -33,16 +33,16 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     Two files are written:
 
     - ``save_path``:                        uint16 ``.npy`` n×n RF matrix.
-    - ``<save_path stem>_snapshots.npz``:   ``presence`` (uint8, n_trees ×
-                                            n_clades-or-bipartitions) plus
-                                            ``leaf_names`` (alphabetical
-                                            taxon list).
+    - ``<save_path stem>_snapshots.npz``:   the established ``presence``,
+                                            ``leaf_names``, and
+                                            ``bipartition_bits`` arrays; rooted
+                                            compatible inputs additionally
+                                            carry versioned ``rooted_facts_*``
+                                            arrays.
 
-    The presence matrix isn't free to compute, but it's the sufficient
-    statistic for every topology-based convergence diagnostic
-    (Pseudo-ESS, Fréchet correlation ESS, ASDSF) — saving it now means
-    those callers can read it from disk later without re-parsing .trees
-    files or recomputing snapshots.
+    Dense compatibility arrays remain for MCC and current convergence
+    diagnostics. MrHIPSTR reads the compact facts when present and only
+    reparses source trees for legacy/incompatible snapshots.
 
     Returns (result_names, elapsed). Both matrices stay on disk, never
     pickled across the process boundary.
@@ -64,19 +64,85 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         wlog = lambda _msg: None  # noqa: E731 — best-effort logging
 
     t0 = time.time()
-    wlog("compute_rf: importing rapidtrees binding (.rf.rf_distance_with_snapshots_from_newick_iter)")
-    from .rf import rf_distance_with_snapshots_from_newick_iter
-    wlog(f"compute_rf: rapidtrees imported in {time.time() - t0:.3f}s; calling pairwise RF")
-    call_t0 = time.time()
-    result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
-        rf_distance_with_snapshots_from_newick_iter(
-            names, iter(newicks), translate_maps, map_indices,
-            rooted=is_rooted, progress=progress,
-        )
+    wlog("compute_rf: importing rapidtrees RF wrappers")
+    import rapidtrees
+
+    from .rf import (
+        rf_distance_with_rooted_facts_from_newick_iter,
+        rf_distance_with_snapshots_from_newick_iter,
     )
+    from .rooted_facts import rooted_facts_npz_payload
+
+    wlog(
+        "compute_rf: rapidtrees imported in "
+        f"{time.time() - t0:.3f}s; calling pairwise RF"
+    )
+    call_t0 = time.time()
+    rooted_facts = None
+    has_rooted_facts_endpoint = hasattr(
+        rapidtrees,
+        "pairwise_rf_with_rooted_facts_from_newick_iter",
+    )
+    if is_rooted and has_rooted_facts_endpoint:
+        try:
+            wlog("compute_rf: using RapidTrees rooted-facts endpoint")
+            result_names, rf_matrix, rooted_facts = (
+                rf_distance_with_rooted_facts_from_newick_iter(
+                    names,
+                    iter(newicks),
+                    translate_maps,
+                    map_indices,
+                    progress=progress,
+                )
+            )
+        except ValueError as exc:
+            # Rooted facts deliberately require strict binary trees and an
+            # explicit finite length on every non-root edge. Preserve RF/MCC
+            # compatibility for other rooted inputs by retrying the established
+            # endpoint; MrHIPSTR will retain its source-Newick fallback.
+            wlog(
+                "compute_rf: rooted facts unavailable for this dataset; "
+                f"falling back to dense rooted snapshots ({exc})"
+            )
+            rooted_facts = None
+
+    if rooted_facts is not None:
+        leaf_names = list(rooted_facts.leaf_names)
+        presence = np.zeros(
+            (rooted_facts.n_trees, rooted_facts.n_clades),
+            dtype=np.uint8,
+        )
+        np.put_along_axis(
+            presence,
+            rooted_facts.clade_columns.astype(np.intp, copy=False),
+            1,
+            axis=1,
+        )
+        bipartition_bits = np.unpackbits(
+            rooted_facts.packed_clades,
+            axis=1,
+            bitorder="little",
+        )[:, : rooted_facts.n_taxa].copy()
+    else:
+        (
+            result_names,
+            rf_matrix,
+            presence,
+            leaf_names,
+            _n_bip,
+            bipartition_bits,
+        ) = rf_distance_with_snapshots_from_newick_iter(
+            names,
+            iter(newicks),
+            translate_maps,
+            map_indices,
+            rooted=is_rooted,
+            progress=progress,
+        )
     wlog(
         f"compute_rf: rapidtrees returned in {time.time() - call_t0:.3f}s; "
-        f"rf_matrix.shape={rf_matrix.shape}, presence.shape={presence.shape}"
+        f"rf_matrix.shape={rf_matrix.shape}, presence.shape={presence.shape}, "
+        f"rooted_facts={'yes' if rooted_facts is not None else 'no'}"
     )
     # rf_matrix is uint32 from Rust; downcast to uint16 for disk storage
     # (RF distances are bounded by 2*(n_taxa-3), trivially fits).
@@ -87,10 +153,14 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     # so a single registry entry implicitly knows where to find both.
     snap_path = Path(save_path).with_name(Path(save_path).stem + "_snapshots.npz")
     wlog(f"compute_rf: saving snapshot .npz to {str(snap_path)!r}")
-    np.savez(snap_path,
-             presence=presence,
-             leaf_names=np.array(leaf_names),
-             bipartition_bits=bipartition_bits)
+    snapshot_arrays = {
+        "presence": presence,
+        "leaf_names": np.array(leaf_names),
+        "bipartition_bits": bipartition_bits,
+    }
+    if rooted_facts is not None:
+        snapshot_arrays.update(rooted_facts_npz_payload(rooted_facts))
+    np.savez(snap_path, **snapshot_arrays)
     wlog("compute_rf: both files written; returning")
 
     elapsed = time.time() - t0

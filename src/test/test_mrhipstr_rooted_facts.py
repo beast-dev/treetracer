@@ -16,6 +16,9 @@ from treetracer.consensus_tree.mrhipstr import (
     ingest_source_trees,
     serialize_mrhipstr_tree,
 )
+from treetracer.consensus_tree._subprocess_worker import (
+    compute_consensus_tree_worker_entry,
+)
 from treetracer.consensus_tree.rooted_facts import (
     count_selected_clades_from_rooted_facts,
     prepare_mrhipstr_inputs_from_rooted_facts,
@@ -24,6 +27,12 @@ from treetracer.consensus_tree.rooted_facts import (
 from treetracer.rf import (
     rf_distance_with_rooted_facts_from_newick_iter,
     rf_distance_with_snapshots_from_newick_iter,
+)
+from treetracer.rf._worker import compute_rf
+from treetracer.rf.rooted_facts import (
+    rooted_facts_from_npz,
+    rooted_facts_npz_payload,
+    snapshot_has_rooted_facts,
 )
 
 
@@ -214,3 +223,82 @@ def test_rooted_facts_summary_cross_checks_selected_counts():
             catalog=prepared.catalog,
             snapshot_counts=wrong_counts,
         )
+
+
+def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
+    matrix_path = tmp_path / "RF_TEST.npy"
+    result_names, _ = compute_rf(
+        list(SOURCE_NAMES),
+        list(SOURCE_TREES),
+        [{}],
+        [0] * len(SOURCE_TREES),
+        str(matrix_path),
+        is_rooted=True,
+    )
+
+    assert result_names == list(SOURCE_NAMES)
+    snapshot_path = tmp_path / "RF_TEST_snapshots.npz"
+    with np.load(snapshot_path, allow_pickle=False) as persisted:
+        assert snapshot_has_rooted_facts(persisted)
+        facts = rooted_facts_from_npz(persisted)
+        assert facts.tree_names == SOURCE_NAMES
+        assert persisted["presence"].shape == (
+            len(SOURCE_TREES),
+            facts.n_clades,
+        )
+        assert persisted["bipartition_bits"].shape == (
+            facts.n_clades,
+            facts.n_taxa,
+        )
+
+
+def test_consensus_worker_prefers_persisted_facts_without_source_reads(
+    tmp_path,
+):
+    _, _, facts = _rooted_facts()
+    facts_only_path = tmp_path / "facts_only_snapshots.npz"
+    np.savez(facts_only_path, **rooted_facts_npz_payload(facts))
+    source = "posterior.trees"
+    matched_records = [
+        {"name": name, "file_source": source}
+        for name in SOURCE_NAMES
+    ]
+
+    result = compute_consensus_tree_worker_entry(
+        matched_records=matched_records,
+        source_distmat="RF_FACTS",
+        snapshots_path=str(facts_only_path),
+        full_distmat_names=list(SOURCE_NAMES),
+        translate_maps={source: {}},
+        source_file_paths={source: str(tmp_path / "does-not-exist.trees")},
+        source_preambles={source: b"#NEXUS\n\nbegin trees;\n"},
+        is_rooted=True,
+        summary_method="mrhipstr",
+    )
+
+    assert result["summary_method"] == "mrhipstr"
+    assert result["mrhipstr_profile"]["input_mode"] == "rooted_facts"
+    assert result["mrhipstr_statistics"]["total_trees"] == len(SOURCE_TREES)
+    assert result["counts"].shape == (facts.n_clades,)
+    assert b"summaryMethod=MrHIPSTR" in result["nexus_bytes"]
+
+    from treetracer.callbacks.consensus_tree_compute import (
+        _format_mrhipstr_timing_profile,
+    )
+
+    visible_profile = dict(result["mrhipstr_profile"])
+    visible_profile.update(
+        {
+            "selection_and_database_seconds": 0.0,
+            "request_preparation_seconds": 0.0,
+            "dispatch_queue_seconds": 0.0,
+            "result_handoff_seconds": 0.0,
+            "publication_seconds": 0.0,
+            "click_to_nexus_seconds": 0.1,
+            "click_to_ready_seconds": 0.2,
+        }
+    )
+    report = _format_mrhipstr_timing_profile(visible_profile)
+    assert "Input path: RapidTrees rooted facts" in report
+    assert "rooted-facts aggregation (splits and heights)" in report
+    assert "source-tree parsing, splits, and heights" not in report

@@ -5,11 +5,13 @@ the raw string is discarded. The result is a numpy uint32 array via
 zero-copy from the Rust side.
 """
 
+import math
 from typing import Dict, List, Tuple
 
 import numpy as np
 import rapidtrees
-import math
+
+from .rooted_facts import RootedFactsSnapshot, decode_rooted_facts_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +94,7 @@ def rf_distance_with_snapshots_from_newick_iter(
     n = len(names_out)
     rf_matrix = np.frombuffer(rf_bytes, dtype=np.uint32).reshape(n, n).copy()
     presence = np.frombuffer(presence_bytes, dtype=np.uint8).reshape(n, n_bipartitions).copy()
-    
+
     #words_per_bip = len(bip_bytes) // (n_bipartitions * 8) if n_bipartitions > 0 else 0
     #bipartition_bits = np.frombuffer(bip_bytes, dtype=np.uint64).reshape(n_bipartitions, words_per_bip).copy()
     if n_bipartitions > 0:
@@ -101,7 +103,85 @@ def rf_distance_with_snapshots_from_newick_iter(
         bipartition_bits = np.unpackbits(bip_arr, axis=1, bitorder='little')[:, :len(leaf_names)].copy()
     else:
         bipartition_bits = np.zeros((0, 0), dtype=np.uint8)
-    
-    return names_out, rf_matrix, presence, list(leaf_names), int(n_bipartitions), bipartition_bits
+
+    return (
+        names_out,
+        rf_matrix,
+        presence,
+        list(leaf_names),
+        int(n_bipartitions),
+        bipartition_bits,
+    )
 
 
+def rf_distance_with_rooted_facts_from_newick_iter(
+    names: List[str],
+    newick_iter,
+    translate_maps: List[Dict[str, str]],
+    map_indices: List[int] | None = None,
+    progress=None,
+) -> tuple[List[str], np.ndarray, RootedFactsSnapshot]:
+    """Compute rooted RF distances and retain compact MrHIPSTR facts.
+
+    This is an additive alternative to
+    :func:`rf_distance_with_snapshots_from_newick_iter`. It calls RapidTrees'
+    rooted-only version-2 endpoint, keeps clade membership sparse, keeps clade
+    bitsets packed, and returns heights and directly observed binary splits
+    without reparsing the source Newicks in Python.
+
+    The existing dense-snapshot function and its callers are intentionally
+    unchanged. Trees supplied here must be rooted, strictly binary, and have
+    explicit finite branch lengths on every non-root edge.
+
+    Returns:
+        ``(names, rf_matrix, rooted_facts)`` where ``rf_matrix`` is a copied
+        ``uint32`` square matrix and ``rooted_facts`` is a validated
+        :class:`RootedFactsSnapshot`.
+    """
+    if map_indices is None:
+        map_indices = [0] * len(names)
+    endpoint = getattr(
+        rapidtrees,
+        "pairwise_rf_with_rooted_facts_from_newick_iter",
+        None,
+    )
+    if endpoint is None:
+        raise RuntimeError(
+            "the installed RapidTrees does not provide rooted facts; "
+            "install RapidTrees 0.9.1 or newer"
+        )
+
+    (
+        names_out,
+        rf_bytes,
+        leaf_names,
+        n_clades,
+        clade_bytes,
+        facts,
+    ) = endpoint(
+        names,
+        newick_iter,
+        translate_maps,
+        map_indices,
+        progress=progress,
+    )
+    n_trees = len(names_out)
+    expected_rf_bytes = n_trees * n_trees * np.dtype(np.uint32).itemsize
+    if len(rf_bytes) != expected_rf_bytes:
+        raise ValueError(
+            "RapidTrees returned an invalid rooted-facts RF buffer: "
+            f"{len(rf_bytes)} bytes != {expected_rf_bytes}"
+        )
+    rf_matrix = (
+        np.frombuffer(rf_bytes, dtype=np.uint32)
+        .reshape(n_trees, n_trees)
+        .copy()
+    )
+    rooted_facts = decode_rooted_facts_snapshot(
+        tree_names=names_out,
+        leaf_names=leaf_names,
+        n_clades=n_clades,
+        clade_bytes=clade_bytes,
+        facts=facts,
+    )
+    return list(names_out), rf_matrix, rooted_facts

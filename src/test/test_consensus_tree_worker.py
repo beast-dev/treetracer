@@ -143,6 +143,20 @@ def test_worker_explicit_method_preserves_mcc_path(tmp_path):
     )
 
 
+def test_worker_midpoint_roots_unrooted_mcc_output(tmp_path):
+    kwargs, _ = _build_worker_inputs(tmp_path)
+    kwargs["is_rooted"] = False
+
+    result = compute_consensus_tree_worker_entry(
+        **kwargs,
+        summary_method="mcc",
+    )
+
+    assert result["summary_method"] == "mcc"
+    assert b"= [&R]" in result["nexus_bytes"]
+    assert _parse_nexus_tree(result["nexus_bytes"]).is_rooted
+
+
 def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     kwargs, presence = _build_worker_inputs(tmp_path)
 

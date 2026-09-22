@@ -542,6 +542,8 @@ def submit_consensus_tree_job(
             adapter which tab's clientside ``window.open`` to fire.
         summary_method: ``"mrhipstr"`` (default) or explicit ``"mcc"`` for
             compatibility with the retained sampled-tree implementation.
+            An unrooted RF matrix automatically resolves MrHIPSTR to MCC;
+            its selected sampled tree is midpoint-rooted for export.
     """
     submit_started_at = time.perf_counter()
     if click_started_at is None:
@@ -553,17 +555,12 @@ def submit_consensus_tree_job(
         raise ValueError("matched_records must not be empty")
     if store_target not in _STORE_TARGETS:
         raise ValueError(f"unsupported consensus-tree store target: {store_target}")
-    summary_method = _normalise_summary_method(summary_method)
-
-    # Fail before touching source files or submitting work. MrHIPSTR's clade
-    # recurrence is rooted; midpoint-rooting an unrooted result afterward
-    # would not make the underlying frequencies rooted observations.
+    requested_summary_method = _normalise_summary_method(summary_method)
     distmat_is_rooted = _state.get_distmat_is_rooted(source_distmat)
-    if summary_method == "mrhipstr" and not distmat_is_rooted:
-        raise ValueError(
-            "MrHIPSTR requires a rooted RF matrix; choose MCC or recompute "
-            "the RF matrix as rooted."
-        )
+    use_unrooted_mcc = (
+        requested_summary_method == "mrhipstr" and not distmat_is_rooted
+    )
+    summary_method = "mcc" if use_unrooted_mcc else requested_summary_method
 
     tree_service = _get_tree_service()
     db_manager = tree_service.db_manager
@@ -597,6 +594,12 @@ def submit_consensus_tree_job(
 
     method_label = _summary_method_label(summary_method)
     log_prefix = f"[{method_label}/{mode}]"
+    if use_unrooted_mcc:
+        add_log(
+            f"{log_prefix} Unrooted RF matrix detected; automatically using "
+            "MCC instead of MrHIPSTR. The selected MCC tree will be "
+            "midpoint-rooted for export."
+        )
     rooting_text = (
         "rooted"
         if distmat_is_rooted

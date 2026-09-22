@@ -592,7 +592,28 @@ def test_consensus_submit_carries_mrhipstr_method_to_worker_and_context(
     )
 
 
-def test_consensus_submit_rejects_mrhipstr_for_unrooted_matrix(monkeypatch):
+def test_consensus_submit_uses_midpoint_rooted_mcc_for_unrooted_matrix(
+    monkeypatch,
+):
+    submitted = {}
+    log_calls = []
+
+    class CapturingManager:
+        def submit(self, *args, **kwargs):
+            submitted["args"] = args
+            submitted["kwargs"] = kwargs
+            return "job-ref"
+
+    db = SimpleNamespace(
+        _source_files={"run.trees": "/tmp/run.trees"},
+        _source_preambles={"run.trees": b"#NEXUS\nBegin trees;\n"},
+        get_translate_map=lambda _source: {"1": "A", "2": "B"},
+    )
+    monkeypatch.setattr(
+        consensus_tree_compute,
+        "job_manager",
+        CapturingManager(),
+    )
     monkeypatch.setattr(
         consensus_tree_compute._state,
         "get_distmat_is_rooted",
@@ -601,27 +622,62 @@ def test_consensus_submit_rejects_mrhipstr_for_unrooted_matrix(monkeypatch):
     monkeypatch.setattr(
         consensus_tree_compute,
         "_get_tree_service",
-        lambda: pytest.fail("unrooted MrHIPSTR must fail before DB access"),
+        lambda: SimpleNamespace(db_manager=db),
+    )
+    monkeypatch.setattr(
+        consensus_tree_compute,
+        "_get_executor",
+        lambda: "executor",
+    )
+    monkeypatch.setattr(
+        consensus_tree_compute._state,
+        "get_snapshots_path",
+        lambda _name: "/tmp/RF_unrooted_snapshots.npz",
+    )
+    monkeypatch.setattr(
+        consensus_tree_compute._state,
+        "get_distmat_names",
+        lambda _name: ["run/tree-1"],
+    )
+    monkeypatch.setattr(
+        consensus_tree_compute,
+        "add_log",
+        lambda message, level="INFO": log_calls.append((message, level)),
     )
 
-    with pytest.raises(ValueError, match="requires a rooted RF matrix"):
-        consensus_tree_compute.submit_consensus_tree_job(
-            matched_records=[
-                {
-                    "name": "run/tree-1",
-                    "file_source": "run.trees",
-                }
-            ],
-            source_distmat="RF_unrooted",
-            mode="Between",
-            selection=[["run", 1]],
-            run=None,
-            consensus_tree_coord_by_tree_name={
-                "run/tree-1": ("run", 1),
-            },
-            store_target=consensus_tree_compute._TREESPACE_TARGET,
-            summary_method="mrhipstr",
-        )
+    ref = consensus_tree_compute.submit_consensus_tree_job(
+        matched_records=[
+            {
+                "name": "run/tree-1",
+                "file_source": "run.trees",
+            }
+        ],
+        source_distmat="RF_unrooted",
+        mode="Between",
+        selection=[["run", 1]],
+        run=None,
+        consensus_tree_coord_by_tree_name={
+            "run/tree-1": ("run", 1),
+        },
+        store_target=consensus_tree_compute._TREESPACE_TARGET,
+        summary_method="mrhipstr",
+    )
+
+    assert ref == "job-ref"
+    assert submitted["kwargs"]["is_rooted"] is False
+    assert submitted["kwargs"]["summary_method"] == "mcc"
+    assert submitted["kwargs"]["metadata"]["summary_method"] == "mcc"
+    context = submitted["kwargs"]["finalizer"].keywords["context"]
+    assert context.summary_method == "mcc"
+    assert any(
+        "automatically using MCC instead of MrHIPSTR" in message
+        and "midpoint-rooted for export" in message
+        for message, _level in log_calls
+    )
+    assert any(
+        "[MCC/Between] Starting summary-tree computation" in message
+        for message, _level in log_calls
+    )
 
 
 def test_consensus_finalization_failure_reenables_origin_button(monkeypatch):

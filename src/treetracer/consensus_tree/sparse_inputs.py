@@ -1,9 +1,9 @@
 """Adapt generic sparse RF snapshots to the established MrHIPSTR inputs.
 
-This is the middle compatibility path between full RapidTrees rooted facts and
-legacy dense snapshots.  It obtains clade frequencies and the rooted clade
-catalog without densifying the CSR rows; observed splits and node heights still
-come from the existing source-Newick ingestion path.
+This is the path used when full RapidTrees rooted facts are unavailable. It
+obtains clade frequencies and the rooted clade catalog without densifying the
+CSR rows; observed splits and node heights still come from the existing
+source-Newick ingestion path.
 """
 
 from __future__ import annotations

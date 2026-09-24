@@ -480,7 +480,7 @@ Number of clades with credibility > 0.5: 915 / 920 (in all trees)"""
 def test_mrhipstr_console_timing_profile_lists_every_stage():
     report = consensus_tree_compute._format_mrhipstr_timing_profile(
         {
-            "input_mode": "source_newicks",
+            "input_mode": "sparse_snapshot",
             "selection_and_database_seconds": 0.01,
             "request_preparation_seconds": 0.02,
             "dispatch_queue_seconds": 0.03,
@@ -502,7 +502,7 @@ def test_mrhipstr_console_timing_profile_lists_every_stage():
     )
 
     assert report == """MrHIPSTR timing profile:
-  Input path: legacy snapshot + source-tree parsing
+  Input path: sparse clade snapshot + source-tree parsing
   Click callback — selection and database lookup: 0.0100 secs
   Parent — worker request preparation: 0.0200 secs
   Dispatch/queue — worker handoff and wait: 0.0300 secs

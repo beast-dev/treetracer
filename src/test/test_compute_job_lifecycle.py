@@ -237,7 +237,7 @@ def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
                 "input trees were ROOTED",
                 "distances used rooted clades",
                 "RapidTrees rooted facts: USED",
-                "rooted facts for MrHIPSTR",
+                "compact clade rows, heights, and observed splits",
             ),
         ),
         (

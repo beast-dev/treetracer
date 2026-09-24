@@ -62,7 +62,11 @@ def rf_distance_with_snapshots_from_newick_iter(
     rooted: bool = False,
     progress=None,
 ) -> Tuple[List[str], np.ndarray, np.ndarray, List[str], int]:
-    """Compute pairwise RF distances *and* the per-tree split presence matrix.
+    """Return the historical dense snapshot representation.
+
+    This wrapper is retained as a reference/testing API. The TreeTracer
+    application does not call it or persist its dense arrays; production RF
+    jobs use rooted facts or generic CSR snapshots.
 
     Calls rapidtrees' interned-snapshot pyfunction, which builds an
     InternedSnapshots representation under the hood: every distinct
@@ -74,9 +78,7 @@ def rf_distance_with_snapshots_from_newick_iter(
     The presence matrix is returned as a byproduct: shape (n_trees, n_bip),
     uint8 with ``presence[i, j] == 1`` iff tree ``i`` contains bipartition
     ``j``. Bipartition columns are in ascending Bitset order so the same
-    tree set always produces the same matrix. Downstream convergence
-    diagnostics (Pseudo-ESS, Fréchet correlation ESS, ASDSF) consume this
-    matrix directly without re-parsing the original .trees files.
+    tree set always produces the same matrix.
 
     Returns:
         (names, rf_matrix, presence, leaf_names, n_bipartitions) where

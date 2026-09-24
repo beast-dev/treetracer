@@ -24,12 +24,11 @@ _MAX_DISTMATS = 50   # evict oldest when exceeded
 
 # Per-distmat decode cache for the Clade Frequency Comparison pipeline.
 #
-# Sparse snapshots keep the clade catalog bit-packed; legacy snapshots keep
-# it as an (n_splits, n_leaves) uint8 ``bipartition_bits`` matrix. We decode
-# either representation into sorted ``tuple[int]`` leaf-index keys only when
-# the clade-frequency UI first needs them. These tuples are ~5× smaller than
-# frozensets-of-strings (8.5 MB vs 40 MB for a 41k-clade / 283-taxon matrix,
-# measured in bench_clade_freq.py).
+# Sparse snapshots keep the clade catalog bit-packed. We decode it into sorted
+# ``tuple[int]`` leaf-index keys only when the clade-frequency UI first needs
+# them. These tuples are ~5× smaller than frozensets-of-strings (8.5 MB vs
+# 40 MB for a 41k-clade / 283-taxon matrix, measured in
+# bench_clade_freq.py).
 #
 # Lazily populated on first ``get_canonical_keys(name)`` call. Cleared
 # in ``clear_all_distmats`` so the cache lifetime is bound to the
@@ -112,12 +111,11 @@ def get_distmat_path(name):
 
 
 def get_snapshots_path(name):
-    """Return the .npz file path for a matrix's interned-snapshot data.
+    """Return the .npz file path for a matrix's sparse-snapshot data.
 
-    New files contain sparse tree-to-clade rows and a packed clade catalog.
-    During the additive migration they also contain the established dense
-    ``presence``, ``leaf_names``, and ``bipartition_bits`` compatibility
-    arrays, so older sessions and consumers remain readable.
+    Files contain sparse tree-to-clade rows and a bit-packed clade catalog,
+    represented either by generic CSR arrays or by rooted-facts fixed-width
+    rows.
     """
     d = _ensure_tmpdir()
     return os.path.join(d, name.replace("/", "_") + "_snapshots.npz")
@@ -216,7 +214,7 @@ def get_distmat_names(name):
 
     The same ordering is used by the snapshot file at
     ``get_snapshots_path(name)``, so callers can map a tree name to its
-    row index in the presence matrix.
+    sparse row index.
     """
     return _distmat_index[name]["names"]
 
@@ -288,25 +286,19 @@ def get_canonical_keys(source_distmat):
         allow_pickle=False,
     ) as snap:
         from .rf.sparse_snapshots import (
-            snapshot_has_sparse_presence,
             sparse_clade_tip_indices,
             sparse_snapshot_from_npz,
         )
 
-        if snapshot_has_sparse_presence(snap):
+        try:
             sparse_snapshot = sparse_snapshot_from_npz(snap)
-            tuples = sparse_clade_tip_indices(sparse_snapshot)
-            raw_leaf_names = sparse_snapshot.leaf_names
-        else:
-            if "bipartition_bits" not in snap.files:
-                raise KeyError(
-                    f"snapshot for {source_distmat!r} has neither sparse "
-                    "clades nor 'bipartition_bits' — regenerate it with "
-                    "a compatible RapidTrees version."
-                )
-            bits = snap["bipartition_bits"]
-            tuples = [tuple(np.flatnonzero(row).tolist()) for row in bits]
-            raw_leaf_names = snap["leaf_names"]
+        except KeyError as exc:
+            raise ValueError(
+                f"snapshot for {source_distmat!r} has no sparse clade "
+                "representation; recompute it with RapidTrees 0.9.1 or newer"
+            ) from exc
+        tuples = sparse_clade_tip_indices(sparse_snapshot)
+        raw_leaf_names = sparse_snapshot.leaf_names
 
         # ``parse_nexus`` strips outer single/double quotes from quoted
         # taxon identifiers when reading the Translate block (per NEXUS
@@ -527,15 +519,15 @@ def register_consensus_tree(*, source_distmat, mode, run, uuid, consensus_tree,
     from synthetic mean-height MrHIPSTR trees. The remaining height fields
     retain MrHIPSTR diagnostics; their defaults preserve legacy MCC callers.
 
-    ``counts`` is the pre-computed column-sum of the snapshot's
-    presence matrix over the selected rows: a numpy uint32/int32 array
+    ``counts`` is the pre-computed column-sum of the snapshot's sparse clade
+    rows: a numpy uint32/int32 array
     of length ``n_bipartitions``. The summary-tree worker computes it while
     the selected snapshot rows are already in scope. Caching at registration
     time means Compare clicks don't pay the row-sum cost. Optional — registry
     stays usable without it but falls back to the slow recompute path in
     ``clade_freq.compute_clade_frequencies``.
 
-    ``cols_in_consensus_tree`` is an iterable of presence-matrix column indices
+    ``cols_in_consensus_tree`` is an iterable of clade-catalog column indices
     that appear in the summary topology. For MCC these come from the selected
     source row; for MrHIPSTR they come from the synthesized topology. These are
     the interned bipartition IDs of the summary tree's own clades; the Clade

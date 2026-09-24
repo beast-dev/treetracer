@@ -13,7 +13,6 @@ from typing import Any
 
 
 def _counts_for_columns(
-    snapshot,
     *,
     sparse_snapshot,
     columns,
@@ -49,17 +48,13 @@ def _counts_for_columns(
             "none of the selected consensus-tree names occur in the RF snapshot"
         )
 
-    if sparse_snapshot is not None:
-        from ..rf.sparse_snapshots import count_sparse_columns
+    from ..rf.sparse_snapshots import count_sparse_columns
 
-        counts = count_sparse_columns(
-            sparse_snapshot,
-            row_indices,
-            columns=columns,
-        )
-    else:
-        presence = snapshot["presence"]
-        counts = presence[np.ix_(row_indices, columns)].sum(axis=0)
+    counts = count_sparse_columns(
+        sparse_snapshot,
+        row_indices,
+        columns=columns,
+    )
     return np.asarray(counts, dtype=np.int64), len(row_indices)
 
 
@@ -88,32 +83,23 @@ def compute_clade_frequencies_worker_entry(
     with np.load(snapshots_path, allow_pickle=False) as snapshot:
         from ..rf.sparse_snapshots import (
             snapshot_has_generic_sparse_snapshot,
-            snapshot_has_sparse_presence,
             sparse_clade_tip_indices,
             sparse_snapshot_from_npz,
         )
 
-        sparse_snapshot = (
-            sparse_snapshot_from_npz(snapshot)
-            if snapshot_has_sparse_presence(snapshot)
-            else None
+        try:
+            sparse_snapshot = sparse_snapshot_from_npz(snapshot)
+        except KeyError as exc:
+            raise ValueError(
+                "clade-frequency comparison requires a sparse RF snapshot; "
+                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+            ) from exc
+        n_clades = sparse_snapshot.n_clades
+        snapshot_input_mode = (
+            "sparse"
+            if snapshot_has_generic_sparse_snapshot(snapshot)
+            else "rooted_facts"
         )
-        if sparse_snapshot is not None:
-            n_clades = sparse_snapshot.n_clades
-            snapshot_input_mode = (
-                "sparse"
-                if snapshot_has_generic_sparse_snapshot(snapshot)
-                else "rooted_facts"
-            )
-        else:
-            if "bipartition_bits" not in snapshot.files:
-                raise KeyError(
-                    "RF snapshot has neither sparse clades nor "
-                    "bipartition_bits; recompute the RF matrix"
-                )
-            bits = snapshot["bipartition_bits"]
-            n_clades = bits.shape[0]
-            snapshot_input_mode = "dense_legacy"
         if columns and columns[-1] >= n_clades:
             raise IndexError(
                 f"clade column {columns[-1]} is outside a "
@@ -121,7 +107,6 @@ def compute_clade_frequencies_worker_entry(
             )
 
         selected_counts_1, denominator_1 = _counts_for_columns(
-            snapshot,
             sparse_snapshot=sparse_snapshot,
             columns=columns,
             cached_counts=counts_1,
@@ -130,7 +115,6 @@ def compute_clade_frequencies_worker_entry(
             full_distmat_names=full_distmat_names,
         )
         selected_counts_2, denominator_2 = _counts_for_columns(
-            snapshot,
             sparse_snapshot=sparse_snapshot,
             columns=columns,
             cached_counts=counts_2,
@@ -139,19 +123,11 @@ def compute_clade_frequencies_worker_entry(
             full_distmat_names=full_distmat_names,
         )
 
-        if sparse_snapshot is not None:
-            selected_keys = sparse_clade_tip_indices(
-                sparse_snapshot,
-                columns,
-            )
-            raw_leaf_names = sparse_snapshot.leaf_names
-        else:
-            selected_bits = bits[columns]
-            selected_keys = [
-                tuple(int(index) for index in np.flatnonzero(row))
-                for row in selected_bits
-            ]
-            raw_leaf_names = snapshot["leaf_names"]
+        selected_keys = sparse_clade_tip_indices(
+            sparse_snapshot,
+            columns,
+        )
+        raw_leaf_names = sparse_snapshot.leaf_names
         leaf_names = [str(name).strip("'\"") for name in raw_leaf_names]
 
         frequencies_1 = selected_counts_1.astype(

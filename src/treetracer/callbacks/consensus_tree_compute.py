@@ -231,7 +231,6 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
         None,
         "rooted_facts",
         "sparse_snapshot",
-        "source_newicks",
     }:
         raise TypeError("MrHIPSTR timing profile has an unknown input mode")
     ingestion_label = (
@@ -309,9 +308,6 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
         "rooted_facts": ["  Input path: RapidTrees rooted facts"],
         "sparse_snapshot": [
             "  Input path: sparse clade snapshot + source-tree parsing"
-        ],
-        "source_newicks": [
-            "  Input path: legacy snapshot + source-tree parsing"
         ],
         None: [],
     }[input_mode]
@@ -469,9 +465,6 @@ def _finalize_consensus_tree_job(
             "sparse_snapshot": (
                 "sparse clade rows plus source-tree parsing"
             ),
-            "source_newicks": (
-                "legacy dense snapshot plus source-tree parsing"
-            ),
         }.get(input_mode, "worker-reported source unavailable")
         add_log(
             f"{log_prefix} Summary path: ROOTED clade RF → MrHIPSTR; "
@@ -585,7 +578,6 @@ def _finalize_consensus_tree_job(
         snapshot_input_text = {
             "sparse": "sparse CSR clade-presence rows",
             "rooted_facts": "sparse clade rows from RapidTrees rooted facts",
-            "dense_legacy": "legacy dense clade-presence rows",
         }.get(snapshot_input_mode, "worker-reported clade-presence rows")
         if context.is_rooted:
             add_log(

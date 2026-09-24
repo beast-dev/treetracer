@@ -1,4 +1,4 @@
-"""Parity and persistence tests for additive sparse RF snapshots."""
+"""Parity and persistence tests for sparse-only RF snapshots."""
 
 from __future__ import annotations
 
@@ -185,7 +185,7 @@ def test_count_sparse_columns_can_limit_work_to_requested_columns():
     )
 
 
-def test_rf_worker_dual_writes_sparse_and_dense_unrooted_snapshots(tmp_path):
+def test_rf_worker_writes_only_sparse_unrooted_snapshot(tmp_path):
     matrix_path = tmp_path / "RF_SPARSE.npy"
 
     result_names, _, details = compute_rf(
@@ -203,11 +203,28 @@ def test_rf_worker_dual_writes_sparse_and_dense_unrooted_snapshots(tmp_path):
     snapshot_path = tmp_path / "RF_SPARSE_snapshots.npz"
     with np.load(snapshot_path, allow_pickle=False) as persisted:
         sparse = sparse_snapshot_from_npz(persisted)
-        np.testing.assert_array_equal(
-            dense_presence_from_sparse(sparse),
-            persisted["presence"],
+        assert sparse.tree_names == NAMES
+        assert sparse.rooted is False
+        assert "presence" not in persisted.files
+        assert "bipartition_bits" not in persisted.files
+        assert "leaf_names" not in persisted.files
+
+
+def test_rf_worker_does_not_fall_back_to_dense_endpoint(monkeypatch, tmp_path):
+    monkeypatch.delattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+    )
+
+    with pytest.raises(RuntimeError, match="RapidTrees 0.9.1 or newer"):
+        compute_rf(
+            list(NAMES),
+            list(TREES),
+            [{}],
+            [0] * len(TREES),
+            str(tmp_path / "RF_NO_SPARSE.npy"),
+            is_rooted=False,
         )
-        np.testing.assert_array_equal(
-            dense_clade_bits_from_sparse(sparse),
-            persisted["bipartition_bits"],
-        )
+
+    assert not (tmp_path / "RF_NO_SPARSE.npy").exists()
+    assert not (tmp_path / "RF_NO_SPARSE_snapshots.npz").exists()

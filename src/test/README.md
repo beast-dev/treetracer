@@ -38,7 +38,7 @@ bash run_tests.sh -k consensus tree -v
 | `test_translate_remap.py` | `_build_canonical_remaps` for cross-source consensus tree export. |
 | `test_file_io.py` | NEXUS → DB → byte-offset re-read round-trip, translate map round-trip, metadata extraction. |
 | `test_rf_matrix.py` | rapidtrees pairwise RF matrix element-wise vs DendroPy rooted-clade sym-diff (50 trees / 1225 pairs). |
-| `test_sparse_snapshots.py` | RapidTrees sparse CSR decoding, NPZ persistence, rooted-facts adaptation, and dense-output parity. |
+| `test_sparse_snapshots.py` | RapidTrees sparse CSR decoding, sparse-only NPZ persistence, rooted-facts adaptation, and reference-output parity. |
 | `test_rf_trace.py` | `compute_rf_trace_data` first/last reference, error paths. |
 | `test_consensus_tree.py` | `compute_consensus_tree_index` algorithm match + full pipeline (rapidtrees → presence → consensus tree vs DendroPy consensus tree) + runner-up discrimination check. |
 

@@ -56,6 +56,25 @@ def _registered_callback(name, register):
     return found[-1]
 
 
+def _write_sparse_snapshot(path, presence, bits, leaf_names):
+    names = tuple(f"tree-{index}" for index in range(len(presence)))
+    column_rows = [np.flatnonzero(row).astype(np.uint32) for row in presence]
+    sparse = SparseSnapshot(
+        tree_names=names,
+        leaf_names=tuple(leaf_names),
+        n_clades=bits.shape[0],
+        packed_clades=np.packbits(bits, axis=1, bitorder="little"),
+        row_offsets=np.asarray(
+            [0, *np.cumsum([len(row) for row in column_rows])],
+            dtype=np.uint64,
+        ),
+        column_indices=np.concatenate(column_rows),
+        rooted=True,
+    )
+    np.savez(path, **sparse_snapshot_npz_payload(sparse))
+    return sparse
+
+
 @pytest.fixture(autouse=True)
 def _clean_analysis_results():
     state.clear_all_analysis_results()
@@ -98,12 +117,7 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
         ],
         dtype=np.uint8,
     )
-    np.savez(
-        path,
-        presence=presence,
-        bipartition_bits=bits,
-        leaf_names=np.array(["'A'", "B", "C"]),
-    )
+    _write_sparse_snapshot(path, presence, bits, ("'A'", "B", "C"))
 
     result = compute_clade_frequencies_worker_entry(
         snapshots_path=str(path),
@@ -122,10 +136,10 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
     assert by_column[1]["freq_1"] != float(np.float32(1 / 3))
     assert by_column[1]["freq_2"] == pytest.approx(1.0)
     assert by_column[3]["split_key"] == (2,)
-    assert result["snapshot_input_mode"] == "dense_legacy"
+    assert result["snapshot_input_mode"] == "sparse"
 
 
-def test_clade_worker_sparse_snapshot_matches_dense_fallback(tmp_path):
+def test_clade_worker_sparse_snapshot_counts_selected_rows(tmp_path):
     presence = np.array(
         [
             [1, 1, 0, 0],
@@ -145,30 +159,13 @@ def test_clade_worker_sparse_snapshot_matches_dense_fallback(tmp_path):
         dtype=np.uint8,
     )
     names = tuple(f"tree-{index}" for index in range(len(presence)))
-    leaf_names = ("'A'", "B", "C")
-    dense_path = tmp_path / "dense_snapshot.npz"
-    np.savez(
-        dense_path,
-        presence=presence,
-        bipartition_bits=bits,
-        leaf_names=np.asarray(leaf_names),
-    )
-
-    column_rows = [np.flatnonzero(row).astype(np.uint32) for row in presence]
-    sparse = SparseSnapshot(
-        tree_names=names,
-        leaf_names=leaf_names,
-        n_clades=bits.shape[0],
-        packed_clades=np.packbits(bits, axis=1, bitorder="little"),
-        row_offsets=np.asarray(
-            [0, *np.cumsum([len(row) for row in column_rows])],
-            dtype=np.uint64,
-        ),
-        column_indices=np.concatenate(column_rows),
-        rooted=True,
-    )
     sparse_path = tmp_path / "sparse_snapshot.npz"
-    np.savez(sparse_path, **sparse_snapshot_npz_payload(sparse))
+    _write_sparse_snapshot(
+        sparse_path,
+        presence,
+        bits,
+        ("'A'", "B", "C"),
+    )
 
     kwargs = {
         "columns": [1, 3],
@@ -180,21 +177,22 @@ def test_clade_worker_sparse_snapshot_matches_dense_fallback(tmp_path):
         "tree_names_2": list(names[2:]),
         "full_distmat_names": list(names),
     }
-    dense = compute_clade_frequencies_worker_entry(
-        snapshots_path=str(dense_path),
-        **kwargs,
-    )
     sparse_result = compute_clade_frequencies_worker_entry(
         snapshots_path=str(sparse_path),
         **kwargs,
     )
 
-    assert dense["snapshot_input_mode"] == "dense_legacy"
     assert sparse_result["snapshot_input_mode"] == "sparse"
-    assert sparse_result["rows"] == dense["rows"]
-    assert sparse_result["leaf_names"] == dense["leaf_names"]
-    assert sparse_result["n_trees_1"] == dense["n_trees_1"]
-    assert sparse_result["n_trees_2"] == dense["n_trees_2"]
+    assert sparse_result["leaf_names"] == ["A", "B", "C"]
+    assert sparse_result["n_trees_1"] == 2
+    assert sparse_result["n_trees_2"] == 2
+    by_column = {
+        row["column_j"]: row for row in sparse_result["rows"]
+    }
+    assert by_column[1]["freq_1"] == pytest.approx(0.5)
+    assert by_column[1]["freq_2"] == pytest.approx(1.0)
+    assert by_column[3]["freq_1"] == pytest.approx(0.5)
+    assert by_column[3]["freq_2"] == pytest.approx(0.5)
 
 
 def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):

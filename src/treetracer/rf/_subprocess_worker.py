@@ -1,7 +1,7 @@
 """RF compute worker — runs in a subprocess, not a thread.
 
-Why subprocess: ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``
-holds the GIL during its iterator-consumption phase (reading newick
+Why subprocess: RapidTrees' RF-and-sparse-snapshot endpoints hold the GIL
+during their iterator-consumption phase (reading newick
 strings out of a Python iterator one at a time). For thousands of trees
 that's a few seconds of contiguous GIL ownership, which is enough for
 macOS to show the spinning-beach-ball watchdog on the main GUI thread.
@@ -54,11 +54,10 @@ def compute_rf_worker_entry(
         rf_name: human-readable label (only used in return value for
             the caller's bookkeeping).
         is_rooted: whether the input trees are rooted. Passes through
-            to ``rapidtrees.pairwise_rf_with_snapshots_from_newick_iter``'s
-            ``rooted=`` arg:
-              * True  → presence-matrix columns are rooted clades
+            to RapidTrees' ``rooted=`` argument:
+              * True  → sparse columns are rooted clades
                 (subtree-from-root identity).
-              * False → presence-matrix columns are bipartitions
+              * False → sparse columns are bipartitions
                 (split-induced unordered pairs of taxon sets).
             Defaults to True for backward compatibility with the
             previous always-rooted behaviour.
@@ -157,8 +156,8 @@ def compute_rf_worker_entry(
                 frac = (val / tot) if tot > 0 else 0.0
                 # Once the pairwise loop hits 100%, rapidtrees is done
                 # but the worker still has to write the .npy + snapshot
-                # .npz to disk (the .npz can be 100MB+ for big
-                # bipartition matrices — measurably ~1 s for 4k trees).
+                # .npz to disk. Large sparse catalogs can still make this a
+                # measurable finalization step.
                 # Flip the phase so the UI shows "Finalizing…" instead
                 # of leaving the bar sitting at a static 100%.
                 phase = "finalizing" if (tot > 0 and val >= tot) else "computing"

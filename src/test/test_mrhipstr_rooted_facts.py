@@ -225,7 +225,7 @@ def test_rooted_facts_summary_cross_checks_selected_counts():
         )
 
 
-def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
+def test_rf_worker_persists_rooted_facts_without_dense_arrays(tmp_path):
     matrix_path = tmp_path / "RF_TEST.npy"
     result_names, _, rf_details = compute_rf(
         list(SOURCE_NAMES),
@@ -249,14 +249,9 @@ def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
         assert snapshot_has_rooted_facts(persisted)
         facts = rooted_facts_from_npz(persisted)
         assert facts.tree_names == SOURCE_NAMES
-        assert persisted["presence"].shape == (
-            len(SOURCE_TREES),
-            facts.n_clades,
-        )
-        assert persisted["bipartition_bits"].shape == (
-            facts.n_clades,
-            facts.n_taxa,
-        )
+        assert "presence" not in persisted.files
+        assert "bipartition_bits" not in persisted.files
+        assert "leaf_names" not in persisted.files
 
 
 def test_consensus_worker_prefers_persisted_facts_without_source_reads(

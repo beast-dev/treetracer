@@ -710,7 +710,6 @@ def _finalize_clade_comparison_job(
     snapshot_input_text = {
         "sparse": "generic sparse CSR snapshot",
         "rooted_facts": "RapidTrees rooted facts",
-        "dense_legacy": "legacy dense snapshot",
     }.get(
         result.get("snapshot_input_mode"),
         "worker-reported snapshot representation",
@@ -1291,8 +1290,8 @@ def register_clade_explore_callbacks():
 
         # Single highlight (same on both trees): consensus tree 1 and consensus tree 2 are
         # both anchored to one source matrix (the Compare-clade dropdowns
-        # filter to the active distmat), so a column in the rooted
-        # presence table represents the same descendant set in both.
+        # filter to the active distmat), so a column in the rooted clade
+        # catalog represents the same descendant set in both.
         highlight = set(resolved["tip_names"])
 
         # Containment is an O(1) ``column_j ∈ cols_in_consensus_tree`` check

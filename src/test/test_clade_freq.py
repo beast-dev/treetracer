@@ -13,15 +13,14 @@ What's covered:
   ``split_key`` matches ``tuples[column_j]``.
 * The defensive ``ValueError`` when called across distmats (the UI
   filters this out, but the module-level invariant is real).
-* Frequencies sum to the expected counts when re-derived from the
-  presence matrix.
+* Frequencies sum to the expected counts when compared with an independent
+  dense reference generated only inside the test.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-import rapidtrees
 
 from treetracer import state
 from treetracer.clade_freq import compute_clade_frequencies
@@ -39,7 +38,6 @@ def _register_fixture_and_build_entries(
     parsed_full,
     rapidtrees_full,
     *,
-    snapshot_format="dense",
     cached_counts=True,
 ):
     """Register the fixture's RF matrix + snapshot under
@@ -50,48 +48,26 @@ def _register_fixture_and_build_entries(
     production path; we synthesise it from ``rapidtrees_full``'s
     return values since the conftest fixture doesn't persist it.
     """
-    names, rf_matrix, presence, leaf_names, _n_bip = rapidtrees_full
+    names, rf_matrix, presence, _leaf_names, _n_bip = rapidtrees_full
     # Persist the RF matrix as .npy + the snapshot as .npz to a tmp
     # directory the ``state`` module's lazy decode will read from.
     distmat_path = tmp_path / "RF_CF.npy"
     np.save(distmat_path, np.asarray(rf_matrix, dtype=np.uint16))
 
-    # Mirror what ``rf._worker.compute_rf`` writes alongside the .npy.
-    # rapidtrees_full's wrapper doesn't return bipartition_bits directly,
-    # so re-run the wrapper to get them. Cheap — the conftest fixture
-    # is session-cached so the underlying RF computation was paid once.
-    from treetracer.rf import (
-        rf_distance_with_snapshots_from_newick_iter,
-        rf_distance_with_sparse_snapshots_from_newick_iter,
-    )
+    # Mirror the sparse-only snapshot written by ``rf._worker.compute_rf``.
+    from treetracer.rf import rf_distance_with_sparse_snapshots_from_newick_iter
     from treetracer.rf.sparse_snapshots import sparse_snapshot_npz_payload
     tmap, names_in, newicks = parsed_full
-    _, _rf, _pres, _ln, _nb, bipartition_bits = (
-        rf_distance_with_snapshots_from_newick_iter(
-            names_in, iter(newicks), [tmap], [0] * len(names_in),
-            rooted=True,   # match production (rf/_worker.py)
-        )
+    _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
+        names_in,
+        iter(newicks),
+        [tmap],
+        [0] * len(names_in),
+        rooted=True,
     )
 
     snap_path = tmp_path / "RF_CF_snapshots.npz"
-    if snapshot_format == "dense":
-        np.savez(
-            snap_path,
-            presence=presence,
-            leaf_names=np.array(leaf_names),
-            bipartition_bits=bipartition_bits,
-        )
-    elif snapshot_format == "sparse":
-        _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
-            names_in,
-            iter(newicks),
-            [tmap],
-            [0] * len(names_in),
-            rooted=True,
-        )
-        np.savez(snap_path, **sparse_snapshot_npz_payload(sparse))
-    else:
-        raise ValueError(f"unsupported test snapshot format: {snapshot_format}")
+    np.savez(snap_path, **sparse_snapshot_npz_payload(sparse))
 
     # ``state.get_canonical_keys`` will look the snapshot up at
     # ``state.get_snapshots_path(name)`` which derives from
@@ -198,13 +174,6 @@ def test_frequencies_round_trip_against_presence(
         assert row["freq_2"] == pytest.approx(expected_2)
 
 
-@pytest.mark.skipif(
-    not hasattr(
-        rapidtrees,
-        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
-    ),
-    reason="installed RapidTrees does not provide sparse snapshots",
-)
 def test_sparse_only_snapshot_supports_canonical_keys_and_count_fallback(
     tmp_path,
     parsed_full,
@@ -214,7 +183,6 @@ def test_sparse_only_snapshot_supports_canonical_keys_and_count_fallback(
         tmp_path,
         parsed_full,
         rapidtrees_full,
-        snapshot_format="sparse",
         cached_counts=False,
     )
 

@@ -1,8 +1,7 @@
 """Clade frequency computation for the Clade Frequency Comparison feature.
 
 Consumes the per-distmat snapshot written by ``rf._worker.compute_rf``
-(compact sparse clade rows when available, with legacy ``presence`` and
-``bipartition_bits`` compatibility) and produces a
+(compact sparse clade rows plus a bit-packed clade catalog) and produces a
 DataFrame with one row per bipartition observed in either of two
 groups of trees, containing per-group frequencies and the size of the
 canonical side (the side NOT containing the alphabetically first
@@ -16,9 +15,9 @@ cheap:
 1. ``state.get_canonical_keys(source_distmat)`` returns
        {"tuples":     list[tuple[int, ...]],
         "leaf_names": list[str]}
-   for the distmat. Packed sparse clades (or legacy ``bipartition_bits``)
-   are decoded to ``tuple[int]`` once per distmat per session, lazily on
-   first use, so repeat comparisons pay no catalog-decode cost.
+   for the distmat. Packed sparse clades are decoded to ``tuple[int]`` once
+   per distmat per session, lazily on first use, so repeat comparisons pay no
+   catalog-decode cost.
 
 2. Each consensus tree registry entry carries
        counts:  np.int32 array, length n_bipartitions
@@ -46,25 +45,13 @@ import pandas as pd
 from .. import state
 
 
-# Module-level export expected by older tests / callers.
-def _bits_to_tip_indices(bipartition_bits: np.ndarray) -> list[tuple[int, ...]]:
-    """Decode the ``(n_bipartitions, n_leaves) uint8`` matrix into a
-    list of sorted ``tuple[int]`` of leaf indices on the canonical side.
-
-    Standalone form of what ``state.get_canonical_keys`` does
-    internally. Useful for tests and for benchmarks that need the
-    decoder isolated from the cache.
-    """
-    return [tuple(np.flatnonzero(row).tolist()) for row in bipartition_bits]
-
-
 def _normalise_counts(entry, source_distmat):
     """Return ``(counts, n_trees)`` for a registry entry, recomputing
     if the entry was registered without pre-computed counts (e.g. by
     an older session or a unit test).
 
-    Pulls sparse rows, or legacy ``presence``, from the snapshot lazily —
-    only happens on the slow path.
+    Pulls sparse rows from the snapshot lazily; this happens only on the slow
+    path.
     """
     counts = entry.get("counts")
     n_trees = entry.get("n_trees") or 0
@@ -85,24 +72,25 @@ def _normalise_counts(entry, source_distmat):
     with np.load(snap_path, allow_pickle=False) as snap:
         from ..rf.sparse_snapshots import (
             count_sparse_columns,
-            snapshot_has_sparse_presence,
             sparse_snapshot_from_npz,
         )
 
-        if snapshot_has_sparse_presence(snap):
+        try:
             sparse_snapshot = sparse_snapshot_from_npz(snap)
-            if sparse_snapshot.tree_names != tuple(full_names):
-                raise ValueError(
-                    "persisted sparse-snapshot tree names disagree with "
-                    "the RF registry ordering"
-                )
-            counts = count_sparse_columns(
-                sparse_snapshot,
-                row_idx,
-            ).astype(np.int32)
-        else:
-            presence = snap["presence"]
-            counts = presence[row_idx].sum(axis=0).astype(np.int32)
+        except KeyError as exc:
+            raise ValueError(
+                "clade-frequency comparison requires a sparse RF snapshot; "
+                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+            ) from exc
+        if sparse_snapshot.tree_names != tuple(full_names):
+            raise ValueError(
+                "persisted sparse-snapshot tree names disagree with "
+                "the RF registry ordering"
+            )
+        counts = count_sparse_columns(
+            sparse_snapshot,
+            row_idx,
+        ).astype(np.int32)
     return counts, len(row_idx)
 
 
@@ -128,7 +116,7 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
             split_key   tuple[int]  rooted-clade descendant tip indices
                                     into ``state.get_canonical_keys(
                                     source_distmat)["leaf_names"]``.
-            column_j    int         presence-matrix column index in the
+            column_j    int         sparse clade-catalog column index in the
                                     snapshot. Always populated.
             freq_1      float       frequency in group 1's trees.
             freq_2      float       frequency in group 2's trees.

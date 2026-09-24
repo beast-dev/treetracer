@@ -205,8 +205,8 @@ def _publish_rf_result(pipeline):
     if rooted_facts_used:
         add_log(
             f"[{rf_name}] RapidTrees rooted facts: USED. The snapshot "
-            "contains rooted facts for MrHIPSTR and legacy dense arrays "
-            "for compatibility."
+            "contains compact clade rows, heights, and observed splits for "
+            "MrHIPSTR."
         )
     else:
         reason = {
@@ -240,13 +240,13 @@ def _publish_rf_result(pipeline):
         )
         add_log(
             f"[{rf_name}] Sparse clade-presence snapshot: USED "
-            f"({sparse_source_label}). Legacy dense arrays were also saved "
-            "for compatibility and parity checks."
+            f"({sparse_source_label}). No dense clade-presence arrays were "
+            "created or saved."
         )
     else:
         add_log(
-            f"[{rf_name}] Sparse clade-presence snapshot: NOT USED; only "
-            "legacy dense compatibility arrays were saved."
+            f"[{rf_name}] Sparse clade-presence snapshot: NOT USED. "
+            "This RF result cannot support TreeTracer snapshot consumers."
         )
     add_log(
         f"RF pipeline took {elapsed:.2f}s "

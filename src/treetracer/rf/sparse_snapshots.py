@@ -3,8 +3,8 @@
 RapidTrees 0.9.1 exposes tree-by-clade membership as compressed sparse rows
 instead of a dense ``uint8[n_trees, n_clades]`` matrix.  This module is an
 additive adapter: it understands the generic version-1 CSR payload and the
-fixed-width sparse rows already carried by version-2 rooted facts.  Legacy
-dense snapshots remain supported by their existing callers.
+fixed-width sparse rows already carried by version-2 rooted facts. Production
+TreeTracer consumers require one of these compact representations.
 """
 
 from __future__ import annotations
@@ -589,7 +589,7 @@ def count_sparse_columns(
 def dense_presence_from_sparse(
     sparse_snapshot: SparseSnapshot,
 ) -> np.ndarray:
-    """Reconstruct the legacy dense presence matrix for compatibility."""
+    """Reconstruct dense membership for parity tests and diagnostics only."""
     presence = np.zeros(
         (sparse_snapshot.n_trees, sparse_snapshot.n_clades),
         dtype=np.uint8,
@@ -602,7 +602,7 @@ def dense_presence_from_sparse(
 def dense_clade_bits_from_sparse(
     sparse_snapshot: SparseSnapshot,
 ) -> np.ndarray:
-    """Reconstruct the legacy unpacked clade-bit matrix for compatibility."""
+    """Unpack the clade catalog for parity tests and diagnostics only."""
     if not sparse_snapshot.n_clades:
         return np.zeros((0, sparse_snapshot.n_taxa), dtype=np.uint8)
     return np.unpackbits(

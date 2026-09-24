@@ -5,18 +5,19 @@ from __future__ import annotations
 import dendropy
 import numpy as np
 import pytest
-import rapidtrees
 
 from treetracer.consensus_tree._subprocess_worker import (
     compute_consensus_tree_worker_entry,
 )
 from treetracer.db.process_trees import process_nexus_trees_streaming
 from treetracer.db.tree_manager import TreeManagerPandas
-from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
 from treetracer.rf import (
     rf_distance_with_sparse_snapshots_from_newick_iter,
 )
-from treetracer.rf.sparse_snapshots import sparse_snapshot_npz_payload
+from treetracer.rf.sparse_snapshots import (
+    dense_presence_from_sparse,
+    sparse_snapshot_npz_payload,
+)
 
 
 _RESULT_KEYS = {
@@ -39,7 +40,7 @@ _RESULT_KEYS = {
 }
 
 
-def _build_worker_inputs(tmp_path, *, snapshot_format="dense"):
+def _build_worker_inputs(tmp_path, *, rooted=True):
     source = "posterior.trees"
     translate = {
         "1": "Taxon A",
@@ -88,34 +89,16 @@ def _build_worker_inputs(tmp_path, *, snapshot_format="dense"):
     source_path = tmp_path / source
     source_path.write_bytes(payload)
 
-    _, _, presence, leaf_names, _, bipartition_bits = (
-        rf_distance_with_snapshots_from_newick_iter(
-            names,
-            iter(newicks),
-            [translate],
-            [0] * len(newicks),
-            rooted=True,
-        )
+    _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
+        names,
+        iter(newicks),
+        [translate],
+        [0] * len(newicks),
+        rooted=rooted,
     )
-    snapshot_path = tmp_path / f"RF_TEST_{snapshot_format}_snapshots.npz"
-    if snapshot_format == "dense":
-        np.savez(
-            snapshot_path,
-            presence=presence,
-            leaf_names=np.asarray(leaf_names),
-            bipartition_bits=bipartition_bits,
-        )
-    elif snapshot_format == "sparse":
-        _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
-            names,
-            iter(newicks),
-            [translate],
-            [0] * len(newicks),
-            rooted=True,
-        )
-        np.savez(snapshot_path, **sparse_snapshot_npz_payload(sparse))
-    else:
-        raise ValueError(f"unsupported test snapshot format: {snapshot_format}")
+    presence = dense_presence_from_sparse(sparse)
+    snapshot_path = tmp_path / f"RF_TEST_{rooted}_snapshots.npz"
+    np.savez(snapshot_path, **sparse_snapshot_npz_payload(sparse))
 
     return {
         "matched_records": records,
@@ -125,7 +108,7 @@ def _build_worker_inputs(tmp_path, *, snapshot_format="dense"):
         "translate_maps": {source: translate},
         "source_file_paths": {source: str(source_path)},
         "source_preambles": {source: preamble},
-        "is_rooted": True,
+        "is_rooted": rooted,
     }, presence
 
 
@@ -169,7 +152,7 @@ def test_worker_explicit_method_preserves_mcc_path(tmp_path):
     }
     assert result["mrhipstr_statistics"] is None
     assert result["mrhipstr_profile"] is None
-    assert result["snapshot_input_mode"] == "dense_legacy"
+    assert result["snapshot_input_mode"] == "sparse"
     counts = presence.sum(axis=0)
     frequencies = counts.astype(np.float64) / np.float64(len(presence))
     expected_score = float(
@@ -201,51 +184,8 @@ def test_worker_reports_mcc_tree_number_in_full_source_order(tmp_path):
     assert result["mcc_statistics"]["best_tree_number"] == 2
 
 
-@pytest.mark.skipif(
-    not hasattr(
-        rapidtrees,
-        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
-    ),
-    reason="installed RapidTrees does not provide sparse snapshots",
-)
-def test_worker_sparse_mcc_matches_legacy_dense_result(tmp_path):
-    dense_kwargs, presence = _build_worker_inputs(
-        tmp_path,
-        snapshot_format="dense",
-    )
-    sparse_kwargs, _ = _build_worker_inputs(
-        tmp_path,
-        snapshot_format="sparse",
-    )
-
-    dense = compute_consensus_tree_worker_entry(
-        **dense_kwargs,
-        summary_method="mcc",
-    )
-    sparse = compute_consensus_tree_worker_entry(
-        **sparse_kwargs,
-        summary_method="mcc",
-    )
-
-    assert sparse["snapshot_input_mode"] == "sparse"
-    assert dense["snapshot_input_mode"] == "dense_legacy"
-    assert sparse["summary_tree_name"] == dense["summary_tree_name"]
-    assert sparse["consensus_tree_row"] == dense["consensus_tree_row"]
-    assert sparse["log_clade_credibility"] == dense[
-        "log_clade_credibility"
-    ]
-    np.testing.assert_array_equal(sparse["counts"], presence.sum(axis=0))
-    np.testing.assert_array_equal(sparse["counts"], dense["counts"])
-    assert sparse["cols_in_consensus_tree"] == dense[
-        "cols_in_consensus_tree"
-    ]
-    assert sparse["mcc_statistics"] == dense["mcc_statistics"]
-    assert sparse["nexus_bytes"] == dense["nexus_bytes"]
-
-
 def test_worker_midpoint_roots_unrooted_mcc_output(tmp_path):
-    kwargs, _ = _build_worker_inputs(tmp_path)
-    kwargs["is_rooted"] = False
+    kwargs, _ = _build_worker_inputs(tmp_path, rooted=False)
 
     result = compute_consensus_tree_worker_entry(
         **kwargs,
@@ -265,7 +205,7 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     assert set(result) == _RESULT_KEYS
     assert result["summary_method"] == "mrhipstr"
     assert result["height_method"] == "mean"
-    assert result["snapshot_input_mode"] == "dense_legacy"
+    assert result["snapshot_input_mode"] == "sparse"
     assert result["consensus_tree_row"] is None
     assert result["summary_tree_name"] == "MrHIPSTR"
     assert result["majority_clade_count"] == 2
@@ -308,7 +248,7 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
         "worker_total_seconds",
         "worker_finished_wall_time",
     }
-    assert profile["input_mode"] == "source_newicks"
+    assert profile["input_mode"] == "sparse_snapshot"
     duration_keys = {
         key for key in profile if key.endswith("_seconds")
     }
@@ -340,44 +280,8 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     )
 
 
-@pytest.mark.skipif(
-    not hasattr(
-        rapidtrees,
-        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
-    ),
-    reason="installed RapidTrees does not provide sparse snapshots",
-)
-def test_worker_sparse_mrhipstr_matches_legacy_dense_result(tmp_path):
-    dense_kwargs, _ = _build_worker_inputs(
-        tmp_path,
-        snapshot_format="dense",
-    )
-    sparse_kwargs, _ = _build_worker_inputs(
-        tmp_path,
-        snapshot_format="sparse",
-    )
-
-    dense = compute_consensus_tree_worker_entry(**dense_kwargs)
-    sparse = compute_consensus_tree_worker_entry(**sparse_kwargs)
-
-    assert dense["snapshot_input_mode"] == "dense_legacy"
-    assert dense["mrhipstr_profile"]["input_mode"] == "source_newicks"
-    assert sparse["snapshot_input_mode"] == "sparse"
-    assert sparse["mrhipstr_profile"]["input_mode"] == "sparse_snapshot"
-    assert sparse["summary_method"] == dense["summary_method"]
-    assert sparse["log_clade_credibility"] == pytest.approx(
-        dense["log_clade_credibility"]
-    )
-    np.testing.assert_array_equal(sparse["counts"], dense["counts"])
-    assert sparse["cols_in_consensus_tree"] == dense[
-        "cols_in_consensus_tree"
-    ]
-    assert sparse["nexus_bytes"] == dense["nexus_bytes"]
-
-
 def test_worker_rejects_mrhipstr_for_unrooted_snapshot(tmp_path):
-    kwargs, _ = _build_worker_inputs(tmp_path)
-    kwargs["is_rooted"] = False
+    kwargs, _ = _build_worker_inputs(tmp_path, rooted=False)
 
     with pytest.raises(ValueError, match="requires a rooted RF snapshot"):
         compute_consensus_tree_worker_entry(
@@ -386,7 +290,7 @@ def test_worker_rejects_mrhipstr_for_unrooted_snapshot(tmp_path):
         )
 
 
-def test_worker_reports_missing_mrhipstr_snapshot_arrays(tmp_path):
+def test_worker_rejects_dense_only_snapshot(tmp_path):
     kwargs, presence = _build_worker_inputs(tmp_path)
     incomplete_path = tmp_path / "incomplete_snapshots.npz"
     np.savez(incomplete_path, presence=presence)
@@ -394,7 +298,7 @@ def test_worker_reports_missing_mrhipstr_snapshot_arrays(tmp_path):
 
     with pytest.raises(
         ValueError,
-        match="missing required arrays: bipartition_bits, leaf_names",
+        match="requires a sparse RF snapshot",
     ):
         compute_consensus_tree_worker_entry(
             **kwargs,
@@ -435,22 +339,15 @@ def test_mrhipstr_worker_round_trips_repository_fixture(
             record[field] = int(record[field])
 
     full_names = [record["name"] for record in matched_records]
-    _, _, presence, leaf_names, _, bipartition_bits = (
-        rf_distance_with_snapshots_from_newick_iter(
-            full_names,
-            iter(newicks),
-            [translate],
-            [0] * len(newicks),
-            rooted=True,
-        )
+    _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
+        full_names,
+        iter(newicks),
+        [translate],
+        [0] * len(newicks),
+        rooted=True,
     )
     snapshot_path = tmp_path / "RF_FIXTURE_snapshots.npz"
-    np.savez(
-        snapshot_path,
-        presence=presence,
-        leaf_names=np.asarray(leaf_names),
-        bipartition_bits=bipartition_bits,
-    )
+    np.savez(snapshot_path, **sparse_snapshot_npz_payload(sparse))
 
     result = compute_consensus_tree_worker_entry(
         matched_records=matched_records,
@@ -469,5 +366,7 @@ def test_mrhipstr_worker_round_trips_repository_fixture(
     tree = _parse_nexus_tree(result["nexus_bytes"])
     assert result["consensus_tree_row"] is None
     assert result["summary_method"] == "mrhipstr"
-    assert len(tree.taxon_namespace) == len(leaf_names)
-    assert len(result["cols_in_consensus_tree"]) == 2 * len(leaf_names) - 2
+    assert len(tree.taxon_namespace) == len(sparse.leaf_names)
+    assert len(result["cols_in_consensus_tree"]) == (
+        2 * len(sparse.leaf_names) - 2
+    )

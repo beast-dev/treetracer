@@ -5,8 +5,8 @@ The interned-snapshot representation that ``rapidtrees`` already writes
 alongside every RF computation gives us, per tree, the clade columns it
 contains. Standard consensus tree reduces to "from the input
 set, pick the tree whose splits have the highest log-product of clade
-frequencies (= fraction of input trees containing that split)". With a
-sparse rows or a legacy presence matrix in hand, this is a direct reduction.
+frequencies (= fraction of input trees containing that split)". With sparse
+rows in hand, this is a direct reduction.
 
 Because the answer is one of the input trees, downstream code can just
 emit that tree's existing newick — no new newick has to be synthesized,
@@ -25,9 +25,9 @@ from ._canonical_remap import (
 )
 
 
-# Float64 doubles the bytes per scoring cell relative to the former float32
-# path. Halving the row chunk keeps the temporary scoring block at the same
-# peak size (~140 MB for 550k clades) while retaining double precision.
+# The retained dense reference scorer uses float64. Halving its historical row
+# chunk keeps that test/compatibility path's temporary block near 140 MB for
+# 550k clades. Production sparse scoring does not allocate this block.
 _MCC_SCORE_CHUNK_ROWS = 32
 
 
@@ -37,7 +37,11 @@ def _clade_frequencies(counts: np.ndarray, n_trees: int) -> np.ndarray:
 
 
 def compute_consensus_tree_index(presence_subset: np.ndarray) -> tuple[int, float]:
-    """Pick the consensus tree from a presence matrix.
+    """Reference scorer for an explicitly supplied dense presence matrix.
+
+    Production snapshot consumers use :func:`compute_consensus_tree_index_sparse`;
+    this function remains useful for mathematical parity tests and callers
+    that already hold an in-memory matrix.
 
     Args:
         presence_subset: uint8 ``(n_trees, n_splits)`` array. ``[i, j] = 1``
@@ -88,10 +92,8 @@ def compute_consensus_tree_index_sparse(
 ) -> tuple[int, float]:
     """Pick the MCC source tree directly from sparse presence rows.
 
-    This is additive to :func:`compute_consensus_tree_index`; legacy dense
-    snapshots continue through that established function. ``selected_rows``
-    is ordered like the user's selection, so ``argmax`` retains the same
-    first-row tie behavior as the dense implementation.
+    ``selected_rows`` is ordered like the user's selection, so ``argmax``
+    retains the same first-row tie behavior as the reference dense algorithm.
     """
     if not isinstance(sparse_snapshot, SparseSnapshot):
         raise TypeError("sparse_snapshot must be a SparseSnapshot")
@@ -115,21 +117,16 @@ def compute_consensus_tree_index_sparse(
         np.where(counts > 0, frequency, np.float64(1.0))
     )
 
-    # Reconstruct only the same bounded float64 block used by the legacy
-    # dense scorer. Besides bounding memory independently of selection size,
-    # feeding an identical block to the same BLAS matrix-vector operation
-    # keeps dense and sparse MCC scores numerically aligned.
+    # Sum only the log frequencies named by each CSR row. This avoids
+    # reconstructing even a temporary tree-by-clade dense block: peak scoring
+    # memory is proportional to one tree's present clades, not to the complete
+    # catalog width.
     scores = np.empty(len(rows), dtype=np.float64)
-    chunk_rows = _MCC_SCORE_CHUNK_ROWS
-    for start in range(0, len(rows), chunk_rows):
-        stop = min(start + chunk_rows, len(rows))
-        block = np.zeros(
-            (stop - start, sparse_snapshot.n_clades),
+    for position, row in enumerate(rows):
+        scores[position] = np.sum(
+            log_frequency[sparse_snapshot.row_columns(int(row))],
             dtype=np.float64,
         )
-        for local_index, row in enumerate(rows[start:stop]):
-            block[local_index, sparse_snapshot.row_columns(int(row))] = 1.0
-        scores[start:stop] = block @ log_frequency
     winner = int(scores.argmax())
     return winner, float(scores[winner])
 
@@ -234,12 +231,12 @@ def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distma
               the chosen tree's splits. ``None`` when ``missing_taxa``
               is non-empty.
             * ``counts`` — ``np.int32`` array of length ``n_bipartitions``,
-              the column-sum of the snapshot's presence matrix over
-              the selected rows. Cached on the registry entry by
+              the column counts from the snapshot's selected sparse rows.
+              Cached on the registry entry by
               callers so ``compute_clade_frequencies`` skips the
               row-sum work at compare time. ``None`` when ``missing_taxa``
               is non-empty.
-            * ``cols_in_consensus_tree`` — frozenset of presence-matrix column
+            * ``cols_in_consensus_tree`` — frozenset of clade-catalog column
               indices that appear in the chosen consensus tree itself. These
               are the interned bipartition IDs of the consensus tree's clades and
               feed the Clade Frequency Comparison membership filter.
@@ -271,45 +268,37 @@ def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distma
         allow_pickle=False,
     ) as snap:
         from ..rf.sparse_snapshots import (
-            snapshot_has_sparse_presence,
             sparse_snapshot_from_npz,
         )
 
-        if snapshot_has_sparse_presence(snap):
+        try:
             sparse_snapshot = sparse_snapshot_from_npz(snap)
-            if sparse_snapshot.tree_names != tuple(full_names):
-                raise ValueError(
-                    "persisted sparse-snapshot tree names disagree with "
-                    "the RF registry ordering"
-                )
-            counts = count_sparse_columns(
+        except KeyError as exc:
+            raise ValueError(
+                "consensus-tree computation requires a sparse RF snapshot; "
+                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+            ) from exc
+        if sparse_snapshot.tree_names != tuple(full_names):
+            raise ValueError(
+                "persisted sparse-snapshot tree names disagree with "
+                "the RF registry ordering"
+            )
+        counts = count_sparse_columns(
+            sparse_snapshot,
+            selected_idx,
+        ).astype(np.int32)
+        consensus_tree_local, log_clade_cred = (
+            compute_consensus_tree_index_sparse(
                 sparse_snapshot,
                 selected_idx,
-            ).astype(np.int32)
-            consensus_tree_local, log_clade_cred = (
-                compute_consensus_tree_index_sparse(
-                    sparse_snapshot,
-                    selected_idx,
-                    counts=counts,
-                )
+                counts=counts,
             )
-            winning_row = selected_idx[consensus_tree_local]
-            cols_in_consensus_tree = frozenset(
-                int(column)
-                for column in sparse_snapshot.row_columns(winning_row)
-            )
-        else:
-            presence = snap["presence"]
-            presence_sub = presence[selected_idx]
-            consensus_tree_local, log_clade_cred = (
-                compute_consensus_tree_index(presence_sub)
-            )
-            counts = presence_sub.sum(axis=0).astype(np.int32)
-            cols_in_consensus_tree = frozenset(
-                np.flatnonzero(
-                    presence_sub[consensus_tree_local]
-                ).tolist()
-            )
+        )
+        winning_row = selected_idx[consensus_tree_local]
+        cols_in_consensus_tree = frozenset(
+            int(column)
+            for column in sparse_snapshot.row_columns(winning_row)
+        )
     consensus_tree_row = matched_rows.iloc[consensus_tree_local]
 
     # Column counts and the winner's clade IDs are the sufficient statistics
@@ -386,7 +375,7 @@ def assemble_consensus_tree_nexus(matched_rows, db_manager, source_distmat):
           selection (np.int32). Forwarded from ``compute_consensus_tree_for_selection``
           so callers can stash it on the registry entry. ``None`` when
           ``missing_taxa`` is non-empty.
-        * ``cols_in_consensus_tree`` — frozenset of presence-matrix column indices
+        * ``cols_in_consensus_tree`` — frozenset of clade-catalog column indices
           that appear in the chosen consensus tree itself. Forwarded from
           ``compute_consensus_tree_for_selection``. ``None`` when ``missing_taxa``
           is non-empty.

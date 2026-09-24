@@ -707,9 +707,18 @@ def _finalize_clade_comparison_job(
         },
     )
     elapsed = float(result.get("elapsed", 0.0))
+    snapshot_input_text = {
+        "sparse": "generic sparse CSR snapshot",
+        "rooted_facts": "RapidTrees rooted facts",
+        "dense_legacy": "legacy dense snapshot",
+    }.get(
+        result.get("snapshot_input_mode"),
+        "worker-reported snapshot representation",
+    )
     add_log(
         f"Compared {len(records)} consensus-tree clades for "
-        f"{context.source_distmat} in {elapsed:.3f}s."
+        f"{context.source_distmat} in {elapsed:.3f}s "
+        f"using {snapshot_input_text}."
     )
     return {
         "result_key": ref.job_id,

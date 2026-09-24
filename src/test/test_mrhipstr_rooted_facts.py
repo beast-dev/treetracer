@@ -241,6 +241,8 @@ def test_rf_worker_persists_rooted_facts_alongside_legacy_arrays(tmp_path):
         "rf_mode": "rooted_clades",
         "rooted_facts_used": True,
         "rooted_facts_status": "used",
+        "sparse_snapshot_used": True,
+        "sparse_snapshot_source": "rooted_facts",
     }
     snapshot_path = tmp_path / "RF_TEST_snapshots.npz"
     with np.load(snapshot_path, allow_pickle=False) as persisted:
@@ -282,6 +284,7 @@ def test_consensus_worker_prefers_persisted_facts_without_source_reads(
     )
 
     assert result["summary_method"] == "mrhipstr"
+    assert result["snapshot_input_mode"] == "rooted_facts"
     assert result["mrhipstr_profile"]["input_mode"] == "rooted_facts"
     assert result["mrhipstr_statistics"]["total_trees"] == len(SOURCE_TREES)
     assert result["counts"].shape == (facts.n_clades,)

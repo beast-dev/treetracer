@@ -24,6 +24,119 @@ def _normalise_summary_method(value: object) -> str:
     return method
 
 
+def _compute_mcc_statistics(
+    *,
+    counts: Any,
+    cols_in_consensus_tree: frozenset[int],
+    n_trees: int,
+    best_tree_number: int,
+    is_rooted: bool,
+    sparse_snapshot: Any = None,
+    bipartition_bits: Any = None,
+    leaf_names: Any = None,
+) -> Dict[str, Any]:
+    """Summarize non-trivial clade credibilities for the sampled MCC tree."""
+    import statistics
+
+    import numpy as np
+
+    counts_array = np.asarray(counts, dtype=np.int64)
+    if counts_array.ndim != 1:
+        raise ValueError("MCC clade counts must be one-dimensional")
+    if n_trees <= 0:
+        raise ValueError("MCC statistics require at least one tree")
+
+    if sparse_snapshot is not None:
+        packed_clades = np.asarray(sparse_snapshot.packed_clades)
+        n_taxa = int(sparse_snapshot.n_taxa)
+        if packed_clades.shape[0] != len(counts_array):
+            raise ValueError(
+                "sparse MCC clade catalog disagrees with clade counts"
+            )
+
+        # Count packed bits in bounded-width blocks. This avoids expanding the
+        # complete clade-by-taxon catalog merely to omit trivial tip clades
+        # from the report.
+        popcount = np.asarray(
+            [value.bit_count() for value in range(256)],
+            dtype=np.uint8,
+        )
+        clade_sizes = np.zeros(len(counts_array), dtype=np.uint32)
+        for start in range(0, packed_clades.shape[1], 64):
+            clade_sizes += popcount[
+                packed_clades[:, start : start + 64]
+            ].sum(axis=1, dtype=np.uint32)
+    else:
+        bits = np.asarray(bipartition_bits)
+        if bits.ndim != 2 or bits.shape[0] != len(counts_array):
+            raise ValueError(
+                "dense MCC clade catalog disagrees with clade counts"
+            )
+        n_taxa = len(leaf_names)
+        if bits.shape[1] != n_taxa:
+            raise ValueError(
+                "dense MCC clade catalog disagrees with leaf names"
+            )
+        clade_sizes = bits.sum(axis=1, dtype=np.uint32)
+
+    if is_rooted:
+        reportable = clade_sizes > 1
+    else:
+        reportable = (clade_sizes > 1) & (clade_sizes < n_taxa - 1)
+
+    winning_columns = np.fromiter(
+        sorted(cols_in_consensus_tree),
+        dtype=np.intp,
+        count=len(cols_in_consensus_tree),
+    )
+    if len(winning_columns) and (
+        winning_columns[0] < 0
+        or winning_columns[-1] >= len(counts_array)
+    ):
+        raise IndexError("MCC tree references a clade outside the catalog")
+    reportable_columns = winning_columns[reportable[winning_columns]]
+    tree_clade_counts = counts_array[reportable_columns]
+    majority_clades_in_all_trees = int(
+        np.count_nonzero(reportable & (counts_array * 2 > n_trees))
+    )
+    if is_rooted:
+        # RapidTrees deliberately omits the uninformative all-taxa root.
+        # TreeAnnotator includes it in its individual-clade statistics, where
+        # its credibility is always 1.0 and its log-score contribution is 0.
+        tree_clade_counts = np.append(tree_clade_counts, n_trees)
+        majority_clades_in_all_trees += 1
+    frequencies = tree_clade_counts.astype(np.float64) / float(n_trees)
+
+    if len(frequencies):
+        lowest = float(np.min(frequencies))
+        mean = float(statistics.fmean(frequencies))
+        median = float(statistics.median(frequencies))
+    else:
+        lowest = mean = median = None
+
+    return {
+        "total_trees": int(n_trees),
+        "best_tree_number": int(best_tree_number),
+        "number_of_clades": int(len(tree_clade_counts)),
+        "lowest_clade_credibility": lowest,
+        "mean_clade_credibility": mean,
+        "median_clade_credibility": median,
+        "clades_with_credibility_1": int(
+            np.count_nonzero(tree_clade_counts == n_trees)
+        ),
+        "clades_with_credibility_gt_0_99": int(
+            np.count_nonzero(tree_clade_counts * 100 > n_trees * 99)
+        ),
+        "clades_with_credibility_gt_0_95": int(
+            np.count_nonzero(tree_clade_counts * 20 > n_trees * 19)
+        ),
+        "clades_with_credibility_gt_0_5": int(
+            np.count_nonzero(tree_clade_counts * 2 > n_trees)
+        ),
+        "majority_clades_in_all_trees": majority_clades_in_all_trees,
+    }
+
+
 def compute_consensus_tree_worker_entry(
     *,
     matched_records: List[Dict[str, Any]],
@@ -51,7 +164,11 @@ def compute_consensus_tree_worker_entry(
     import numpy as np
 
     from .._worker_log import log as wlog
-    from . import compute_consensus_tree_index, _inject_tree_annotation
+    from . import (
+        _inject_tree_annotation,
+        compute_consensus_tree_index,
+        compute_consensus_tree_index_sparse,
+    )
     from ._canonical_remap import (
         _build_canonical_remaps,
         _substitute_newick_labels,
@@ -110,8 +227,10 @@ def compute_consensus_tree_worker_entry(
             "cols_in_consensus_tree": None,
             "negative_branch_count": 0,
             "minimum_branch_length": None,
+            "mcc_statistics": None,
             "mrhipstr_statistics": None,
             "mrhipstr_profile": None,
+            "snapshot_input_mode": "not_loaded",
             "missing_taxa": missing_taxa,
         }
 
@@ -121,6 +240,8 @@ def compute_consensus_tree_worker_entry(
     mrhipstr_result = None
     try:
         rooted_facts = None
+        sparse_presence = None
+        sparse_presence_mode = None
         if method == "mrhipstr":
             from ..rf.rooted_facts import (
                 rooted_facts_from_npz,
@@ -134,26 +255,54 @@ def compute_consensus_tree_worker_entry(
                         "persisted rooted-facts tree names disagree with the "
                         "RF registry ordering"
                     )
+        if rooted_facts is None:
+            from ..rf.sparse_snapshots import (
+                snapshot_has_generic_sparse_snapshot,
+                snapshot_has_sparse_presence,
+                sparse_snapshot_from_npz,
+            )
 
-        required_snapshot_keys = {"presence"} if method == "mcc" else set()
-        if method == "mrhipstr" and rooted_facts is None:
-            required_snapshot_keys.add("presence")
-            required_snapshot_keys.update({"bipartition_bits", "leaf_names"})
+            if snapshot_has_sparse_presence(snap):
+                sparse_presence = sparse_snapshot_from_npz(snap)
+                sparse_presence_mode = (
+                    "sparse"
+                    if snapshot_has_generic_sparse_snapshot(snap)
+                    else "rooted_facts"
+                )
+                if sparse_presence.tree_names != tuple(full_distmat_names):
+                    raise ValueError(
+                        "persisted sparse-snapshot tree names disagree with "
+                        "the RF registry ordering"
+                    )
+                if sparse_presence.rooted != bool(is_rooted):
+                    raise ValueError(
+                        "persisted sparse-snapshot rooting mode disagrees "
+                        "with the RF registry"
+                    )
+
+        required_snapshot_keys = set()
+        needs_dense_snapshot = (
+            rooted_facts is None and sparse_presence is None
+        )
+        if needs_dense_snapshot:
+            required_snapshot_keys.update(
+                {"presence", "bipartition_bits", "leaf_names"}
+            )
         missing_snapshot_keys = required_snapshot_keys.difference(snap.files)
         if missing_snapshot_keys:
             missing_list = ", ".join(sorted(missing_snapshot_keys))
             raise ValueError(
                 f"{method} snapshot is missing required arrays: {missing_list}"
             )
-        presence = snap["presence"] if "presence" in snap.files else None
+        presence = snap["presence"] if needs_dense_snapshot else None
         bipartition_bits = (
             snap["bipartition_bits"]
-            if method == "mrhipstr" and rooted_facts is None
+            if needs_dense_snapshot
             else None
         )
         leaf_names = (
             snap["leaf_names"]
-            if method == "mrhipstr" and rooted_facts is None
+            if needs_dense_snapshot
             else None
         )
         name_to_idx = {
@@ -175,6 +324,13 @@ def compute_consensus_tree_worker_entry(
             )
 
         if method == "mrhipstr":
+            snapshot_input_mode = (
+                "rooted_facts"
+                if rooted_facts is not None
+                else "sparse"
+                if sparse_presence is not None
+                else "dense_legacy"
+            )
             mrhipstr_result = _compute_mrhipstr_result(
                 matched_records=matched_records,
                 selected_idx=selected_idx,
@@ -188,18 +344,64 @@ def compute_consensus_tree_worker_entry(
                 profile=mrhipstr_profile,
                 wlog=wlog,
                 rooted_facts=rooted_facts,
+                sparse_snapshot=sparse_presence,
             )
         else:
             # Preserve the original MCC objective and source-line
             # serialization.
-            presence_sub = presence[selected_idx]
-            consensus_tree_local, log_clade_cred = (
-                compute_consensus_tree_index(presence_sub)
-            )
+            if sparse_presence is not None:
+                from ..rf.sparse_snapshots import count_sparse_columns
+
+                counts = count_sparse_columns(
+                    sparse_presence,
+                    selected_idx,
+                ).astype(np.int32)
+                consensus_tree_local, log_clade_cred = (
+                    compute_consensus_tree_index_sparse(
+                        sparse_presence,
+                        selected_idx,
+                        counts=counts,
+                    )
+                )
+                winning_row = selected_idx[consensus_tree_local]
+                cols_in_consensus_tree = frozenset(
+                    int(column)
+                    for column in sparse_presence.row_columns(winning_row)
+                )
+                snapshot_input_mode = sparse_presence_mode
+                wlog("MCC scoring used sparse clade-presence rows")
+            else:
+                presence_sub = presence[selected_idx]
+                consensus_tree_local, log_clade_cred = (
+                    compute_consensus_tree_index(presence_sub)
+                )
+                counts = presence_sub.sum(axis=0).astype(np.int32)
+                cols_in_consensus_tree = frozenset(
+                    np.flatnonzero(
+                        presence_sub[consensus_tree_local]
+                    ).tolist()
+                )
+                snapshot_input_mode = "dense_legacy"
+                wlog("MCC scoring used legacy dense presence rows")
             consensus_tree_record = matched_records[consensus_tree_local]
-            counts = presence_sub.sum(axis=0).astype(np.int32)
-            cols_in_consensus_tree = frozenset(
-                np.flatnonzero(presence_sub[consensus_tree_local]).tolist()
+            mcc_statistics = _compute_mcc_statistics(
+                counts=counts,
+                cols_in_consensus_tree=cols_in_consensus_tree,
+                n_trees=len(selected_idx),
+                # Match TreeAnnotator's 1-based source-order ordinal rather
+                # than renumbering an arbitrary selected subset from one.
+                best_tree_number=selected_idx[consensus_tree_local] + 1,
+                is_rooted=is_rooted,
+                sparse_snapshot=sparse_presence,
+                bipartition_bits=bipartition_bits,
+                leaf_names=leaf_names,
+            )
+            wlog(
+                "MCC credibility statistics calculated: "
+                f"tree_number={mcc_statistics['best_tree_number']}, "
+                f"clades={mcc_statistics['number_of_clades']}, "
+                "majority_clades_in_all_trees="
+                f"{mcc_statistics['majority_clades_in_all_trees']}"
             )
     finally:
         snap.close()
@@ -232,6 +434,7 @@ def compute_consensus_tree_worker_entry(
             }
         )
         mrhipstr_result["mrhipstr_profile"] = mrhipstr_profile
+        mrhipstr_result["snapshot_input_mode"] = snapshot_input_mode
         return mrhipstr_result
 
     consensus_tree_file_path = source_file_paths[
@@ -253,7 +456,7 @@ def compute_consensus_tree_worker_entry(
     line = _inject_tree_annotation(
         line,
         "lnCladeCred",
-        format(log_clade_cred, ".4f"),
+        format(log_clade_cred, ".17g"),
     )
 
     canonical_preamble = (
@@ -275,8 +478,10 @@ def compute_consensus_tree_worker_entry(
         "cols_in_consensus_tree": cols_in_consensus_tree,
         "negative_branch_count": 0,
         "minimum_branch_length": None,
+        "mcc_statistics": mcc_statistics,
         "mrhipstr_statistics": None,
         "mrhipstr_profile": None,
+        "snapshot_input_mode": snapshot_input_mode,
         "missing_taxa": set(),
     }
 
@@ -295,6 +500,7 @@ def _compute_mrhipstr_result(
     profile: Dict[str, Any],
     wlog: Any,
     rooted_facts: Any = None,
+    sparse_snapshot: Any = None,
 ) -> Dict[str, Any]:
     """Run MrHIPSTR from rooted facts, falling back to source Newicks."""
     import statistics
@@ -313,17 +519,13 @@ def _compute_mrhipstr_result(
         decode_rooted_clade_catalog_from_rooted_facts,
         source_summary_from_rooted_facts,
     )
+    from .sparse_inputs import (
+        count_selected_clades_from_sparse_snapshot,
+        decode_rooted_clade_catalog_from_sparse_snapshot,
+    )
 
     started = time.perf_counter()
-    if rooted_facts is None:
-        selected_counts = count_selected_clades(presence, selected_idx)
-        catalog = decode_rooted_clade_catalog(
-            bipartition_bits=bipartition_bits,
-            leaf_names=leaf_names,
-            active_columns=selected_counts.active_columns,
-        )
-        input_mode = "source_newicks"
-    else:
+    if rooted_facts is not None:
         selected_counts = count_selected_clades_from_rooted_facts(
             rooted_facts,
             selected_idx,
@@ -333,6 +535,24 @@ def _compute_mrhipstr_result(
             selected_counts,
         )
         input_mode = "rooted_facts"
+    elif sparse_snapshot is not None:
+        selected_counts = count_selected_clades_from_sparse_snapshot(
+            sparse_snapshot,
+            selected_idx,
+        )
+        catalog = decode_rooted_clade_catalog_from_sparse_snapshot(
+            sparse_snapshot,
+            selected_counts,
+        )
+        input_mode = "sparse_snapshot"
+    else:
+        selected_counts = count_selected_clades(presence, selected_idx)
+        catalog = decode_rooted_clade_catalog(
+            bipartition_bits=bipartition_bits,
+            leaf_names=leaf_names,
+            active_columns=selected_counts.active_columns,
+        )
+        input_mode = "source_newicks"
     profile["input_mode"] = input_mode
     profile["clade_collection_seconds"] = time.perf_counter() - started
     wlog(
@@ -488,6 +708,7 @@ def _compute_mrhipstr_result(
             if exported.minimum_branch_length is None
             else float(exported.minimum_branch_length)
         ),
+        "mcc_statistics": None,
         "mrhipstr_statistics": mrhipstr_statistics,
         "missing_taxa": set(),
     }

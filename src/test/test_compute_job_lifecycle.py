@@ -295,6 +295,12 @@ def test_rf_publication_logs_confirmed_computation_path(
             "rf_mode": rf_mode,
             "rooted_facts_status": facts_status,
             "rooted_facts_used": facts_used,
+            "sparse_snapshot_used": True,
+            "sparse_snapshot_source": (
+                "rooted_facts"
+                if facts_used
+                else "sparse_endpoint"
+            ),
             "save_path": "/tmp/rf-test.npy",
         }
     )
@@ -305,6 +311,7 @@ def test_rf_publication_logs_confirmed_computation_path(
     assert payload["rf_mode"] == rf_mode
     assert payload["rooted_facts_used"] is facts_used
     assert payload["rooted_facts_status"] == facts_status
+    assert payload["sparse_snapshot_used"] is True
 
 
 def test_mds_finalization_stores_full_result_once_and_replays_small_index(

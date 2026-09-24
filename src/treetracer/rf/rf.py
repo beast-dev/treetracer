@@ -12,6 +12,7 @@ import numpy as np
 import rapidtrees
 
 from .rooted_facts import RootedFactsSnapshot, decode_rooted_facts_snapshot
+from .sparse_snapshots import SparseSnapshot, decode_sparse_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,70 @@ def rf_distance_with_snapshots_from_newick_iter(
         int(n_bipartitions),
         bipartition_bits,
     )
+
+
+def rf_distance_with_sparse_snapshots_from_newick_iter(
+    names: List[str],
+    newick_iter,
+    translate_maps: List[Dict[str, str]],
+    map_indices: List[int] | None = None,
+    rooted: bool = False,
+    progress=None,
+) -> tuple[List[str], np.ndarray, SparseSnapshot]:
+    """Compute RF distances and retain compact CSR clade-presence rows.
+
+    This additive wrapper leaves the established dense wrapper unchanged.  It
+    validates RapidTrees' versioned sparse payload and keeps both membership
+    rows and clade bitsets packed.
+    """
+    if map_indices is None:
+        map_indices = [0] * len(names)
+    endpoint = getattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+        None,
+    )
+    if endpoint is None:
+        raise RuntimeError(
+            "the installed RapidTrees does not provide sparse snapshots; "
+            "install RapidTrees 0.9.1 or newer"
+        )
+    (
+        names_out,
+        rf_bytes,
+        leaf_names,
+        n_clades,
+        clade_bytes,
+        sparse,
+    ) = endpoint(
+        names,
+        newick_iter,
+        translate_maps,
+        map_indices,
+        rooted=rooted,
+        progress=progress,
+    )
+    n_trees = len(names_out)
+    expected_rf_bytes = n_trees * n_trees * np.dtype(np.uint32).itemsize
+    if len(rf_bytes) != expected_rf_bytes:
+        raise ValueError(
+            "RapidTrees returned an invalid sparse-snapshot RF buffer: "
+            f"{len(rf_bytes)} bytes != {expected_rf_bytes}"
+        )
+    rf_matrix = (
+        np.frombuffer(rf_bytes, dtype=np.uint32)
+        .reshape(n_trees, n_trees)
+        .copy()
+    )
+    sparse_snapshot = decode_sparse_snapshot(
+        tree_names=names_out,
+        leaf_names=leaf_names,
+        n_clades=n_clades,
+        clade_bytes=clade_bytes,
+        sparse=sparse,
+        rooted=rooted,
+    )
+    return list(names_out), rf_matrix, sparse_snapshot
 
 
 def rf_distance_with_rooted_facts_from_newick_iter(

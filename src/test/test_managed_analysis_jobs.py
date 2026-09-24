@@ -18,6 +18,10 @@ from treetracer.clade_freq._subprocess_worker import (
     compute_clade_frequencies_worker_entry,
 )
 from treetracer.ess._rf_trace_worker import compute_rf_trace_worker_entry
+from treetracer.rf.sparse_snapshots import (
+    SparseSnapshot,
+    sparse_snapshot_npz_payload,
+)
 
 
 def _wait_for_terminal(manager, ref, timeout=2.0):
@@ -106,7 +110,7 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
         columns=[1, 3],
         counts_1=[1, 1],
         counts_2=[2, 1],
-        n_trees_1=2,
+        n_trees_1=3,
         n_trees_2=2,
     )
 
@@ -114,9 +118,83 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
     assert {row["column_j"] for row in result["rows"]} == {1, 3}
     by_column = {row["column_j"]: row for row in result["rows"]}
     assert by_column[1]["split_key"] == (1, 2)
-    assert by_column[1]["freq_1"] == pytest.approx(0.5)
+    assert by_column[1]["freq_1"] == 1 / 3
+    assert by_column[1]["freq_1"] != float(np.float32(1 / 3))
     assert by_column[1]["freq_2"] == pytest.approx(1.0)
     assert by_column[3]["split_key"] == (2,)
+    assert result["snapshot_input_mode"] == "dense_legacy"
+
+
+def test_clade_worker_sparse_snapshot_matches_dense_fallback(tmp_path):
+    presence = np.array(
+        [
+            [1, 1, 0, 0],
+            [1, 0, 1, 1],
+            [0, 1, 1, 0],
+            [1, 1, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    bits = np.array(
+        [
+            [1, 0, 0],
+            [0, 1, 1],
+            [1, 1, 0],
+            [0, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    names = tuple(f"tree-{index}" for index in range(len(presence)))
+    leaf_names = ("'A'", "B", "C")
+    dense_path = tmp_path / "dense_snapshot.npz"
+    np.savez(
+        dense_path,
+        presence=presence,
+        bipartition_bits=bits,
+        leaf_names=np.asarray(leaf_names),
+    )
+
+    column_rows = [np.flatnonzero(row).astype(np.uint32) for row in presence]
+    sparse = SparseSnapshot(
+        tree_names=names,
+        leaf_names=leaf_names,
+        n_clades=bits.shape[0],
+        packed_clades=np.packbits(bits, axis=1, bitorder="little"),
+        row_offsets=np.asarray(
+            [0, *np.cumsum([len(row) for row in column_rows])],
+            dtype=np.uint64,
+        ),
+        column_indices=np.concatenate(column_rows),
+        rooted=True,
+    )
+    sparse_path = tmp_path / "sparse_snapshot.npz"
+    np.savez(sparse_path, **sparse_snapshot_npz_payload(sparse))
+
+    kwargs = {
+        "columns": [1, 3],
+        "counts_1": None,
+        "counts_2": None,
+        "n_trees_1": 0,
+        "n_trees_2": 0,
+        "tree_names_1": list(names[:2]),
+        "tree_names_2": list(names[2:]),
+        "full_distmat_names": list(names),
+    }
+    dense = compute_clade_frequencies_worker_entry(
+        snapshots_path=str(dense_path),
+        **kwargs,
+    )
+    sparse_result = compute_clade_frequencies_worker_entry(
+        snapshots_path=str(sparse_path),
+        **kwargs,
+    )
+
+    assert dense["snapshot_input_mode"] == "dense_legacy"
+    assert sparse_result["snapshot_input_mode"] == "sparse"
+    assert sparse_result["rows"] == dense["rows"]
+    assert sparse_result["leaf_names"] == dense["leaf_names"]
+    assert sparse_result["n_trees_1"] == dense["n_trees_1"]
+    assert sparse_result["n_trees_2"] == dense["n_trees_2"]
 
 
 def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):

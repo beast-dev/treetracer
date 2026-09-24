@@ -1,7 +1,8 @@
 """Clade frequency computation for the Clade Frequency Comparison feature.
 
 Consumes the per-distmat snapshot written by ``rf._worker.compute_rf``
-(``presence``, ``leaf_names``, ``bipartition_bits``) and produces a
+(compact sparse clade rows when available, with legacy ``presence`` and
+``bipartition_bits`` compatibility) and produces a
 DataFrame with one row per bipartition observed in either of two
 groups of trees, containing per-group frequencies and the size of the
 canonical side (the side NOT containing the alphabetically first
@@ -15,10 +16,9 @@ cheap:
 1. ``state.get_canonical_keys(source_distmat)`` returns
        {"tuples":     list[tuple[int, ...]],
         "leaf_names": list[str]}
-   for the distmat. The expensive ``bipartition_bits → tuple[int]``
-   decode happens once per distmat per session (lazily on first call),
-   so a Compare click pays at most one decode for a *new* distmat and
-   zero for repeat clicks on the same distmat.
+   for the distmat. Packed sparse clades (or legacy ``bipartition_bits``)
+   are decoded to ``tuple[int]`` once per distmat per session, lazily on
+   first use, so repeat comparisons pay no catalog-decode cost.
 
 2. Each consensus tree registry entry carries
        counts:  np.int32 array, length n_bipartitions
@@ -63,8 +63,8 @@ def _normalise_counts(entry, source_distmat):
     if the entry was registered without pre-computed counts (e.g. by
     an older session or a unit test).
 
-    Pulls ``presence`` from the snapshot lazily — only happens on the
-    slow path.
+    Pulls sparse rows, or legacy ``presence``, from the snapshot lazily —
+    only happens on the slow path.
     """
     counts = entry.get("counts")
     n_trees = entry.get("n_trees") or 0
@@ -73,8 +73,6 @@ def _normalise_counts(entry, source_distmat):
 
     # Slow recompute path: do the row-sum on demand.
     snap_path = state.get_snapshots_path(source_distmat)
-    snap = np.load(snap_path, allow_pickle=False)
-    presence = snap["presence"]
     full_names = state.get_distmat_names(source_distmat)
     name_to_idx = {n: i for i, n in enumerate(full_names)}
     tree_names = entry.get("tree_names") or []
@@ -84,7 +82,27 @@ def _normalise_counts(entry, source_distmat):
             f"None of the consensus tree's tree names match {source_distmat}'s snapshot. "
             "The distmat may have been recomputed since the consensus tree was registered."
         )
-    counts = presence[row_idx].sum(axis=0).astype(np.int32)
+    with np.load(snap_path, allow_pickle=False) as snap:
+        from ..rf.sparse_snapshots import (
+            count_sparse_columns,
+            snapshot_has_sparse_presence,
+            sparse_snapshot_from_npz,
+        )
+
+        if snapshot_has_sparse_presence(snap):
+            sparse_snapshot = sparse_snapshot_from_npz(snap)
+            if sparse_snapshot.tree_names != tuple(full_names):
+                raise ValueError(
+                    "persisted sparse-snapshot tree names disagree with "
+                    "the RF registry ordering"
+                )
+            counts = count_sparse_columns(
+                sparse_snapshot,
+                row_idx,
+            ).astype(np.int32)
+        else:
+            presence = snap["presence"]
+            counts = presence[row_idx].sum(axis=0).astype(np.int32)
     return counts, len(row_idx)
 
 
@@ -137,8 +155,8 @@ def compute_clade_frequencies(entry1, entry2) -> pd.DataFrame:
 
     # Column basis is identical, so ``counts_2`` indexes the same way
     # as ``counts_1`` — merge purely by column position.
-    freqs_1 = counts_1.astype(np.float64) / n_trees_1
-    freqs_2 = counts_2.astype(np.float64) / n_trees_2
+    freqs_1 = counts_1.astype(np.float64) / np.float64(n_trees_1)
+    freqs_2 = counts_2.astype(np.float64) / np.float64(n_trees_2)
     mask = (counts_1 > 0) | (counts_2 > 0)
     cols = np.flatnonzero(mask)
     rows = [

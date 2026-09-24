@@ -1,12 +1,12 @@
-"""Maximum Clade Credibility (consensus tree) tree, computed from rapidtrees' presence
-matrix without round-tripping through dendropy.
+"""Maximum Clade Credibility (consensus tree) tree, computed from RapidTrees
+clade-presence snapshots without round-tripping through dendropy.
 
 The interned-snapshot representation that ``rapidtrees`` already writes
-alongside every RF computation gives us, per tree, a uint8 bitvector of
-which bipartitions it contains. Standard consensus tree reduces to "from the input
+alongside every RF computation gives us, per tree, the clade columns it
+contains. Standard consensus tree reduces to "from the input
 set, pick the tree whose splits have the highest log-product of clade
 frequencies (= fraction of input trees containing that split)". With a
-presence matrix in hand this is one numpy reduction.
+sparse rows or a legacy presence matrix in hand, this is a direct reduction.
 
 Because the answer is one of the input trees, downstream code can just
 emit that tree's existing newick — no new newick has to be synthesized,
@@ -18,10 +18,22 @@ from __future__ import annotations
 import numpy as np
 
 from .. import state
+from ..rf.sparse_snapshots import SparseSnapshot, count_sparse_columns
 from ._canonical_remap import (
     _build_canonical_remaps,
     _substitute_newick_labels,
 )
+
+
+# Float64 doubles the bytes per scoring cell relative to the former float32
+# path. Halving the row chunk keeps the temporary scoring block at the same
+# peak size (~140 MB for 550k clades) while retaining double precision.
+_MCC_SCORE_CHUNK_ROWS = 32
+
+
+def _clade_frequencies(counts: np.ndarray, n_trees: int) -> np.ndarray:
+    """Return clade frequencies as an explicit float64 array."""
+    return np.asarray(counts, dtype=np.float64) / np.float64(n_trees)
 
 
 def compute_consensus_tree_index(presence_subset: np.ndarray) -> tuple[int, float]:
@@ -39,30 +51,87 @@ def compute_consensus_tree_index(presence_subset: np.ndarray) -> tuple[int, floa
     n = presence_subset.shape[0]
     if n == 0:
         raise ValueError("empty selection")
-    counts = presence_subset.sum(axis=0)              # (n_splits,) int64
-    freq = counts / n                                 # (n_splits,) float64
+    counts = presence_subset.sum(axis=0)              # (n_splits,) integer
+    frequency = _clade_frequencies(counts, n)
     # log of zero would NaN — for splits absent from every selected tree we
     # pin freq to 1 so log = 0 contributes nothing (those columns are also
     # zero in the presence matrix, so they wouldn't add anything anyway).
-    log_freq = np.log(np.where(counts > 0, freq, 1.0)).astype(np.float32)
+    log_frequency = np.log(
+        np.where(counts > 0, frequency, np.float64(1.0))
+    )
 
-    # Per-tree score = ⟨presence_row, log_freq⟩. The previous
-    # ``(presence_subset.astype(int64) * log_freq).sum(axis=1)`` was
+    # Per-tree score = ⟨presence_row, log_frequency⟩. The previous
+    # ``(presence_subset.astype(int64) * log_frequency).sum(axis=1)`` was
     # numerically identical but materialised a full (n_trees, n_splits)
     # buffer — at 4 k selected trees × 550 k splits the int64 cast alone
     # blows the working set up to ~18 GB. Stream the computation in
     # row-chunks instead so peak memory is bounded by
-    # ``CHUNK * n_splits * 4 B`` (~140 MB at CHUNK=64, n_splits=550 k)
-    # regardless of n_trees, and each chunk dispatches to BLAS sgemv for
-    # a further ~2-3× speed-up over the explicit multiply + reduce path.
+    # ``CHUNK * n_splits * 8 B`` (~140 MB at CHUNK=32, n_splits=550 k)
+    # regardless of n_trees. Both operands are float64, so BLAS performs
+    # every log-credibility accumulation in double precision.
     scores = np.empty(n, dtype=np.float64)
-    CHUNK = 64
-    for i in range(0, n, CHUNK):
-        block = presence_subset[i:i + CHUNK].astype(np.float32)
-        scores[i:i + CHUNK] = block @ log_freq
+    for i in range(0, n, _MCC_SCORE_CHUNK_ROWS):
+        block = presence_subset[
+            i:i + _MCC_SCORE_CHUNK_ROWS
+        ].astype(np.float64)
+        scores[i:i + _MCC_SCORE_CHUNK_ROWS] = block @ log_frequency
 
     idx = int(scores.argmax())
     return idx, float(scores[idx])
+
+
+def compute_consensus_tree_index_sparse(
+    sparse_snapshot: SparseSnapshot,
+    selected_rows,
+    *,
+    counts: np.ndarray | None = None,
+) -> tuple[int, float]:
+    """Pick the MCC source tree directly from sparse presence rows.
+
+    This is additive to :func:`compute_consensus_tree_index`; legacy dense
+    snapshots continue through that established function. ``selected_rows``
+    is ordered like the user's selection, so ``argmax`` retains the same
+    first-row tie behavior as the dense implementation.
+    """
+    if not isinstance(sparse_snapshot, SparseSnapshot):
+        raise TypeError("sparse_snapshot must be a SparseSnapshot")
+    rows = np.asarray(selected_rows)
+    if rows.ndim != 1 or rows.dtype.kind not in "iu":
+        raise TypeError("selected sparse rows must be integer-valued")
+    rows = rows.astype(np.intp, copy=False)
+    if len(rows) == 0:
+        raise ValueError("empty selection")
+    if np.any(rows < 0) or np.any(rows >= sparse_snapshot.n_trees):
+        raise IndexError("selected sparse row is outside the snapshot")
+
+    if counts is None:
+        counts = count_sparse_columns(sparse_snapshot, rows)
+    else:
+        counts = np.asarray(counts)
+        if counts.shape != (sparse_snapshot.n_clades,):
+            raise ValueError("sparse clade counts have the wrong width")
+    frequency = _clade_frequencies(counts, len(rows))
+    log_frequency = np.log(
+        np.where(counts > 0, frequency, np.float64(1.0))
+    )
+
+    # Reconstruct only the same bounded float64 block used by the legacy
+    # dense scorer. Besides bounding memory independently of selection size,
+    # feeding an identical block to the same BLAS matrix-vector operation
+    # keeps dense and sparse MCC scores numerically aligned.
+    scores = np.empty(len(rows), dtype=np.float64)
+    chunk_rows = _MCC_SCORE_CHUNK_ROWS
+    for start in range(0, len(rows), chunk_rows):
+        stop = min(start + chunk_rows, len(rows))
+        block = np.zeros(
+            (stop - start, sparse_snapshot.n_clades),
+            dtype=np.float64,
+        )
+        for local_index, row in enumerate(rows[start:stop]):
+            block[local_index, sparse_snapshot.row_columns(int(row))] = 1.0
+        scores[start:stop] = block @ log_frequency
+    winner = int(scores.argmax())
+    return winner, float(scores[winner])
 
 
 def _scan_brackets_until_paren(s: str) -> tuple[list[tuple[int, int]], int]:
@@ -193,21 +262,58 @@ def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distma
 
     # Snapshot covers every tree that went into the distmat, in the order
     # state stored them. We index into it by name.
-    snap = np.load(state.get_snapshots_path(source_distmat), allow_pickle=False)
-    presence = snap["presence"]                       # (N_total, n_splits) uint8
     full_names = state.get_distmat_names(source_distmat)
     name_to_idx = {n: i for i, n in enumerate(full_names)}
 
     selected_idx = [name_to_idx[n] for n in matched_rows["name"]]
-    presence_sub = presence[selected_idx]             # (n_sel, n_splits)
-    consensus_tree_local, log_clade_cred = compute_consensus_tree_index(presence_sub)
+    with np.load(
+        state.get_snapshots_path(source_distmat),
+        allow_pickle=False,
+    ) as snap:
+        from ..rf.sparse_snapshots import (
+            snapshot_has_sparse_presence,
+            sparse_snapshot_from_npz,
+        )
+
+        if snapshot_has_sparse_presence(snap):
+            sparse_snapshot = sparse_snapshot_from_npz(snap)
+            if sparse_snapshot.tree_names != tuple(full_names):
+                raise ValueError(
+                    "persisted sparse-snapshot tree names disagree with "
+                    "the RF registry ordering"
+                )
+            counts = count_sparse_columns(
+                sparse_snapshot,
+                selected_idx,
+            ).astype(np.int32)
+            consensus_tree_local, log_clade_cred = (
+                compute_consensus_tree_index_sparse(
+                    sparse_snapshot,
+                    selected_idx,
+                    counts=counts,
+                )
+            )
+            winning_row = selected_idx[consensus_tree_local]
+            cols_in_consensus_tree = frozenset(
+                int(column)
+                for column in sparse_snapshot.row_columns(winning_row)
+            )
+        else:
+            presence = snap["presence"]
+            presence_sub = presence[selected_idx]
+            consensus_tree_local, log_clade_cred = (
+                compute_consensus_tree_index(presence_sub)
+            )
+            counts = presence_sub.sum(axis=0).astype(np.int32)
+            cols_in_consensus_tree = frozenset(
+                np.flatnonzero(
+                    presence_sub[consensus_tree_local]
+                ).tolist()
+            )
     consensus_tree_row = matched_rows.iloc[consensus_tree_local]
 
-    # Column-sum is the per-consensus-tree sufficient statistic for the Clade
-    # Frequency Comparison feature — pre-compute here while we already
-    # have ``presence_sub`` in scope, and stash on the registry entry.
-    counts = presence_sub.sum(axis=0).astype(np.int32)
-    cols_in_consensus_tree = frozenset(np.flatnonzero(presence_sub[consensus_tree_local]).tolist())
+    # Column counts and the winner's clade IDs are the sufficient statistics
+    # used by Clade Frequency Comparison; cache them on the registry entry.
 
     line = db_manager._read_newick(
         consensus_tree_row["file_source"],
@@ -217,8 +323,11 @@ def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distma
     if isinstance(line, bytes):
         line = line.decode("utf-8")
     line = _substitute_newick_labels(line, remaps.get(consensus_tree_row["file_source"], {}))
-    line = _inject_tree_annotation(line, "lnCladeCred",
-                                   format(log_clade_cred, ".4f"))
+    line = _inject_tree_annotation(
+        line,
+        "lnCladeCred",
+        format(log_clade_cred, ".17g"),
+    )
 
     return consensus_tree_row, line, log_clade_cred, counts, cols_in_consensus_tree, set()
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dendropy
 import numpy as np
 import pytest
+import rapidtrees
 
 from treetracer.consensus_tree._subprocess_worker import (
     compute_consensus_tree_worker_entry,
@@ -12,6 +13,10 @@ from treetracer.consensus_tree._subprocess_worker import (
 from treetracer.db.process_trees import process_nexus_trees_streaming
 from treetracer.db.tree_manager import TreeManagerPandas
 from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
+from treetracer.rf import (
+    rf_distance_with_sparse_snapshots_from_newick_iter,
+)
+from treetracer.rf.sparse_snapshots import sparse_snapshot_npz_payload
 
 
 _RESULT_KEYS = {
@@ -26,13 +31,15 @@ _RESULT_KEYS = {
     "cols_in_consensus_tree",
     "negative_branch_count",
     "minimum_branch_length",
+    "mcc_statistics",
     "mrhipstr_statistics",
     "mrhipstr_profile",
+    "snapshot_input_mode",
     "missing_taxa",
 }
 
 
-def _build_worker_inputs(tmp_path):
+def _build_worker_inputs(tmp_path, *, snapshot_format="dense"):
     source = "posterior.trees"
     translate = {
         "1": "Taxon A",
@@ -90,13 +97,25 @@ def _build_worker_inputs(tmp_path):
             rooted=True,
         )
     )
-    snapshot_path = tmp_path / "RF_TEST_snapshots.npz"
-    np.savez(
-        snapshot_path,
-        presence=presence,
-        leaf_names=np.asarray(leaf_names),
-        bipartition_bits=bipartition_bits,
-    )
+    snapshot_path = tmp_path / f"RF_TEST_{snapshot_format}_snapshots.npz"
+    if snapshot_format == "dense":
+        np.savez(
+            snapshot_path,
+            presence=presence,
+            leaf_names=np.asarray(leaf_names),
+            bipartition_bits=bipartition_bits,
+        )
+    elif snapshot_format == "sparse":
+        _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
+            names,
+            iter(newicks),
+            [translate],
+            [0] * len(newicks),
+            rooted=True,
+        )
+        np.savez(snapshot_path, **sparse_snapshot_npz_payload(sparse))
+    else:
+        raise ValueError(f"unsupported test snapshot format: {snapshot_format}")
 
     return {
         "matched_records": records,
@@ -134,13 +153,94 @@ def test_worker_explicit_method_preserves_mcc_path(tmp_path):
     assert result["majority_clade_count"] is None
     assert result["negative_branch_count"] == 0
     assert result["minimum_branch_length"] is None
+    mcc_statistics = result["mcc_statistics"]
+    assert mcc_statistics == {
+        "total_trees": 3,
+        "best_tree_number": 1,
+        "number_of_clades": 3,
+        "lowest_clade_credibility": pytest.approx(2 / 3),
+        "mean_clade_credibility": pytest.approx(7 / 9),
+        "median_clade_credibility": pytest.approx(2 / 3),
+        "clades_with_credibility_1": 1,
+        "clades_with_credibility_gt_0_99": 1,
+        "clades_with_credibility_gt_0_95": 1,
+        "clades_with_credibility_gt_0_5": 3,
+        "majority_clades_in_all_trees": 3,
+    }
     assert result["mrhipstr_statistics"] is None
     assert result["mrhipstr_profile"] is None
+    assert result["snapshot_input_mode"] == "dense_legacy"
+    counts = presence.sum(axis=0)
+    frequencies = counts.astype(np.float64) / np.float64(len(presence))
+    expected_score = float(
+        presence[0].astype(np.float64)
+        @ np.log(np.where(counts > 0, frequencies, np.float64(1.0)))
+    )
+    assert result["log_clade_credibility"] == expected_score
+    assert f"lnCladeCred={expected_score:.17g}".encode() in result[
+        "nexus_bytes"
+    ]
     np.testing.assert_array_equal(result["counts"], presence.sum(axis=0))
     tree = _parse_nexus_tree(result["nexus_bytes"])
     assert {taxon.label for taxon in tree.taxon_namespace} == set(
         kwargs["translate_maps"]["posterior.trees"].values()
     )
+
+
+def test_worker_reports_mcc_tree_number_in_full_source_order(tmp_path):
+    kwargs, _ = _build_worker_inputs(tmp_path)
+    kwargs["matched_records"] = kwargs["matched_records"][1:]
+
+    result = compute_consensus_tree_worker_entry(
+        **kwargs,
+        summary_method="mcc",
+    )
+
+    assert result["summary_tree_name"] == "posterior/STATE_1"
+    assert result["mcc_statistics"]["total_trees"] == 2
+    assert result["mcc_statistics"]["best_tree_number"] == 2
+
+
+@pytest.mark.skipif(
+    not hasattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+    ),
+    reason="installed RapidTrees does not provide sparse snapshots",
+)
+def test_worker_sparse_mcc_matches_legacy_dense_result(tmp_path):
+    dense_kwargs, presence = _build_worker_inputs(
+        tmp_path,
+        snapshot_format="dense",
+    )
+    sparse_kwargs, _ = _build_worker_inputs(
+        tmp_path,
+        snapshot_format="sparse",
+    )
+
+    dense = compute_consensus_tree_worker_entry(
+        **dense_kwargs,
+        summary_method="mcc",
+    )
+    sparse = compute_consensus_tree_worker_entry(
+        **sparse_kwargs,
+        summary_method="mcc",
+    )
+
+    assert sparse["snapshot_input_mode"] == "sparse"
+    assert dense["snapshot_input_mode"] == "dense_legacy"
+    assert sparse["summary_tree_name"] == dense["summary_tree_name"]
+    assert sparse["consensus_tree_row"] == dense["consensus_tree_row"]
+    assert sparse["log_clade_credibility"] == dense[
+        "log_clade_credibility"
+    ]
+    np.testing.assert_array_equal(sparse["counts"], presence.sum(axis=0))
+    np.testing.assert_array_equal(sparse["counts"], dense["counts"])
+    assert sparse["cols_in_consensus_tree"] == dense[
+        "cols_in_consensus_tree"
+    ]
+    assert sparse["mcc_statistics"] == dense["mcc_statistics"]
+    assert sparse["nexus_bytes"] == dense["nexus_bytes"]
 
 
 def test_worker_midpoint_roots_unrooted_mcc_output(tmp_path):
@@ -165,11 +265,13 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     assert set(result) == _RESULT_KEYS
     assert result["summary_method"] == "mrhipstr"
     assert result["height_method"] == "mean"
+    assert result["snapshot_input_mode"] == "dense_legacy"
     assert result["consensus_tree_row"] is None
     assert result["summary_tree_name"] == "MrHIPSTR"
     assert result["majority_clade_count"] == 2
     assert result["negative_branch_count"] == 0
     assert result["minimum_branch_length"] == pytest.approx(1.0)
+    assert result["mcc_statistics"] is None
     mrhipstr_statistics = result["mrhipstr_statistics"]
     assert mrhipstr_statistics["total_trees"] == 3
     assert mrhipstr_statistics["n_tips"] == 4
@@ -236,6 +338,41 @@ def test_worker_defaults_to_synthetic_mean_height_mrhipstr_tree(tmp_path):
     assert {taxon.label for taxon in tree.taxon_namespace} == set(
         kwargs["translate_maps"]["posterior.trees"].values()
     )
+
+
+@pytest.mark.skipif(
+    not hasattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+    ),
+    reason="installed RapidTrees does not provide sparse snapshots",
+)
+def test_worker_sparse_mrhipstr_matches_legacy_dense_result(tmp_path):
+    dense_kwargs, _ = _build_worker_inputs(
+        tmp_path,
+        snapshot_format="dense",
+    )
+    sparse_kwargs, _ = _build_worker_inputs(
+        tmp_path,
+        snapshot_format="sparse",
+    )
+
+    dense = compute_consensus_tree_worker_entry(**dense_kwargs)
+    sparse = compute_consensus_tree_worker_entry(**sparse_kwargs)
+
+    assert dense["snapshot_input_mode"] == "dense_legacy"
+    assert dense["mrhipstr_profile"]["input_mode"] == "source_newicks"
+    assert sparse["snapshot_input_mode"] == "sparse"
+    assert sparse["mrhipstr_profile"]["input_mode"] == "sparse_snapshot"
+    assert sparse["summary_method"] == dense["summary_method"]
+    assert sparse["log_clade_credibility"] == pytest.approx(
+        dense["log_clade_credibility"]
+    )
+    np.testing.assert_array_equal(sparse["counts"], dense["counts"])
+    assert sparse["cols_in_consensus_tree"] == dense[
+        "cols_in_consensus_tree"
+    ]
+    assert sparse["nexus_bytes"] == dense["nexus_bytes"]
 
 
 def test_worker_rejects_mrhipstr_for_unrooted_snapshot(tmp_path):

@@ -24,12 +24,12 @@ _MAX_DISTMATS = 50   # evict oldest when exceeded
 
 # Per-distmat decode cache for the Clade Frequency Comparison pipeline.
 #
-# ``bipartition_bits`` from the snapshot is an (n_splits, n_leaves) uint8
-# matrix. We turn each row into a sorted ``tuple[int]`` of leaf indices
-# (the canonical side, as defined by rapidtrees: "side NOT containing
-# leaf 0"). Storing these as int-tuples instead of frozensets-of-strings
-# is ~5× faster to decode and ~5× smaller (8.5 MB vs 40 MB for a
-# 41k-bipartition / 283-taxon distmat, measured in bench_clade_freq.py).
+# Sparse snapshots keep the clade catalog bit-packed; legacy snapshots keep
+# it as an (n_splits, n_leaves) uint8 ``bipartition_bits`` matrix. We decode
+# either representation into sorted ``tuple[int]`` leaf-index keys only when
+# the clade-frequency UI first needs them. These tuples are ~5× smaller than
+# frozensets-of-strings (8.5 MB vs 40 MB for a 41k-clade / 283-taxon matrix,
+# measured in bench_clade_freq.py).
 #
 # Lazily populated on first ``get_canonical_keys(name)`` call. Cleared
 # in ``clear_all_distmats`` so the cache lifetime is bound to the
@@ -114,13 +114,10 @@ def get_distmat_path(name):
 def get_snapshots_path(name):
     """Return the .npz file path for a matrix's interned-snapshot data.
 
-    The compute_rf worker saves the presence matrix + leaf_names to this
-    parallel path whenever it computes an RF matrix. Convergence
-    diagnostics (Pseudo-ESS, ASDSF, Fréchet) read it via:
-
-        data = np.load(get_snapshots_path(name), allow_pickle=False)
-        presence = data["presence"]          # (n_trees, n_bipartitions) uint8
-        leaf_names = data["leaf_names"]      # alphabetical taxa
+    New files contain sparse tree-to-clade rows and a packed clade catalog.
+    During the additive migration they also contain the established dense
+    ``presence``, ``leaf_names``, and ``bipartition_bits`` compatibility
+    arrays, so older sessions and consumers remain readable.
     """
     d = _ensure_tmpdir()
     return os.path.join(d, name.replace("/", "_") + "_snapshots.npz")
@@ -286,24 +283,41 @@ def get_canonical_keys(source_distmat):
     cached = _distmat_canonical_keys.get(source_distmat)
     if cached is not None:
         return cached
-    snap = np.load(get_snapshots_path(source_distmat), allow_pickle=False)
-    if "bipartition_bits" not in snap.files:
-        raise KeyError(
-            f"snapshot for {source_distmat!r} has no 'bipartition_bits' — "
-            "regenerate with rapidtrees ≥ 0.5.0."
+    with np.load(
+        get_snapshots_path(source_distmat),
+        allow_pickle=False,
+    ) as snap:
+        from .rf.sparse_snapshots import (
+            snapshot_has_sparse_presence,
+            sparse_clade_tip_indices,
+            sparse_snapshot_from_npz,
         )
-    bits = snap["bipartition_bits"]
-    tuples = [tuple(np.flatnonzero(row).tolist()) for row in bits]
-    # ``parse_nexus`` strips outer single/double quotes from quoted
-    # taxon identifiers when reading the Translate block (per NEXUS
-    # spec: quotes are syntactic, not part of the name). Rapidtrees
-    # passes the translate values through verbatim, so its snapshot
-    # ``leaf_names`` keep the quote characters. Without normalising
-    # here, the canonical names (e.g. ``"'24P021_..._2024'"``) and the
-    # parsed consensus-tree node names (e.g. ``"24P021_..._2024"``) don't
-    # match, the descendant-bits walk silently drops 1000+ tips, and
-    # the tanglegram highlights scatter across paraphyletic groups.
-    leaf_names = [str(n).strip("'\"") for n in snap["leaf_names"]]
+
+        if snapshot_has_sparse_presence(snap):
+            sparse_snapshot = sparse_snapshot_from_npz(snap)
+            tuples = sparse_clade_tip_indices(sparse_snapshot)
+            raw_leaf_names = sparse_snapshot.leaf_names
+        else:
+            if "bipartition_bits" not in snap.files:
+                raise KeyError(
+                    f"snapshot for {source_distmat!r} has neither sparse "
+                    "clades nor 'bipartition_bits' — regenerate it with "
+                    "a compatible RapidTrees version."
+                )
+            bits = snap["bipartition_bits"]
+            tuples = [tuple(np.flatnonzero(row).tolist()) for row in bits]
+            raw_leaf_names = snap["leaf_names"]
+
+        # ``parse_nexus`` strips outer single/double quotes from quoted
+        # taxon identifiers when reading the Translate block (per NEXUS
+        # spec: quotes are syntactic, not part of the name). RapidTrees
+        # passes the translate values through verbatim, so its snapshot
+        # ``leaf_names`` keep the quote characters. Without normalising
+        # here, the canonical names (e.g. ``"'24P021_..._2024'"``) and the
+        # parsed consensus-tree node names (e.g. ``"24P021_..._2024"``) don't
+        # match, the descendant-bits walk silently drops 1000+ tips, and
+        # the tanglegram highlights scatter across paraphyletic groups.
+        leaf_names = [str(name).strip("'\"") for name in raw_leaf_names]
     _distmat_canonical_keys[source_distmat] = {
         "tuples":     tuples,
         "leaf_names": leaf_names,

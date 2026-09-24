@@ -169,6 +169,16 @@ def _publish_rf_result(pipeline):
             rooted_facts_status == "used",
         )
     )
+    sparse_snapshot_used = bool(
+        pipeline.get(
+            "sparse_snapshot_used",
+            rooted_facts_used,
+        )
+    )
+    sparse_snapshot_source = pipeline.get(
+        "sparse_snapshot_source",
+        "rooted_facts" if rooted_facts_used else "not_reported",
+    )
 
     # The matrix is already on disk; this is the exactly-once publication step.
     register_distmat(
@@ -218,7 +228,25 @@ def _publish_rf_result(pipeline):
         )
         add_log(
             f"[{rf_name}] RapidTrees rooted facts: NOT USED ({reason}). "
-            f"The snapshot contains legacy dense arrays; {next_step}"
+            f"{next_step}"
+        )
+    if sparse_snapshot_used:
+        sparse_source_label = {
+            "rooted_facts": "rooted-facts clade rows",
+            "sparse_endpoint": "generic CSR endpoint",
+        }.get(
+            sparse_snapshot_source,
+            str(sparse_snapshot_source).replace("_", " "),
+        )
+        add_log(
+            f"[{rf_name}] Sparse clade-presence snapshot: USED "
+            f"({sparse_source_label}). Legacy dense arrays were also saved "
+            "for compatibility and parity checks."
+        )
+    else:
+        add_log(
+            f"[{rf_name}] Sparse clade-presence snapshot: NOT USED; only "
+            "legacy dense compatibility arrays were saved."
         )
     add_log(
         f"RF pipeline took {elapsed:.2f}s "
@@ -233,6 +261,8 @@ def _publish_rf_result(pipeline):
         "rf_mode": rf_mode,
         "rooted_facts_used": rooted_facts_used,
         "rooted_facts_status": rooted_facts_status,
+        "sparse_snapshot_used": sparse_snapshot_used,
+        "sparse_snapshot_source": sparse_snapshot_source,
         "distmat_index": get_distmat_index(),
     }
 

@@ -16,9 +16,10 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     Rooted inputs prefer ``rf_distance_with_rooted_facts_from_newick_iter`` so
     the same RapidTrees parse also retains MrHIPSTR heights and directly
     observed splits. Unrooted inputs, older RapidTrees installations, and
-    rooted inputs incompatible with the strict facts contract retain the
-    established dense-snapshot route. Both routes use RapidTrees' interned u32
-    clade IDs for RF computation.
+    rooted inputs incompatible with the strict facts contract prefer the
+    generic sparse-snapshot endpoint when available, then retain the
+    established dense route as a compatibility fallback. All routes use
+    RapidTrees' interned u32 clade IDs for RF computation.
 
     ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
       * True  → every internal-node descendant set is one clade. Honest
@@ -35,14 +36,17 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     - ``save_path``:                        uint16 ``.npy`` n×n RF matrix.
     - ``<save_path stem>_snapshots.npz``:   the established ``presence``,
                                             ``leaf_names``, and
-                                            ``bipartition_bits`` arrays; rooted
-                                            compatible inputs additionally
-                                            carry versioned ``rooted_facts_*``
-                                            arrays.
+                                            ``bipartition_bits`` arrays plus a
+                                            compact sparse representation when
+                                            RapidTrees provides one. Rooted
+                                            compatible inputs carry versioned
+                                            ``rooted_facts_*`` arrays, whose
+                                            clade rows are already sparse.
 
-    Dense compatibility arrays remain for MCC and current convergence
-    diagnostics. MrHIPSTR reads the compact facts when present and only
-    reparses source trees for legacy/incompatible snapshots.
+    Dense compatibility arrays remain during this additive migration for
+    rollback and parity checks. Consumers prefer sparse rows; MrHIPSTR reads
+    compact facts when present and only reparses source trees for generic
+    sparse or legacy/incompatible snapshots.
 
     Returns ``(result_names, elapsed, rf_details)``. ``rf_details`` records
     the RF interpretation and whether the optional rooted-facts endpoint
@@ -72,9 +76,16 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
 
     from .rf import (
         rf_distance_with_rooted_facts_from_newick_iter,
+        rf_distance_with_sparse_snapshots_from_newick_iter,
         rf_distance_with_snapshots_from_newick_iter,
     )
     from .rooted_facts import rooted_facts_npz_payload
+    from .sparse_snapshots import (
+        dense_clade_bits_from_sparse,
+        dense_presence_from_sparse,
+        sparse_snapshot_from_rooted_facts,
+        sparse_snapshot_npz_payload,
+    )
 
     wlog(
         "compute_rf: rapidtrees imported in "
@@ -82,6 +93,8 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     )
     call_t0 = time.time()
     rooted_facts = None
+    sparse_snapshot = None
+    sparse_snapshot_source = "unavailable"
     rooted_facts_status = (
         "pending" if is_rooted else "not_applicable_unrooted"
     )
@@ -105,11 +118,12 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         except ValueError as exc:
             # Rooted facts deliberately require strict binary trees and an
             # explicit finite length on every non-root edge. Preserve RF/MCC
-            # compatibility for other rooted inputs by retrying the established
-            # endpoint; MrHIPSTR will retain its source-Newick fallback.
+            # compatibility for other rooted inputs by retrying the generic
+            # sparse endpoint (or the established dense endpoint on older
+            # RapidTrees); MrHIPSTR retains its source-Newick fallback.
             wlog(
                 "compute_rf: rooted facts unavailable for this dataset; "
-                f"falling back to dense rooted snapshots ({exc})"
+                f"falling back to clade snapshots ({exc})"
             )
             rooted_facts = None
             rooted_facts_status = "input_incompatible"
@@ -117,22 +131,32 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         rooted_facts_status = "endpoint_unavailable"
 
     if rooted_facts is not None:
-        leaf_names = list(rooted_facts.leaf_names)
-        presence = np.zeros(
-            (rooted_facts.n_trees, rooted_facts.n_clades),
-            dtype=np.uint8,
+        sparse_snapshot = sparse_snapshot_from_rooted_facts(rooted_facts)
+        sparse_snapshot_source = "rooted_facts"
+        leaf_names = list(sparse_snapshot.leaf_names)
+        presence = dense_presence_from_sparse(sparse_snapshot)
+        bipartition_bits = dense_clade_bits_from_sparse(sparse_snapshot)
+    elif hasattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+    ):
+        wlog("compute_rf: using RapidTrees sparse-snapshot endpoint")
+        (
+            result_names,
+            rf_matrix,
+            sparse_snapshot,
+        ) = rf_distance_with_sparse_snapshots_from_newick_iter(
+            names,
+            iter(newicks),
+            translate_maps,
+            map_indices,
+            rooted=is_rooted,
+            progress=progress,
         )
-        np.put_along_axis(
-            presence,
-            rooted_facts.clade_columns.astype(np.intp, copy=False),
-            1,
-            axis=1,
-        )
-        bipartition_bits = np.unpackbits(
-            rooted_facts.packed_clades,
-            axis=1,
-            bitorder="little",
-        )[:, : rooted_facts.n_taxa].copy()
+        sparse_snapshot_source = "sparse_endpoint"
+        leaf_names = list(sparse_snapshot.leaf_names)
+        presence = dense_presence_from_sparse(sparse_snapshot)
+        bipartition_bits = dense_clade_bits_from_sparse(sparse_snapshot)
     else:
         (
             result_names,
@@ -152,7 +176,8 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     wlog(
         f"compute_rf: rapidtrees returned in {time.time() - call_t0:.3f}s; "
         f"rf_matrix.shape={rf_matrix.shape}, presence.shape={presence.shape}, "
-        f"rooted_facts={'yes' if rooted_facts is not None else 'no'}"
+        f"rooted_facts={'yes' if rooted_facts is not None else 'no'}, "
+        f"sparse_snapshot={sparse_snapshot_source}"
     )
     # rf_matrix is uint32 from Rust; downcast to uint16 for disk storage
     # (RF distances are bounded by 2*(n_taxa-3), trivially fits).
@@ -170,6 +195,8 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     }
     if rooted_facts is not None:
         snapshot_arrays.update(rooted_facts_npz_payload(rooted_facts))
+    elif sparse_snapshot is not None:
+        snapshot_arrays.update(sparse_snapshot_npz_payload(sparse_snapshot))
     np.savez(snap_path, **snapshot_arrays)
     wlog("compute_rf: both files written; returning")
 
@@ -180,6 +207,8 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         ),
         "rooted_facts_used": rooted_facts is not None,
         "rooted_facts_status": rooted_facts_status,
+        "sparse_snapshot_used": sparse_snapshot is not None,
+        "sparse_snapshot_source": sparse_snapshot_source,
     }
     return list(result_names), elapsed, rf_details
 

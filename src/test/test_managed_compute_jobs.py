@@ -140,6 +140,7 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
     )
     cache_calls = []
     register_calls = []
+    log_calls = []
     registry = [{"name": "RF_001_Between_consensus_tree_1"}]
 
     def cache(nexus_bytes):
@@ -152,7 +153,11 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
 
     monkeypatch.setattr(consensus_tree_compute, "job_manager", manager)
     monkeypatch.setattr(compute, "job_manager", manager)
-    monkeypatch.setattr(consensus_tree_compute, "add_log", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        consensus_tree_compute,
+        "add_log",
+        lambda message, level="INFO": log_calls.append((message, level)),
+    )
     monkeypatch.setattr(consensus_tree_compute._state, "cache_consensus_tree", cache)
     monkeypatch.setattr(
         consensus_tree_compute._state,
@@ -177,6 +182,19 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
         "nexus_bytes": b"#NEXUS\n",
         "consensus_tree_row": {"name": "run-b/tree-2", "metadata": {}},
         "log_clade_credibility": -2.5,
+        "mcc_statistics": {
+            "total_trees": 2,
+            "best_tree_number": 2,
+            "number_of_clades": 1,
+            "lowest_clade_credibility": 1.0,
+            "mean_clade_credibility": 1.0,
+            "median_clade_credibility": 1.0,
+            "clades_with_credibility_1": 1,
+            "clades_with_credibility_gt_0_99": 1,
+            "clades_with_credibility_gt_0_95": 1,
+            "clades_with_credibility_gt_0_5": 1,
+            "majority_clades_in_all_trees": 1,
+        },
         "counts": np.array([1, 2], dtype=np.int32),
         "cols_in_consensus_tree": frozenset({1}),
         "missing_taxa": set(),
@@ -235,6 +253,13 @@ def test_consensus_finalizer_publishes_once_and_poll_only_replays(monkeypatch):
     assert second[8]["delivery_attempt"] == 2
     assert len(cache_calls) == 1
     assert len(register_calls) == 1
+    assert any(
+        "Finding maximum credibility tree..." in message
+        and "Best tree: run-b/tree-2 (tree number 2)" in message
+        and "Number of clades with credibility > 0.5: 1 / 1 "
+        "(in all trees)" in message
+        for message, _level in log_calls
+    )
 
     assert manager.acknowledge(ref, second[8]["terminal_revision"]) is True
     assert manager.snapshot(ref).acknowledged is True
@@ -416,6 +441,40 @@ Number of clades with credibility 1.0: 2
 Number of clades with credibility > 0.99: 599
 Number of clades with credibility > 0.95: 720
 Number of clades with credibility > 0.5: 915"""
+
+
+def test_mcc_console_statistics_match_treeannotator_style():
+    report = consensus_tree_compute._format_mcc_statistics(
+        {
+            "total_trees": 9000,
+            "best_tree_number": 1092,
+            "number_of_clades": 1382,
+            "lowest_clade_credibility": 0.0011,
+            "mean_clade_credibility": 0.7026,
+            "median_clade_credibility": 0.9682,
+            "clades_with_credibility_1": 2,
+            "clades_with_credibility_gt_0_99": 599,
+            "clades_with_credibility_gt_0_95": 720,
+            "clades_with_credibility_gt_0_5": 915,
+            "majority_clades_in_all_trees": 920,
+        },
+        tree_name="STATE_1091000",
+        log_clade_credibility=-923.4827,
+    )
+
+    assert report == """Finding maximum credibility tree...
+Analyzing 9000 trees...
+
+Best tree: STATE_1091000 (tree number 1092)
+Best tree's log clade credibility: -923.4827
+Lowest individual clade credibility: 0.0011
+Mean individual clade credibility: 0.7026
+Median individual clade credibility: 0.9682
+Number of clades in tree: 1382
+Number of clades with credibility 1.0: 2
+Number of clades with credibility > 0.99: 599
+Number of clades with credibility > 0.95: 720
+Number of clades with credibility > 0.5: 915 / 920 (in all trees)"""
 
 
 def test_mrhipstr_console_timing_profile_lists_every_stage():

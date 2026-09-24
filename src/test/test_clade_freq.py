@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import rapidtrees
 
 from treetracer import state
 from treetracer.clade_freq import compute_clade_frequencies
@@ -37,6 +38,9 @@ def _register_fixture_and_build_entries(
     tmp_path,
     parsed_full,
     rapidtrees_full,
+    *,
+    snapshot_format="dense",
+    cached_counts=True,
 ):
     """Register the fixture's RF matrix + snapshot under
     ``state.RF_CF`` and return two consensus tree registry entries that
@@ -56,7 +60,11 @@ def _register_fixture_and_build_entries(
     # rapidtrees_full's wrapper doesn't return bipartition_bits directly,
     # so re-run the wrapper to get them. Cheap — the conftest fixture
     # is session-cached so the underlying RF computation was paid once.
-    from treetracer.rf import rf_distance_with_snapshots_from_newick_iter
+    from treetracer.rf import (
+        rf_distance_with_snapshots_from_newick_iter,
+        rf_distance_with_sparse_snapshots_from_newick_iter,
+    )
+    from treetracer.rf.sparse_snapshots import sparse_snapshot_npz_payload
     tmap, names_in, newicks = parsed_full
     _, _rf, _pres, _ln, _nb, bipartition_bits = (
         rf_distance_with_snapshots_from_newick_iter(
@@ -66,12 +74,24 @@ def _register_fixture_and_build_entries(
     )
 
     snap_path = tmp_path / "RF_CF_snapshots.npz"
-    np.savez(
-        snap_path,
-        presence=presence,
-        leaf_names=np.array(leaf_names),
-        bipartition_bits=bipartition_bits,
-    )
+    if snapshot_format == "dense":
+        np.savez(
+            snap_path,
+            presence=presence,
+            leaf_names=np.array(leaf_names),
+            bipartition_bits=bipartition_bits,
+        )
+    elif snapshot_format == "sparse":
+        _, _, sparse = rf_distance_with_sparse_snapshots_from_newick_iter(
+            names_in,
+            iter(newicks),
+            [tmap],
+            [0] * len(names_in),
+            rooted=True,
+        )
+        np.savez(snap_path, **sparse_snapshot_npz_payload(sparse))
+    else:
+        raise ValueError(f"unsupported test snapshot format: {snapshot_format}")
 
     # ``state.get_canonical_keys`` will look the snapshot up at
     # ``state.get_snapshots_path(name)`` which derives from
@@ -96,14 +116,14 @@ def _register_fixture_and_build_entries(
         "source_distmat": "RF_CF",
         "tree_names": list(names[:half]),
         "n_trees": half,
-        "counts": counts_1,
+        "counts": counts_1 if cached_counts else None,
         "cols_in_consensus_tree": cols_in_consensus_tree_1,
     }
     entry2 = {
         "source_distmat": "RF_CF",
         "tree_names": list(names[half:]),
         "n_trees": n_total - half,
-        "counts": counts_2,
+        "counts": counts_2 if cached_counts else None,
         "cols_in_consensus_tree": cols_in_consensus_tree_2,
     }
     return entry1, entry2, presence
@@ -122,6 +142,8 @@ def test_compute_clade_frequencies_schema_and_value_ranges(
         "split_key", "column_j", "freq_1", "freq_2", "clade_size",
     }
     assert len(df) > 0
+    assert df["freq_1"].dtype == np.dtype(np.float64)
+    assert df["freq_2"].dtype == np.dtype(np.float64)
 
     # Value ranges.
     assert (df["freq_1"] >= 0).all() and (df["freq_1"] <= 1).all()
@@ -174,6 +196,43 @@ def test_frequencies_round_trip_against_presence(
         expected_2 = int(presence[n1:, j].sum()) / n2
         assert row["freq_1"] == pytest.approx(expected_1)
         assert row["freq_2"] == pytest.approx(expected_2)
+
+
+@pytest.mark.skipif(
+    not hasattr(
+        rapidtrees,
+        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
+    ),
+    reason="installed RapidTrees does not provide sparse snapshots",
+)
+def test_sparse_only_snapshot_supports_canonical_keys_and_count_fallback(
+    tmp_path,
+    parsed_full,
+    rapidtrees_full,
+):
+    entry1, entry2, presence = _register_fixture_and_build_entries(
+        tmp_path,
+        parsed_full,
+        rapidtrees_full,
+        snapshot_format="sparse",
+        cached_counts=False,
+    )
+
+    result = compute_clade_frequencies(entry1, entry2)
+    canonical = state.get_canonical_keys("RF_CF")
+    n1 = entry1["n_trees"]
+    sample = result.sample(min(20, len(result)), random_state=0)
+
+    assert len(canonical["tuples"]) == presence.shape[1]
+    for _, row in sample.iterrows():
+        column = int(row["column_j"])
+        assert tuple(row["split_key"]) == canonical["tuples"][column]
+        assert row["freq_1"] == pytest.approx(
+            int(presence[:n1, column].sum()) / n1
+        )
+        assert row["freq_2"] == pytest.approx(
+            int(presence[n1:, column].sum()) / (len(presence) - n1)
+        )
 
 
 def test_synthetic_mrhipstr_entry_uses_existing_clade_frequency_path(

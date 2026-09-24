@@ -156,13 +156,83 @@ def _format_mrhipstr_statistics(
     )
 
 
+def _format_mcc_statistics(
+    statistics: object,
+    *,
+    tree_name: str,
+    log_clade_credibility: float,
+) -> str:
+    """Format the selected-tree MCC credibility report for the console."""
+    if not isinstance(statistics, dict):
+        raise TypeError("MCC worker result is missing its statistics")
+    try:
+        total_trees = int(statistics["total_trees"])
+        best_tree_number = int(statistics["best_tree_number"])
+        number_of_clades = int(statistics["number_of_clades"])
+        lowest_value = statistics["lowest_clade_credibility"]
+        mean_value = statistics["mean_clade_credibility"]
+        median_value = statistics["median_clade_credibility"]
+        lowest = None if lowest_value is None else float(lowest_value)
+        mean = None if mean_value is None else float(mean_value)
+        median = None if median_value is None else float(median_value)
+        credibility_1 = int(statistics["clades_with_credibility_1"])
+        credibility_0_99 = int(
+            statistics["clades_with_credibility_gt_0_99"]
+        )
+        credibility_0_95 = int(
+            statistics["clades_with_credibility_gt_0_95"]
+        )
+        credibility_0_5 = int(
+            statistics["clades_with_credibility_gt_0_5"]
+        )
+        majority_clades = int(
+            statistics["majority_clades_in_all_trees"]
+        )
+        log_score = float(log_clade_credibility)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TypeError("MCC worker returned malformed statistics") from exc
+
+    def format_credibility(value: float | None) -> str:
+        return "n/a" if value is None else f"{value:.4f}"
+
+    return "\n".join(
+        [
+            "Finding maximum credibility tree...",
+            f"Analyzing {total_trees} trees...",
+            "",
+            f"Best tree: {tree_name} (tree number {best_tree_number})",
+            f"Best tree's log clade credibility: {log_score:.4f}",
+            "Lowest individual clade credibility: "
+            f"{format_credibility(lowest)}",
+            "Mean individual clade credibility: "
+            f"{format_credibility(mean)}",
+            "Median individual clade credibility: "
+            f"{format_credibility(median)}",
+            f"Number of clades in tree: {number_of_clades}",
+            "Number of clades with credibility 1.0: "
+            f"{credibility_1}",
+            "Number of clades with credibility > 0.99: "
+            f"{credibility_0_99}",
+            "Number of clades with credibility > 0.95: "
+            f"{credibility_0_95}",
+            "Number of clades with credibility > 0.5: "
+            f"{credibility_0_5} / {majority_clades} (in all trees)",
+        ]
+    )
+
+
 def _format_mrhipstr_timing_profile(profile: object) -> str:
     """Format the end-to-end MrHIPSTR timings for the visible console."""
     if not isinstance(profile, dict):
         raise TypeError("MrHIPSTR timing profile is missing")
 
     input_mode = profile.get("input_mode")
-    if input_mode not in {None, "rooted_facts", "source_newicks"}:
+    if input_mode not in {
+        None,
+        "rooted_facts",
+        "sparse_snapshot",
+        "source_newicks",
+    }:
         raise TypeError("MrHIPSTR timing profile has an unknown input mode")
     ingestion_label = (
         "Worker — rooted-facts aggregation (splits and heights)"
@@ -237,6 +307,9 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
 
     mode_rows = {
         "rooted_facts": ["  Input path: RapidTrees rooted facts"],
+        "sparse_snapshot": [
+            "  Input path: sparse clade snapshot + source-tree parsing"
+        ],
         "source_newicks": [
             "  Input path: legacy snapshot + source-tree parsing"
         ],
@@ -393,6 +466,9 @@ def _finalize_consensus_tree_job(
         )
         data_source = {
             "rooted_facts": "RapidTrees rooted facts",
+            "sparse_snapshot": (
+                "sparse clade rows plus source-tree parsing"
+            ),
             "source_newicks": (
                 "legacy dense snapshot plus source-tree parsing"
             ),
@@ -505,6 +581,12 @@ def _finalize_consensus_tree_job(
             branch_level,
         )
     else:
+        snapshot_input_mode = result.get("snapshot_input_mode")
+        snapshot_input_text = {
+            "sparse": "sparse CSR clade-presence rows",
+            "rooted_facts": "sparse clade rows from RapidTrees rooted facts",
+            "dense_legacy": "legacy dense clade-presence rows",
+        }.get(snapshot_input_mode, "worker-reported clade-presence rows")
         if context.is_rooted:
             add_log(
                 f"{log_prefix} Summary path: ROOTED clade RF → MCC; "
@@ -519,6 +601,18 @@ def _finalize_consensus_tree_job(
                 "midpoint-rooted for export."
             )
             serialization_text = "midpoint-rooted source-tree serialization"
+        add_log(
+            f"{log_prefix} MCC scoring input: {snapshot_input_text}."
+        )
+        mcc_statistics = result.get("mcc_statistics")
+        if mcc_statistics is not None:
+            add_log(
+                _format_mcc_statistics(
+                    mcc_statistics,
+                    tree_name=consensus_tree_name,
+                    log_clade_credibility=log_clade_cred,
+                )
+            )
         add_log(
             f"{log_prefix} Completed clade-frequency scoring and "
             f"{serialization_text} for {n_trees} selected trees; selected "

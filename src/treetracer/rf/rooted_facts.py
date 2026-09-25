@@ -1,7 +1,7 @@
 """Typed decoding for RapidTrees' compact rooted-facts result.
 
 The established dense-snapshot path remains in :mod:`treetracer.rf.rf`.
-This module represents the additional version-2 payload returned by
+This module represents the additional version-3 payload returned by
 ``pairwise_rf_with_rooted_facts_from_newick_iter`` without expanding either
 the sparse tree-by-clade rows or the packed clade bitsets.
 """
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 
 
-ROOTED_FACTS_FORMAT_VERSION = 2
+ROOTED_FACTS_FORMAT_VERSION = 3
 _REQUIRED_FACT_KEYS = frozenset(
     {
         "format_version",
@@ -52,11 +52,13 @@ _NPZ_KEYS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class RootedFactsSnapshot:
-    """Decoded version-2 rooted facts aligned to RapidTrees clade columns.
+    """Decoded version-3 rooted facts aligned to RapidTrees clade columns.
 
     ``packed_clades`` keeps the compact little-bit-order encoding returned by
     RapidTrees. The implicit all-taxa root is not a packed clade and is instead
-    represented by ``root_column == n_clades`` in ``split_table``.
+    represented by ``root_column == n_clades`` in ``split_table``. Node and
+    root heights remain compact read-only ``float32`` arrays; consensus
+    aggregation promotes individual values into ``float64`` accumulators.
     """
 
     tree_names: tuple[str, ...]
@@ -123,10 +125,10 @@ def decode_rooted_facts_snapshot(
     clade_bytes: object,
     facts: Mapping[str, object],
 ) -> RootedFactsSnapshot:
-    """Decode and validate RapidTrees' version-2 rooted-facts sidecar.
+    """Decode and validate RapidTrees' version-3 rooted-facts sidecar.
 
     The returned arrays own their memory and are read-only. Native-endian
-    ``uint32`` and ``float64`` decoding deliberately mirrors RapidTrees' public
+    ``uint32`` and ``float32`` decoding deliberately mirrors RapidTrees' public
     wire contract.
     """
     if not isinstance(facts, Mapping):
@@ -199,13 +201,13 @@ def decode_rooted_facts_snapshot(
     node_heights = _decode_buffer(
         facts["node_heights"],
         key="node_heights",
-        dtype=np.dtype(np.float64),
+        dtype=np.dtype(np.float32),
         shape=(n_trees, nodes_per_tree),
     )
     root_heights = _decode_buffer(
         facts["root_heights"],
         key="root_heights",
-        dtype=np.dtype(np.float64),
+        dtype=np.dtype(np.float32),
         shape=(n_trees,),
     )
     split_ids = _decode_buffer(
@@ -424,13 +426,13 @@ def rooted_facts_from_npz(snapshot: object) -> RootedFactsSnapshot:
     node_heights = _npz_array(
         snapshot,
         "rooted_facts_node_heights",
-        dtype=np.dtype(np.float64),
+        dtype=np.dtype(np.float32),
         shape=(n_trees, nodes_per_tree),
     )
     root_heights = _npz_array(
         snapshot,
         "rooted_facts_root_heights",
-        dtype=np.dtype(np.float64),
+        dtype=np.dtype(np.float32),
         shape=(n_trees,),
     )
     split_ids = _npz_array(

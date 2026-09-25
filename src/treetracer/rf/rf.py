@@ -192,7 +192,7 @@ def rf_distance_with_rooted_facts_from_newick_iter(
 
     This is an additive alternative to
     :func:`rf_distance_with_snapshots_from_newick_iter`. It calls RapidTrees'
-    rooted-only version-2 endpoint, keeps clade membership sparse, keeps clade
+    rooted-only version-3 endpoint, keeps clade membership sparse, keeps clade
     bitsets packed, and returns heights and directly observed binary splits
     without reparsing the source Newicks in Python.
 

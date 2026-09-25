@@ -3,7 +3,7 @@
 RapidTrees 0.9.1 exposes tree-by-clade membership as compressed sparse rows
 instead of a dense ``uint8[n_trees, n_clades]`` matrix.  This module is an
 additive adapter: it understands the generic version-1 CSR payload and the
-fixed-width sparse rows already carried by version-2 rooted facts. Production
+fixed-width sparse rows already carried by version-3 rooted facts. Production
 TreeTracer consumers require one of these compact representations.
 """
 

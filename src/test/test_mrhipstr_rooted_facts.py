@@ -124,8 +124,8 @@ def test_rooted_facts_wrapper_matches_established_rooted_rf_snapshot():
     )[:, : facts.n_taxa]
     np.testing.assert_array_equal(unpacked_clades, old_bits)
     assert facts.clade_columns.dtype == np.dtype(np.uint32)
-    assert facts.node_heights.dtype == np.dtype(np.float64)
-    assert facts.root_heights.dtype == np.dtype(np.float64)
+    assert facts.node_heights.dtype == np.dtype(np.float32)
+    assert facts.root_heights.dtype == np.dtype(np.float32)
     assert facts.split_ids.dtype == np.dtype(np.uint32)
     assert facts.split_table.dtype == np.dtype(np.uint32)
     assert not facts.clade_columns.flags.writeable
@@ -249,6 +249,8 @@ def test_rf_worker_persists_rooted_facts_without_dense_arrays(tmp_path):
         assert snapshot_has_rooted_facts(persisted)
         facts = rooted_facts_from_npz(persisted)
         assert facts.tree_names == SOURCE_NAMES
+        assert facts.node_heights.dtype == np.dtype(np.float32)
+        assert facts.root_heights.dtype == np.dtype(np.float32)
         assert "presence" not in persisted.files
         assert "bipartition_bits" not in persisted.files
         assert "leaf_names" not in persisted.files

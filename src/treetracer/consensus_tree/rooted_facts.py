@@ -2,7 +2,7 @@
 
 This is a parallel ingestion path. The established source-Newick parser in
 ``mrhipstr.py`` remains available and unchanged; callers opt into these
-helpers only when they already hold a version-2 ``RootedFactsSnapshot``.
+helpers only when they already hold a version-3 ``RootedFactsSnapshot``.
 """
 
 from __future__ import annotations
@@ -242,8 +242,10 @@ def source_summary_from_rooted_facts(
             flat_columns,
             minlength=snapshot.n_clades,
         )
-        # Unbuffered row-major updates reproduce the source-stream addition
-        # order for every exact clade.
+        # The destination is float64, so NumPy promotes each retained float32
+        # height before the unbuffered row-major update. This reproduces the
+        # source-stream addition order for every exact clade without retaining
+        # a second full-size float64 height matrix.
         np.add.at(
             height_sums_by_column,
             flat_columns,

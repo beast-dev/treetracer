@@ -289,7 +289,52 @@ def test_stage_four_submit_callbacks_have_matching_idle_output_shapes():
     )
 
     assert len(rf_submit(None, None, None, None, None, None)) == 5
-    assert len(clade_submit(None, None, None, None)) == 7
+    assert len(clade_submit(None, None, None, None, False)) == 7
+
+
+def test_clade_scatter_filter_keeps_only_exclusive_consensus_membership():
+    frame = pd.DataFrame(
+        [
+            {
+                "split_id": 0,
+                "clade_size": 5,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": True,
+            },
+            {
+                "split_id": 1,
+                "clade_size": 5,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": False,
+            },
+            {
+                "split_id": 2,
+                "clade_size": 8,
+                "in_consensus_tree_1": False,
+                "in_consensus_tree_2": True,
+            },
+            {
+                "split_id": 3,
+                "clade_size": 2,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": False,
+            },
+        ]
+    )
+
+    unfiltered_membership = clade_explore._filter_clade_frequency_frame(
+        frame,
+        min_clade_size=5,
+        exclusive_only=False,
+    )
+    exclusive_membership = clade_explore._filter_clade_frequency_frame(
+        frame,
+        min_clade_size=5,
+        exclusive_only=True,
+    )
+
+    assert unfiltered_membership["split_id"].tolist() == [0, 1, 2]
+    assert exclusive_membership["split_id"].tolist() == [1, 2]
 
 
 def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
@@ -318,6 +363,7 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
         consensus_columns_1=frozenset({2}),
         consensus_columns_2=frozenset({2, 5}),
         min_clade_size=2,
+        exclusive_only=False,
     )
     worker_result = {
         "rows": [

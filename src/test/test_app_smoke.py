@@ -73,6 +73,33 @@ def test_about_modal_shows_installed_rapidtrees_version(monkeypatch):
     assert version_text.c == "dimmed"
 
 
+def test_clade_frequency_exclusive_filter_is_beside_size_slider():
+    from treetracer.ui.panels.clade_freq import _add_clade_freq_panel
+
+    panel = _add_clade_freq_panel()
+    checkbox = _component_by_id(panel, "clade-freq-exclusive-only")
+
+    assert checkbox.label == (
+        "Show only clades present in a single consensus tree"
+    )
+    assert checkbox.checked is False
+
+    controls = next(
+        component
+        for component in _walk_components(panel)
+        if getattr(component, "justify", None) == "space-between"
+        and {
+            getattr(descendant, "id", None)
+            for descendant in _walk_components(component)
+        }
+        >= {
+            "clade-freq-min-clade-size",
+            "clade-freq-exclusive-only",
+        }
+    )
+    assert controls.children[-1] is checkbox
+
+
 def test_summary_method_dropdowns_are_absent_from_both_analysis_tabs():
     from treetracer.ui.panels.treespace import _add_treespace_panel
     from treetracer.ui.panels.within_run import _add_within_run_panel

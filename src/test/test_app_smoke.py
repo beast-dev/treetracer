@@ -54,6 +54,25 @@ def test_app_imports_and_registers_callbacks():
     register_callbacks(app)
 
 
+def test_about_modal_shows_installed_rapidtrees_version(monkeypatch):
+    from treetracer.ui import main_body
+
+    monkeypatch.setattr(
+        main_body,
+        "distribution_version",
+        lambda package: "9.8.7" if package == "rapidtrees" else "unexpected",
+    )
+
+    version_text = _component_by_id(
+        main_body._add_about_modal(),
+        "about-rapidtrees-version",
+    )
+
+    assert version_text.children == "RapidTrees v9.8.7"
+    assert version_text.size == "xs"
+    assert version_text.c == "dimmed"
+
+
 def test_summary_method_dropdowns_are_absent_from_both_analysis_tabs():
     from treetracer.ui.panels.treespace import _add_treespace_panel
     from treetracer.ui.panels.within_run import _add_within_run_panel

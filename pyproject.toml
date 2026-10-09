@@ -13,7 +13,7 @@ dependencies = [
     "dash>=4.1.0",
     "dash-mantine-components",
     "pandas",
-    "rapidtrees==0.9.0",
+    "rapidtrees>=0.11.0",
     "plotly",
     "psutil>=7.0.0",
     "numpy",
@@ -35,6 +35,12 @@ build-backend = "hatchling.build"
 # the 5 MB test fixture and shouldn't bloat the installed package.
 [tool.hatch.build.targets.wheel]
 packages = ["src/treetracer"]
+
+# Rooted facts need RapidTrees' ``lengths=True`` on the RF snapshot endpoint
+# (Joon-Klaps/rapidtrees#58). Until a release carries it, uv builds RapidTrees
+# from that branch; then drop this table and raise the pin above to that release.
+[tool.uv.sources]
+rapidtrees = { git = "https://github.com/Joon-Klaps/rapidtrees", branch = "feat/sparse-snapshots" }
 
 # Test-only dependencies. Install with: ``uv sync --group test``.
 # ``arviz`` and ``dendropy`` are reference implementations used to
@@ -101,7 +107,7 @@ requires = [
     "dash>=4.1.0",
     "dash-mantine-components",
     "pandas",
-    "rapidtrees==0.9.0",
+    "rapidtrees>=0.11.0",
     "plotly",
     "psutil>=7.0.0",
     "numpy",

@@ -1024,25 +1024,8 @@ wheels = [
 
 [[package]]
 name = "rapidtrees"
-version = "0.9.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/dc/55/40ef1d457f81d58be4cde06f17ebb438aec6f0304632b909cd35f5843e9a/rapidtrees-0.9.0.tar.gz", hash = "sha256:4af1a9336897a2a3a941f53175e351533e9ac235f608003fde30ac6f1a6c8ba0", size = 166288, upload-time = "2026-09-10T09:56:33.22Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/0c/bb200fae1504b3eff44083073e26b08f938f5f570a5a478fd5315aaf0d3f/rapidtrees-0.9.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:a83fd2abde040cf46fd2ea6b792a534c9df5bdb3b71294a76cb89982647b62b1", size = 433175, upload-time = "2026-09-10T09:56:08.026Z" },
-    { url = "https://files.pythonhosted.org/packages/d1/1b/466912ded8e22f27c6b425da6e29003db920806b6f1a40a19f2a00abbbdc/rapidtrees-0.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:689394abaff06039ea9a0de3edcce102ead9c7f326032f19db1012f672c7cf0a", size = 426280, upload-time = "2026-09-10T09:56:09.662Z" },
-    { url = "https://files.pythonhosted.org/packages/af/d0/d04e9647fe3c411298a75e47db96736e0e16b8e098705e19567b2ebc9517/rapidtrees-0.9.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:37ac67f19c14a97501eeb74acd505309cf4447f86bbc74cb2a0f64a6ba33cde7", size = 481225, upload-time = "2026-09-10T09:56:11.269Z" },
-    { url = "https://files.pythonhosted.org/packages/ae/f6/b892a28ce7b4414112b978439d2a2ddf2fb507f4b2dbec84e9e0ed642a06/rapidtrees-0.9.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f91a941544baa423b9abed786c33e75858e5403edc422c4965e6b442c2c6d063", size = 541099, upload-time = "2026-09-10T09:56:12.844Z" },
-    { url = "https://files.pythonhosted.org/packages/f8/af/47fc21e9cac2c297b01564d670a01267c9f73d129b7e1aacf5dfc7fbc9c7/rapidtrees-0.9.0-cp313-cp313-win_amd64.whl", hash = "sha256:9d04fb6476df661f6fcc8de1f1d7fa5290b0e516cf2163a2dd720d42a6339a27", size = 307163, upload-time = "2026-09-10T09:56:14.434Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/65/66b0d245023668644683ddd16e6e88c095bb3d13d225fe29a06fba37e564/rapidtrees-0.9.0-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:1e1a346515a73eee9f4806f8f1d05d1f6b0f93f5afe178eeac7ed9174de3474d", size = 435027, upload-time = "2026-09-10T09:56:15.952Z" },
-    { url = "https://files.pythonhosted.org/packages/6e/39/5e0b4c09205b35c8b3ebe3e27c1043ebf8b58a236026531e9355744ea553/rapidtrees-0.9.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:6dce26f104296afafb61221974c04f918ae906c050cf9f88acb3d4891b9087b6", size = 427505, upload-time = "2026-09-10T09:56:17.405Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/2b/8213f87db9ee276df4fa59eebcced40be44b80ddb24f0fed2a4828d49db2/rapidtrees-0.9.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:556541659ce954d48ecc5b00eb2ef4a69d3813ee95e0191f22b6fac109e02127", size = 481884, upload-time = "2026-09-10T09:56:19.081Z" },
-    { url = "https://files.pythonhosted.org/packages/3f/a5/76623d2c13a2420ab0bcab150c25da00c0be156141fca1a1ff829a091109/rapidtrees-0.9.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7feea9d514071f47b906d6b936ee625f6d41f45724bd099ae05374d24a9b6fb2", size = 541686, upload-time = "2026-09-10T09:56:20.641Z" },
-    { url = "https://files.pythonhosted.org/packages/22/e7/8d34f488ca55057ee9fcc054ccfecc02ea81c9cae0c8f9f3cc2928795070/rapidtrees-0.9.0-cp314-cp314-win_amd64.whl", hash = "sha256:e37fa5058054afbdac85260efaecccebfd9d09ce88e3b7695ce15b083452906d", size = 308036, upload-time = "2026-09-10T09:56:22.206Z" },
-    { url = "https://files.pythonhosted.org/packages/12/e5/e48b23fe37d5ac487a0900ad38ef27021775cc34a834cc9a3767b17df366/rapidtrees-0.9.0-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fe50e2009e6a730dfe1b9ad363aef36e55618756880b4d14435a928438688337", size = 482605, upload-time = "2026-09-10T09:56:23.788Z" },
-    { url = "https://files.pythonhosted.org/packages/f0/df/8a59906340481befdf991e8e3929c29b3644d79d59a85b138c13afa6d506/rapidtrees-0.9.0-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:58a52ae5683d8bf9fe8d6c7f2ea0ec75ce004c82a1b0b3711e61a622d45a3e88", size = 542680, upload-time = "2026-09-10T09:56:25.292Z" },
-    { url = "https://files.pythonhosted.org/packages/c8/66/da2391f9d6a78c317d8601d4a15cc0b96f4fb52660ef684cbb5157fe6a12/rapidtrees-0.9.0-cp315-cp315-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:040eacb99902db0badb80659ffdf0f11dbbfb46e54bd69c028b3774da2653e80", size = 542755, upload-time = "2026-09-10T09:56:26.826Z" },
-    { url = "https://files.pythonhosted.org/packages/06/df/29a105b3dade599659fdc4b45f1b4607ac3a229c846efa2b9b388b0ee122/rapidtrees-0.9.0-cp315-cp315t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6bb6d5a044e1fd731525e54264da3bb752919543e41e9b65d6e9d5d71392f263", size = 542158, upload-time = "2026-09-10T09:56:28.292Z" },
-]
+version = "0.11.0"
+source = { git = "https://github.com/Joon-Klaps/rapidtrees?branch=feat%2Fsparse-snapshots#256e3cf07ac0a8af8eac99f02a4fd3fb62f5b38f" }
 
 [[package]]
 name = "requests"
@@ -1221,7 +1204,7 @@ requires-dist = [
     { name = "plotly" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pywebview", specifier = ">=6.1" },
-    { name = "rapidtrees", specifier = "==0.9.0" },
+    { name = "rapidtrees", git = "https://github.com/Joon-Klaps/rapidtrees?branch=feat%2Fsparse-snapshots" },
     { name = "scipy" },
 ]
 

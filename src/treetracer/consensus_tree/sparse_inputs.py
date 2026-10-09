@@ -1,6 +1,6 @@
 """Adapt generic sparse RF snapshots to the established MrHIPSTR inputs.
 
-This is the path used when full RapidTrees rooted facts are unavailable. It
+This is the path used when rooted facts are unavailable. It
 obtains clade frequencies and the rooted clade catalog without densifying the
 CSR rows; observed splits and node heights still come from the existing
 source-Newick ingestion path.

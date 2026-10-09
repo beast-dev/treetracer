@@ -1,4 +1,4 @@
-"""Parity tests for the additive RapidTrees rooted-facts path."""
+"""Parity tests for the rooted facts derived in NumPy from RapidTrees clade rows."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-import rapidtrees
 
 from treetracer.consensus_tree.mrhipstr import (
     SourceTreeRecord,
@@ -35,11 +34,6 @@ from treetracer.rf.rooted_facts import (
     snapshot_has_rooted_facts,
 )
 
-
-pytestmark = pytest.mark.skipif(
-    not hasattr(rapidtrees, "pairwise_rf_with_rooted_facts_from_newick_iter"),
-    reason="installed RapidTrees does not provide rooted facts",
-)
 
 SOURCE_TREES = (
     "((A:1,B:2):3,(C:4,D:5):6);",
@@ -225,6 +219,96 @@ def test_rooted_facts_summary_cross_checks_selected_counts():
         )
 
 
+def _random_rooted_tree(rng, taxa):
+    """A random rooted binary Newick with its clade heights and observed splits, summed root-down as the NumPy derivation does."""
+    nodes = [(frozenset([taxon]), taxon) for taxon in taxa]
+    children = {}
+    lengths = {}
+    while len(nodes) > 1:
+        i, j = sorted(rng.choice(len(nodes), size=2, replace=False))
+        (right, right_newick), (left, left_newick) = nodes.pop(j), nodes.pop(i)
+        for clade in (left, right):
+            lengths[clade] = float(rng.uniform(0.0, 3.0))
+        parent = left | right
+        children[parent] = (left, right)
+        nodes.append(
+            (
+                parent,
+                f"({left_newick}:{lengths[left]!r},{right_newick}:{lengths[right]!r})",
+            )
+        )
+    root, newick = nodes[0]
+    distances = {root: 0.0}
+    stack = [root]
+    while stack:
+        parent = stack.pop()
+        for child in children.get(parent, ()):
+            distances[child] = distances[parent] + lengths[child]
+            stack.append(child)
+    root_height = max(distances[frozenset([taxon])] for taxon in taxa)
+    heights = {
+        clade: np.float32(root_height - distance)
+        for clade, distance in distances.items()
+        if clade != root
+    }
+    splits = {
+        (None if parent == root else parent, frozenset(pair))
+        for parent, pair in children.items()
+    }
+    return newick + ";", heights, np.float32(root_height), splits
+
+
+def test_rooted_facts_match_a_direct_reference_on_random_trees():
+    rng = np.random.default_rng(7)
+    taxa = [f"t{index:02d}" for index in range(40)]
+    trees = [_random_rooted_tree(rng, taxa) for _ in range(6)]
+    names = [f"tree-{index}" for index in range(len(trees))]
+    _, _, facts = rf_distance_with_rooted_facts_from_newick_iter(
+        names,
+        iter([newick for newick, *_ in trees]),
+        [{}],
+        [0] * len(trees),
+    )
+
+    bits = np.unpackbits(facts.packed_clades, axis=1, bitorder="little")
+    clades = [
+        frozenset(np.asarray(facts.leaf_names)[row[: facts.n_taxa].astype(bool)])
+        for row in bits
+    ]
+    clades.append(None)  # root_column
+    for row, (_, heights, root_height, splits) in enumerate(trees):
+        got_heights = {
+            clades[column]: height
+            for column, height in zip(
+                facts.clade_columns[row], facts.node_heights[row]
+            )
+        }
+        assert got_heights == heights
+        assert facts.root_heights[row] == root_height
+        got_splits = {
+            (clades[parent], frozenset([clades[left], clades[right]]))
+            for parent, left, right in facts.split_table[facts.split_ids[row]]
+        }
+        assert got_splits == splits
+
+
+def test_rf_worker_keeps_sparse_rows_for_rooted_polytomies(tmp_path):
+    trees = ["((A:1,B:1,C:1):1,D:2);", "((A:1,B:1):1,(C:1,D:1):1);"]
+    _, _, rf_details = compute_rf(
+        ["poly", "binary"],
+        trees,
+        [{}],
+        [0, 0],
+        str(tmp_path / "RF_POLY.npy"),
+        is_rooted=True,
+    )
+
+    assert rf_details["rooted_facts_status"] == "input_incompatible"
+    assert rf_details["sparse_snapshot_source"] == "sparse_endpoint"
+    with np.load(tmp_path / "RF_POLY_snapshots.npz") as persisted:
+        assert not snapshot_has_rooted_facts(persisted)
+
+
 def test_rf_worker_persists_rooted_facts_without_dense_arrays(tmp_path):
     matrix_path = tmp_path / "RF_TEST.npy"
     result_names, _, rf_details = compute_rf(
@@ -304,6 +388,6 @@ def test_consensus_worker_prefers_persisted_facts_without_source_reads(
         }
     )
     report = _format_mrhipstr_timing_profile(visible_profile)
-    assert "Input path: RapidTrees rooted facts" in report
+    assert "Input path: rooted facts" in report
     assert "rooted-facts aggregation (splits and heights)" in report
     assert "source-tree parsing, splits, and heights" not in report

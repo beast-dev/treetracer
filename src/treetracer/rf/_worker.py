@@ -12,12 +12,13 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
                is_rooted=True, progress=None):
     """Compute pairwise RF distances and persist compact clade snapshots.
 
-    Rooted inputs prefer ``rf_distance_with_rooted_facts_from_newick_iter`` so
-    the same RapidTrees parse also retains MrHIPSTR heights and directly
-    observed splits. Unrooted inputs and rooted inputs incompatible with the
-    strict facts contract use the generic CSR sparse-snapshot endpoint. The
-    persisted snapshot never contains a dense tree-by-clade presence matrix or
-    an unpacked clade-by-taxon matrix.
+    One ``rf_distance_with_sparse_snapshots_from_newick_iter`` call returns the
+    RF matrix and CSR clade rows. Rooted inputs also ask RapidTrees for branch
+    lengths, from which ``rooted_facts_from_sparse`` derives MrHIPSTR heights
+    and directly observed splits in NumPy. Rooted inputs that are not strictly
+    binary keep the CSR snapshot from the same call. The persisted snapshot
+    never contains a dense tree-by-clade presence matrix or an unpacked
+    clade-by-taxon matrix.
 
     ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
       * True  → every internal-node descendant set is one clade. Honest
@@ -40,10 +41,10 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     parent/child splits.
 
     Returns ``(result_names, elapsed, rf_details)``. ``rf_details`` records
-    the RF interpretation and whether the optional rooted-facts endpoint
-    actually succeeded, so the parent console can report the observed path
-    rather than infer it from the requested rooting mode. The large arrays
-    stay on disk and are never pickled across the process boundary.
+    the RF interpretation and whether rooted facts were derived, so the
+    parent console can report the observed path rather than infer it from
+    the requested rooting mode. The large arrays stay on disk and are never
+    pickled across the process boundary.
     """
     import time
     from pathlib import Path
@@ -63,13 +64,8 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
 
     t0 = time.time()
     wlog("compute_rf: importing rapidtrees RF wrappers")
-    import rapidtrees
-
-    from .rf import (
-        rf_distance_with_rooted_facts_from_newick_iter,
-        rf_distance_with_sparse_snapshots_from_newick_iter,
-    )
-    from .rooted_facts import rooted_facts_npz_payload
+    from .rf import rf_distance_with_sparse_snapshots_from_newick_iter
+    from .rooted_facts import rooted_facts_from_sparse, rooted_facts_npz_payload
     from .sparse_snapshots import sparse_snapshot_npz_payload
 
     wlog(
@@ -77,68 +73,38 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         f"{time.time() - t0:.3f}s; calling pairwise RF"
     )
     call_t0 = time.time()
-    rooted_facts = None
-    sparse_snapshot = None
-    sparse_snapshot_source = "unavailable"
-    rooted_facts_status = (
-        "pending" if is_rooted else "not_applicable_unrooted"
-    )
-    has_rooted_facts_endpoint = hasattr(
-        rapidtrees,
-        "pairwise_rf_with_rooted_facts_from_newick_iter",
-    )
-    if is_rooted and has_rooted_facts_endpoint:
-        try:
-            wlog("compute_rf: using RapidTrees rooted-facts endpoint")
-            result_names, rf_matrix, rooted_facts = (
-                rf_distance_with_rooted_facts_from_newick_iter(
-                    names,
-                    iter(newicks),
-                    translate_maps,
-                    map_indices,
-                    progress=progress,
-                )
-            )
-            rooted_facts_status = "used"
-        except ValueError as exc:
-            # Rooted facts deliberately require strict binary trees and an
-            # explicit finite length on every non-root edge. Preserve RF/MCC
-            # support for other rooted inputs by retrying the generic sparse
-            # endpoint; MrHIPSTR retains its source-Newick ingestion path.
-            wlog(
-                "compute_rf: rooted facts unavailable for this dataset; "
-                f"falling back to clade snapshots ({exc})"
-            )
-            rooted_facts = None
-            rooted_facts_status = "input_incompatible"
-    elif is_rooted:
-        rooted_facts_status = "endpoint_unavailable"
-
-    if rooted_facts is not None:
-        sparse_snapshot_source = "rooted_facts"
-        snapshot_n_trees = rooted_facts.n_trees
-        snapshot_n_clades = rooted_facts.n_clades
-        snapshot_n_entries = (
-            rooted_facts.n_trees * rooted_facts.nodes_per_tree
-        )
-    else:
-        wlog("compute_rf: using RapidTrees sparse-snapshot endpoint")
-        (
-            result_names,
-            rf_matrix,
-            sparse_snapshot,
-        ) = rf_distance_with_sparse_snapshots_from_newick_iter(
+    result_names, rf_matrix, sparse_snapshot = (
+        rf_distance_with_sparse_snapshots_from_newick_iter(
             names,
             iter(newicks),
             translate_maps,
             map_indices,
             rooted=is_rooted,
             progress=progress,
+            lengths=is_rooted,
         )
-        sparse_snapshot_source = "sparse_endpoint"
-        snapshot_n_trees = sparse_snapshot.n_trees
-        snapshot_n_clades = sparse_snapshot.n_clades
-        snapshot_n_entries = sparse_snapshot.n_entries
+    )
+    rooted_facts = None
+    rooted_facts_status = "not_applicable_unrooted"
+    if is_rooted:
+        try:
+            rooted_facts = rooted_facts_from_sparse(sparse_snapshot)
+            rooted_facts_status = "used"
+        except ValueError as exc:
+            # Rooted facts need strictly binary trees with finite heights.
+            # Other rooted inputs keep RF/MCC support through the CSR
+            # snapshot; MrHIPSTR retains its source-Newick ingestion path.
+            wlog(
+                "compute_rf: rooted facts unavailable for this dataset; "
+                f"keeping clade snapshots ({exc})"
+            )
+            rooted_facts_status = "input_incompatible"
+    sparse_snapshot_source = (
+        "rooted_facts" if rooted_facts is not None else "sparse_endpoint"
+    )
+    snapshot_n_trees = sparse_snapshot.n_trees
+    snapshot_n_clades = sparse_snapshot.n_clades
+    snapshot_n_entries = sparse_snapshot.n_entries
     wlog(
         f"compute_rf: rapidtrees returned in {time.time() - call_t0:.3f}s; "
         f"rf_matrix.shape={rf_matrix.shape}, "

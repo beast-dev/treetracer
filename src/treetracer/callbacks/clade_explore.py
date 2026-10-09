@@ -729,7 +729,7 @@ def _finalize_clade_comparison_job(
     elapsed = float(result.get("elapsed", 0.0))
     snapshot_input_text = {
         "sparse": "generic sparse CSR snapshot",
-        "rooted_facts": "RapidTrees rooted facts",
+        "rooted_facts": "rooted facts",
     }.get(
         result.get("snapshot_input_mode"),
         "worker-reported snapshot representation",

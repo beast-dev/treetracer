@@ -236,7 +236,7 @@ def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
             (
                 "input trees were ROOTED",
                 "distances used rooted clades",
-                "RapidTrees rooted facts: USED",
+                "Rooted facts: USED",
                 "compact clade rows, heights, and observed splits",
             ),
         ),
@@ -247,8 +247,8 @@ def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
             False,
             (
                 "input trees were ROOTED",
-                "RapidTrees rooted facts: NOT USED",
-                "strict rooted-facts contract",
+                "Rooted facts: NOT USED",
+                "not all strictly binary",
                 "MrHIPSTR will fall back to parsing the source trees",
             ),
         ),
@@ -260,7 +260,7 @@ def test_rf_terminal_receipt_is_acknowledged_by_next_reconcile(monkeypatch):
             (
                 "input trees were UNROOTED",
                 "distances used unrooted bipartitions",
-                "RapidTrees rooted facts: NOT USED",
+                "Rooted facts: NOT USED",
                 "View Summary will use MCC",
             ),
         ),

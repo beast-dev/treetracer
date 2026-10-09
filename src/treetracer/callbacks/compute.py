@@ -204,20 +204,17 @@ def _publish_rf_result(pipeline):
     )
     if rooted_facts_used:
         add_log(
-            f"[{rf_name}] RapidTrees rooted facts: USED. The snapshot "
-            "contains compact clade rows, heights, and observed splits for "
-            "MrHIPSTR."
+            f"[{rf_name}] Rooted facts: USED. The snapshot contains compact "
+            "clade rows, heights, and observed splits for MrHIPSTR, derived "
+            "from RapidTrees' clade rows and branch lengths."
         )
     else:
         reason = {
             "not_applicable_unrooted": (
                 "not applicable to unrooted bipartition RF"
             ),
-            "endpoint_unavailable": (
-                "the installed RapidTrees rooted-facts endpoint is unavailable"
-            ),
             "input_incompatible": (
-                "the input did not satisfy the strict rooted-facts contract"
+                "the input trees are not all strictly binary"
             ),
             "not_reported": "not reported by the worker",
         }.get(rooted_facts_status, str(rooted_facts_status).replace("_", " "))
@@ -227,13 +224,13 @@ def _publish_rf_result(pipeline):
             else "MrHIPSTR will fall back to parsing the source trees."
         )
         add_log(
-            f"[{rf_name}] RapidTrees rooted facts: NOT USED ({reason}). "
+            f"[{rf_name}] Rooted facts: NOT USED ({reason}). "
             f"{next_step}"
         )
     if sparse_snapshot_used:
         sparse_source_label = {
             "rooted_facts": "rooted-facts clade rows",
-            "sparse_endpoint": "generic CSR endpoint",
+            "sparse_endpoint": "RapidTrees CSR rows",
         }.get(
             sparse_snapshot_source,
             str(sparse_snapshot_source).replace("_", " "),

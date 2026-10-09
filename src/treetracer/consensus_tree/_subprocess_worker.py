@@ -135,7 +135,7 @@ def compute_consensus_tree_worker_entry(
 ) -> Dict[str, Any]:
     """Compute an MCC or MrHIPSTR summary and assemble its NEXUS bytes.
 
-    MrHIPSTR prefers persisted RapidTrees rooted facts. Generic CSR snapshots
+    MrHIPSTR prefers persisted rooted facts. Generic CSR snapshots
     still use ``newick_offset`` and ``newick_length`` to stream selected source
     Newicks once for heights and observed splits. Omitting ``summary_method``
     selects MrHIPSTR. MCC remains available by passing

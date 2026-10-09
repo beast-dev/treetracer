@@ -1,6 +1,6 @@
 """Validated compact presence snapshots shared by RF consumers.
 
-RapidTrees 0.9.1 exposes tree-by-clade membership as compressed sparse rows
+RapidTrees' snapshot endpoints return tree-by-clade membership as compressed sparse rows
 instead of a dense ``uint8[n_trees, n_clades]`` matrix.  This module is an
 additive adapter: it understands the generic version-1 CSR payload and the
 fixed-width sparse rows already carried by version-3 rooted facts. Production
@@ -51,7 +51,10 @@ _NPZ_KEYS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SparseSnapshot:
-    """A clade catalog plus CSR tree-to-clade membership rows."""
+    """A clade catalog plus CSR tree-to-clade membership rows.
+
+    ``lengths`` holds the branch length above each entry when RapidTrees was asked for them (``lengths=True``), aligned with ``column_indices``. It feeds :func:`~treetracer.rf.rooted_facts.rooted_facts_from_sparse` and is not persisted.
+    """
 
     tree_names: tuple[str, ...]
     leaf_names: tuple[str, ...]
@@ -60,6 +63,7 @@ class SparseSnapshot:
     row_offsets: np.ndarray
     column_indices: np.ndarray
     rooted: bool
+    lengths: np.ndarray | None = None
 
     @property
     def n_trees(self) -> int:
@@ -109,6 +113,7 @@ def _decode_buffer(
     key: str,
     dtype: np.dtype,
     shape: tuple[int, ...],
+    copy: bool = True,
 ) -> np.ndarray:
     if not isinstance(value, (bytes, bytearray, memoryview)):
         raise TypeError(f"sparse snapshot {key!r} must be a byte buffer")
@@ -118,7 +123,9 @@ def _decode_buffer(
             f"sparse snapshot {key!r} has {len(value)} bytes; "
             f"expected {expected_bytes} for shape {shape}"
         )
-    result = np.frombuffer(value, dtype=dtype).reshape(shape).copy()
+    result = np.frombuffer(value, dtype=dtype).reshape(shape)
+    if copy:
+        result = result.copy()
     result.setflags(write=False)
     return result
 
@@ -142,11 +149,12 @@ def _validate_sparse_arrays(
     if n_entries and np.any(column_indices >= n_clades):
         raise ValueError("sparse snapshot row references an invalid clade column")
 
-    for row in range(len(row_offsets) - 1):
-        start = int(row_offsets[row])
-        stop = int(row_offsets[row + 1])
-        values = column_indices[start:stop]
-        if len(values) > 1 and np.any(values[1:] <= values[:-1]):
+    if n_entries > 1:
+        not_ascending = column_indices[1:] <= column_indices[:-1]
+        # A pair that straddles two rows may descend.
+        row_starts = row_offsets[1:-1].astype(np.int64)
+        not_ascending[row_starts[(row_starts > 0) & (row_starts < n_entries)] - 1] = False
+        if np.any(not_ascending):
             raise ValueError(
                 "sparse snapshot rows must contain sorted, unique columns"
             )
@@ -226,6 +234,16 @@ def decode_sparse_snapshot(
         dtype=np.dtype(np.uint32),
         shape=(n_entries,),
     )
+    lengths = None
+    if "lengths" in sparse:
+        lengths = _decode_buffer(
+            sparse["lengths"],
+            key="lengths",
+            dtype=np.dtype(np.float64),
+            shape=(n_entries,),
+            # Only rooted_facts_from_sparse reads them, once, so a view of RapidTrees' buffer is enough.
+            copy=False,
+        )
     _validate_sparse_arrays(
         n_clades=n_clades,
         n_taxa=len(leaves),
@@ -241,6 +259,7 @@ def decode_sparse_snapshot(
         row_offsets=row_offsets,
         column_indices=column_indices,
         rooted=bool(rooted),
+        lengths=lengths,
     )
 
 

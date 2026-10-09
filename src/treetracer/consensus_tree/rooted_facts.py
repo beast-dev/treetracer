@@ -1,4 +1,4 @@
-"""Adapt RapidTrees rooted facts to TreeTracer's MrHIPSTR core contracts.
+"""Adapt rooted facts to TreeTracer's MrHIPSTR core contracts.
 
 This is a parallel ingestion path. The established source-Newick parser in
 ``mrhipstr.py`` remains available and unchanged; callers opt into these

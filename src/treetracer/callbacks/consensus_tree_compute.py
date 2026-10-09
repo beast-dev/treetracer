@@ -305,7 +305,7 @@ def _format_mrhipstr_timing_profile(profile: object) -> str:
         raise TypeError("MrHIPSTR timing profile is malformed") from exc
 
     mode_rows = {
-        "rooted_facts": ["  Input path: RapidTrees rooted facts"],
+        "rooted_facts": ["  Input path: rooted facts"],
         "sparse_snapshot": [
             "  Input path: sparse clade snapshot + source-tree parsing"
         ],
@@ -461,7 +461,7 @@ def _finalize_consensus_tree_job(
             else None
         )
         data_source = {
-            "rooted_facts": "RapidTrees rooted facts",
+            "rooted_facts": "rooted facts",
             "sparse_snapshot": (
                 "sparse clade rows plus source-tree parsing"
             ),
@@ -577,7 +577,7 @@ def _finalize_consensus_tree_job(
         snapshot_input_mode = result.get("snapshot_input_mode")
         snapshot_input_text = {
             "sparse": "sparse CSR clade-presence rows",
-            "rooted_facts": "sparse clade rows from RapidTrees rooted facts",
+            "rooted_facts": "sparse clade rows from rooted facts",
         }.get(snapshot_input_mode, "worker-reported clade-presence rows")
         if context.is_rooted:
             add_log(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-import rapidtrees
 
 from treetracer.rf import (
     rf_distance_with_rooted_facts_from_newick_iter,
@@ -23,11 +22,6 @@ from treetracer.rf.sparse_snapshots import (
 from treetracer.rf._worker import compute_rf
 from treetracer.rf.rooted_facts import rooted_facts_npz_payload
 
-
-pytestmark = pytest.mark.skipif(
-    not hasattr(rapidtrees, "pairwise_rf_with_sparse_snapshots_from_newick_iter"),
-    reason="installed RapidTrees does not provide sparse snapshots",
-)
 
 TREES = (
     "((A:1,B:1):1,(C:1,D:1):1);",
@@ -208,23 +202,3 @@ def test_rf_worker_writes_only_sparse_unrooted_snapshot(tmp_path):
         assert "presence" not in persisted.files
         assert "bipartition_bits" not in persisted.files
         assert "leaf_names" not in persisted.files
-
-
-def test_rf_worker_does_not_fall_back_to_dense_endpoint(monkeypatch, tmp_path):
-    monkeypatch.delattr(
-        rapidtrees,
-        "pairwise_rf_with_sparse_snapshots_from_newick_iter",
-    )
-
-    with pytest.raises(RuntimeError, match="RapidTrees 0.9.1 or newer"):
-        compute_rf(
-            list(NAMES),
-            list(TREES),
-            [{}],
-            [0] * len(TREES),
-            str(tmp_path / "RF_NO_SPARSE.npy"),
-            is_rooted=False,
-        )
-
-    assert not (tmp_path / "RF_NO_SPARSE.npy").exists()
-    assert not (tmp_path / "RF_NO_SPARSE_snapshots.npz").exists()

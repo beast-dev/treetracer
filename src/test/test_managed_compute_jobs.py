@@ -390,7 +390,7 @@ def test_consensus_finalizer_registers_synthetic_mrhipstr_without_mds_row(
     )
     assert any(
         "Summary path: ROOTED clade RF → MrHIPSTR" in message
-        and "splits/heights from RapidTrees rooted facts" in message
+        and "splits/heights from rooted facts" in message
         and "synthetic mean-height rooted tree" in message
         for message, _level in log_calls
     )

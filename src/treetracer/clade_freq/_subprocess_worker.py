@@ -13,8 +13,8 @@ from typing import Any
 
 
 def _counts_for_columns(
-    snapshot,
     *,
+    sparse_snapshot,
     columns,
     cached_counts,
     cached_n_trees,
@@ -48,8 +48,13 @@ def _counts_for_columns(
             "none of the selected consensus-tree names occur in the RF snapshot"
         )
 
-    presence = snapshot["presence"]
-    counts = presence[np.ix_(row_indices, columns)].sum(axis=0)
+    from ..rf.sparse_snapshots import count_sparse_columns
+
+    counts = count_sparse_columns(
+        sparse_snapshot,
+        row_indices,
+        columns=columns,
+    )
     return np.asarray(counts, dtype=np.int64), len(row_indices)
 
 
@@ -76,19 +81,33 @@ def compute_clade_frequencies_worker_entry(
         raise ValueError("clade column IDs must be non-negative")
 
     with np.load(snapshots_path, allow_pickle=False) as snapshot:
-        if "bipartition_bits" not in snapshot.files:
-            raise KeyError(
-                "RF snapshot has no bipartition_bits; recompute the RF matrix"
-            )
-        bits = snapshot["bipartition_bits"]
-        if columns and columns[-1] >= bits.shape[0]:
+        from ..rf.sparse_snapshots import (
+            snapshot_has_generic_sparse_snapshot,
+            sparse_clade_tip_indices,
+            sparse_snapshot_from_npz,
+        )
+
+        try:
+            sparse_snapshot = sparse_snapshot_from_npz(snapshot)
+        except KeyError as exc:
+            raise ValueError(
+                "clade-frequency comparison requires a sparse RF snapshot; "
+                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+            ) from exc
+        n_clades = sparse_snapshot.n_clades
+        snapshot_input_mode = (
+            "sparse"
+            if snapshot_has_generic_sparse_snapshot(snapshot)
+            else "rooted_facts"
+        )
+        if columns and columns[-1] >= n_clades:
             raise IndexError(
                 f"clade column {columns[-1]} is outside a "
-                f"{bits.shape[0]}-column RF snapshot"
+                f"{n_clades}-column RF snapshot"
             )
 
         selected_counts_1, denominator_1 = _counts_for_columns(
-            snapshot,
+            sparse_snapshot=sparse_snapshot,
             columns=columns,
             cached_counts=counts_1,
             cached_n_trees=n_trees_1,
@@ -96,7 +115,7 @@ def compute_clade_frequencies_worker_entry(
             full_distmat_names=full_distmat_names,
         )
         selected_counts_2, denominator_2 = _counts_for_columns(
-            snapshot,
+            sparse_snapshot=sparse_snapshot,
             columns=columns,
             cached_counts=counts_2,
             cached_n_trees=n_trees_2,
@@ -104,23 +123,31 @@ def compute_clade_frequencies_worker_entry(
             full_distmat_names=full_distmat_names,
         )
 
-        selected_bits = bits[columns]
-        leaf_names = [str(name).strip("'\"") for name in snapshot["leaf_names"]]
+        selected_keys = sparse_clade_tip_indices(
+            sparse_snapshot,
+            columns,
+        )
+        raw_leaf_names = sparse_snapshot.leaf_names
+        leaf_names = [str(name).strip("'\"") for name in raw_leaf_names]
+
+        frequencies_1 = selected_counts_1.astype(
+            np.float64,
+            copy=False,
+        ) / np.float64(denominator_1)
+        frequencies_2 = selected_counts_2.astype(
+            np.float64,
+            copy=False,
+        ) / np.float64(denominator_2)
 
         rows = []
         for position, column in enumerate(columns):
-            split_key = tuple(
-                int(index)
-                for index in np.flatnonzero(selected_bits[position])
-            )
-            freq_1 = float(selected_counts_1[position]) / denominator_1
-            freq_2 = float(selected_counts_2[position]) / denominator_2
+            split_key = selected_keys[position]
             rows.append(
                 {
                     "split_key": split_key,
                     "column_j": int(column),
-                    "freq_1": freq_1,
-                    "freq_2": freq_2,
+                    "freq_1": float(frequencies_1[position]),
+                    "freq_2": float(frequencies_2[position]),
                     "clade_size": len(split_key),
                 }
             )
@@ -134,5 +161,6 @@ def compute_clade_frequencies_worker_entry(
         "leaf_names": leaf_names,
         "n_trees_1": denominator_1,
         "n_trees_2": denominator_2,
+        "snapshot_input_mode": snapshot_input_mode,
         "elapsed": time.perf_counter() - started,
     }

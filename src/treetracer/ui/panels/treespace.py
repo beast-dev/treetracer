@@ -24,7 +24,7 @@ def _add_treespace_panel():
             overlayProps={"radius": "sm", "blur": 2},
             loaderProps={"size": "lg", "type": "dots",
                          "children": dmc.Stack(
-                             [dmc.Text("Computing consensus tree…",
+                             [dmc.Text("Computing summary tree…",
                                        size="sm", c="dimmed"),
                               stop_button("consensus-treespace")],
                              align="center", gap="xs", mt="sm")},
@@ -155,7 +155,7 @@ def _add_treespace_panel():
                 ),
                 dmc.Tooltip(
                     dmc.Button(
-                        html.Span("View consensus tree", className="tt-analysis-action-text"),
+                        html.Span("View summary tree", className="tt-analysis-action-text"),
                         id="treespace-view-consensus-tree",
                         variant="filled", color="violet", size="xs",
                         disabled=True,
@@ -165,9 +165,9 @@ def _add_treespace_panel():
                             "inner": "tt-analysis-action-inner",
                             "section": "tt-analysis-action-section",
                         },
-                        **{"aria-label": "View consensus tree"},
+                        **{"aria-label": "View summary tree"},
                     ),
-                    label="View consensus tree",
+                    label="View summary tree",
                 ),
                 dmc.Tooltip(
                     dmc.Button(

@@ -121,7 +121,15 @@ def register_sidebar_callbacks():
                     "is_rooted": summary["is_rooted"],
                 }
                 loaded_count += 1
-                add_log(f"Loaded {filename}: {result['trees_loaded']} trees")
+                rooting_label = (
+                    "ROOTED" if summary["is_rooted"] else "UNROOTED"
+                )
+                n_taxa = len(new_translate) if new_translate else 0
+                taxa_text = f", {n_taxa} taxa" if n_taxa else ""
+                add_log(
+                    f"Loaded {filename}: {result['trees_loaded']} trees"
+                    f"{taxa_text}; trees detected as {rooting_label}."
+                )
 
                 # Check taxa mismatch
                 if new_translate:

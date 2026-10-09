@@ -14,10 +14,9 @@ import math
 import pytest
 
 from treetracer.clade_freq.layout import (
-    _parse_newick,
-    _apply_translate,
     _assign_layout,
     _collect_nodes,
+    parse_newick,
     parse_nexus,
     build_tree_traces,
 )
@@ -34,7 +33,7 @@ def _approx(a, b, tol=1e-9):
 
 def test_basic_newick_4_tips_3_internals():
     newick = "((A:1,B:1):1,(C:2,D:2):2):0"
-    root = _parse_newick(newick)
+    root = parse_newick(newick)
     nodes = _collect_nodes(root)
     tips = [n for n in nodes if not n.children]
     internals = [n for n in nodes if n.children]
@@ -45,10 +44,64 @@ def test_basic_newick_4_tips_3_internals():
 
 def test_basic_newick_branch_lengths_preserved():
     newick = "((A:1,B:1):1,(C:2,D:2):2):0"
-    root = _parse_newick(newick)
+    root = parse_newick(newick)
     tips = {n.name: n for n in _collect_nodes(root) if not n.children}
     assert _approx(tips["A"].length, 1.0)
     assert _approx(tips["C"].length, 2.0)
+
+
+def test_public_parser_forwards_strict_branch_length_validation():
+    root = parse_newick(
+        "(A:1,B:2):0",
+        require_branch_lengths=True,
+    )
+    assert all(
+        node.has_length
+        for node in _collect_nodes(root)
+        if node is not root
+    )
+
+    with pytest.raises(ValueError, match="explicit branch length required"):
+        parse_newick("(A,B:2):0", require_branch_lengths=True)
+
+
+def test_strict_parser_accepts_supported_labels_annotations_and_lengths():
+    root = parse_newick(
+        "[&R] ('A taxon'[&rate=2]:+1e-3,\"B\"\"taxon\":-2.5E+1):0;",
+        require_branch_lengths=True,
+    )
+
+    tips = {node.name: node for node in _collect_nodes(root) if node.is_tip}
+    assert set(tips) == {"A taxon", 'B"taxon'}
+    assert tips["A taxon"].length == pytest.approx(0.001)
+    assert tips['B"taxon'].length == pytest.approx(-25.0)
+
+
+@pytest.mark.parametrize(
+    ("newick", "message"),
+    [
+        ("(A:,B:1):0;", "missing value"),
+        ("(A:not-a-number,B:1):0;", "malformed branch length"),
+        ("(A:nan,B:1):0;", "non-finite branch length"),
+        ("(A:inf,B:1):0;", "non-finite branch length"),
+    ],
+)
+def test_strict_parser_rejects_invalid_branch_lengths(newick, message):
+    with pytest.raises(ValueError, match=message):
+        parse_newick(newick, require_branch_lengths=True)
+
+
+def test_parser_handles_a_caterpillar_deeper_than_recursion_limit():
+    n_taxa = 1_101
+    newick = "(T0:1,T1:1):1"
+    for index in range(2, n_taxa):
+        newick = f"({newick},T{index}:1):1"
+
+    root = parse_newick(newick + ";", require_branch_lengths=True)
+    nodes = _collect_nodes(root)
+
+    assert len(nodes) == 2 * n_taxa - 1
+    assert sum(node.is_tip for node in nodes) == n_taxa
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +113,7 @@ def test_metadata_comments_stripped():
     """BEAST-style annotation comments must not bleed into tip names
     or break the structural parse."""
     newick = "((A[&rate=0.1]:1,B[&rate=0.2]:1)[&posterior=0.9]:1,(C:2,D:2):2):0"
-    root = _parse_newick(newick)
+    root = parse_newick(newick)
     tips = [n for n in _collect_nodes(root) if not n.children]
     assert len(tips) == 4
     assert {t.name for t in tips} == {"A", "B", "C", "D"}
@@ -75,10 +128,7 @@ def test_translate_map_replaces_integer_tokens():
     """Integer tip labels are replaced by their translate-map values."""
     newick = "((1:1,2:1):1,(3:2,4:2):2):0"
     translate = {"1": "Taxon_A", "2": "Taxon_B", "3": "Taxon_C", "4": "Taxon_D"}
-    root = _parse_newick(newick)
-    for n in _collect_nodes(root):
-        n.is_tip = not bool(n.children)
-    _apply_translate(root, translate)
+    root = parse_newick(newick, translate=translate)
     tips = [n for n in _collect_nodes(root) if n.is_tip]
     assert {t.name for t in tips} == {"Taxon_A", "Taxon_B", "Taxon_C", "Taxon_D"}
 
@@ -90,7 +140,7 @@ def test_translate_map_replaces_integer_tokens():
 
 def test_x_positions_are_cumulative_branch_lengths():
     newick = "((A:1,B:3):2,(C:1,D:1):1):0"
-    root = _parse_newick(newick)
+    root = parse_newick(newick)
     for n in _collect_nodes(root):
         n.is_tip = not bool(n.children)
     _assign_layout(root)
@@ -110,7 +160,7 @@ def test_y_positions_tips_ranked_internals_at_child_mean():
     """Tips get integer y ranks (after ladderization); internal nodes
     sit at the mean y of their direct children."""
     newick = "((A:1,B:1):1,(C:1,D:1):1):0"
-    root = _parse_newick(newick)
+    root = parse_newick(newick)
     for n in _collect_nodes(root):
         n.is_tip = not bool(n.children)
     _assign_layout(root)

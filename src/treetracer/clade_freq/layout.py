@@ -23,9 +23,10 @@ Pass the translate map {token: taxon_name} and it is applied during parsing.
 
 from __future__ import annotations
 
+import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,7 @@ from typing import Optional
 class Node:
     name:     str            = ""
     length:   float          = 0.0       # branch length to parent
+    has_length: bool         = False     # whether ':' was present in Newick
     children: list["Node"]   = field(default_factory=list)
     # Layout fields filled by _assign_layout():
     x:        float          = 0.0       # cumulative root-to-node distance
@@ -47,84 +49,239 @@ class Node:
 # Newick tokeniser
 # ---------------------------------------------------------------------------
 
-_TOKEN_RE = re.compile(
-    r"""
-      \[  [^\]]*  \]          # NEXUS metadata comment [...]  — skip
-    | ( [(),;] )              # structural punctuation
-    | ( [^(),:;\[\]\s]+ )     # label (tip name or internal label)
-    | : \s* ( [0-9Ee.+\-]+ ) # branch length after ':'
-    """,
-    re.VERBOSE,
-)
+_Token = tuple[str, str]
 
 
-_COMMENT_RE = re.compile(r"\[[^\]]*\]")
+def _skip_annotation(newick: str, start: int) -> int:
+    """Return the first position after a balanced ``[...]`` comment."""
+    depth = 1
+    i = start + 1
+    quote = ""
+    while i < len(newick) and depth:
+        current = newick[i]
+        if quote:
+            if current == quote:
+                if i + 1 < len(newick) and newick[i + 1] == quote:
+                    i += 2
+                    continue
+                quote = ""
+        elif current in ("'", '"'):
+            quote = current
+        elif current == "[":
+            depth += 1
+        elif current == "]":
+            depth -= 1
+        i += 1
+    if depth:
+        raise ValueError("newick parse: unterminated annotation block")
+    return i
 
-def _tokenise(newick: str) -> list[str]:
-    """Return a flat list of meaningful tokens, stripping all [...] comments."""
-    # Strip all [...] annotation blocks before tokenising.
-    clean = _COMMENT_RE.sub("", newick)
-    tokens: list[str] = []
-    for m in _TOKEN_RE.finditer(clean):
-        punct, label, length = m.group(1), m.group(2), m.group(3)
-        if punct:
-            tokens.append(punct)
-        elif label:
-            tokens.append(label)
-        elif length:
-            tokens.append(":" + length)
+
+def _tokenise(newick: str) -> list[_Token]:
+    """Tokenize Newick while discarding NEXUS ``[...]`` annotations.
+
+    This scanner deliberately handles quoted labels itself. The former regex
+    parser split a quoted taxon containing whitespace or punctuation and could
+    not distinguish a malformed length from an absent one. Token kinds make
+    those cases explicit without changing the public ``Node`` representation.
+    Single- and double-quoted labels support the NEXUS convention of escaping
+    the quote by doubling it.
+    """
+    tokens: list[_Token] = []
+    i = 0
+    n = len(newick)
+
+    while i < n:
+        char = newick[i]
+        if char.isspace():
+            i += 1
+            continue
+
+        if char == "[":
+            i = _skip_annotation(newick, i)
+            continue
+
+        if char in "(),;":
+            tokens.append((char, char))
+            i += 1
+            continue
+
+        if char == ":":
+            i += 1
+            # BEAST commonly writes edge annotations between the colon and
+            # numeric length: ``A:[&rate=...]0.25``.
+            while True:
+                while i < n and newick[i].isspace():
+                    i += 1
+                if i < n and newick[i] == "[":
+                    i = _skip_annotation(newick, i)
+                    continue
+                break
+            start = i
+            while (i < n and not newick[i].isspace()
+                   and newick[i] not in "(),;[]"):
+                i += 1
+            tokens.append(("length", newick[start:i]))
+            continue
+
+        if char in ("'", '"'):
+            quote = char
+            i += 1
+            value: list[str] = []
+            while i < n:
+                current = newick[i]
+                if current == quote:
+                    if i + 1 < n and newick[i + 1] == quote:
+                        value.append(quote)
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                value.append(current)
+                i += 1
+            else:
+                raise ValueError("newick parse: unterminated quoted label")
+            tokens.append(("label", "".join(value)))
+            continue
+
+        start = i
+        while (i < n and not newick[i].isspace()
+               and newick[i] not in "(),:;[]"):
+            i += 1
+        if start == i:
+            raise ValueError(
+                f"newick parse: unexpected character {newick[i]!r} at pos {i}"
+            )
+        tokens.append(("label", newick[start:i]))
+
     return tokens
 
 
 # ---------------------------------------------------------------------------
-# Recursive descent parser
+# Iterative parser
 # ---------------------------------------------------------------------------
 
-def _parse_node(tokens: list[str], pos: int) -> tuple[Node, int]:
-    """Parse one node (and its subtree) starting at tokens[pos].
+def _parse_newick(
+    newick: str,
+    *,
+    require_branch_lengths: bool = False,
+) -> Node:
+    """Parse a Newick string and return its root ``Node``.
 
-    Returns (node, new_pos).
+    Parsing is iterative, so deeply nested caterpillar trees do not hit
+    Python's recursion limit. By default a missing branch length retains the
+    historical display behavior (``length == 0.0``). Scientific callers can
+    set ``require_branch_lengths=True`` to require a finite explicit length on
+    every non-root edge.
     """
-    node = Node()
+    tokens = _tokenise(newick.strip())
+    if not tokens:
+        raise ValueError("newick parse: empty tree")
 
-    if tokens[pos] == "(":
-        pos += 1  # consume '('
-        while True:
-            child, pos = _parse_node(tokens, pos)
-            node.children.append(child)
-            if tokens[pos] == ",":
-                pos += 1  # consume ','
-            elif tokens[pos] == ")":
-                pos += 1  # consume ')'
-                break
+    root: Node | None = None
+    stack: list[Node] = []
+    last_node: Node | None = None
+    expecting_subtree = True
+    just_closed_internal = False
+    ended = False
+
+    def attach(node: Node) -> None:
+        nonlocal root
+        if stack:
+            stack[-1].children.append(node)
+        elif root is None:
+            root = node
+        else:
+            raise ValueError("newick parse: more than one root subtree")
+
+    for kind, value in tokens:
+        if ended:
+            raise ValueError("newick parse: content after terminal ';'")
+
+        if kind == "(":
+            if not expecting_subtree:
+                raise ValueError("newick parse: unexpected '('")
+            node = Node()
+            attach(node)
+            stack.append(node)
+            last_node = None
+            expecting_subtree = True
+            just_closed_internal = False
+        elif kind == "label":
+            if expecting_subtree:
+                if not value:
+                    raise ValueError("newick parse: empty tip label")
+                node = Node(name=value, is_tip=True)
+                attach(node)
+                last_node = node
+                expecting_subtree = False
+                just_closed_internal = False
+            elif just_closed_internal and last_node is not None:
+                if last_node.name:
+                    raise ValueError("newick parse: duplicate internal label")
+                last_node.name = value
+                just_closed_internal = False
             else:
-                raise ValueError(f"Unexpected token at {pos}: {tokens[pos]!r}")
-        # Optional internal label after ')'.
-        # Must not consume a branch-length token (starts with ':').
-        if (pos < len(tokens)
-                and tokens[pos] not in ("(", ")", ",", ";")
-                and not tokens[pos].startswith(":")):
-            node.name = tokens[pos]
-            pos += 1
-    else:
-        # Leaf: consume label
-        node.name = tokens[pos]
-        node.is_tip = True
-        pos += 1
+                raise ValueError(f"newick parse: unexpected label {value!r}")
+        elif kind == "length":
+            if last_node is None or expecting_subtree:
+                raise ValueError("newick parse: branch length has no node")
+            if last_node.has_length:
+                raise ValueError("newick parse: duplicate branch length")
+            if not value:
+                raise ValueError("newick parse: missing value after ':'")
+            try:
+                length = float(value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"newick parse: malformed branch length {value!r}"
+                ) from exc
+            if not math.isfinite(length):
+                raise ValueError(
+                    f"newick parse: non-finite branch length {value!r}"
+                )
+            last_node.length = length
+            last_node.has_length = True
+            just_closed_internal = False
+        elif kind == ",":
+            if not stack or expecting_subtree or last_node is None:
+                raise ValueError("newick parse: unexpected ','")
+            last_node = None
+            expecting_subtree = True
+            just_closed_internal = False
+        elif kind == ")":
+            if not stack or expecting_subtree or last_node is None:
+                raise ValueError("newick parse: unexpected ')'")
+            node = stack.pop()
+            if not node.children:
+                raise ValueError("newick parse: empty internal node")
+            node.is_tip = False
+            last_node = node
+            expecting_subtree = False
+            just_closed_internal = True
+        elif kind == ";":
+            if stack or expecting_subtree or root is None:
+                raise ValueError("newick parse: premature ';'")
+            ended = True
 
-    # Optional branch length
-    if pos < len(tokens) and tokens[pos].startswith(":"):
-        node.length = float(tokens[pos][1:])
-        pos += 1
+    if stack:
+        raise ValueError("newick parse: missing closing ')'")
+    if expecting_subtree or root is None:
+        raise ValueError("newick parse: incomplete tree")
 
-    return node, pos
-
-
-def _parse_newick(newick: str) -> Node:
-    """Parse a newick string and return the root Node."""
-    newick = newick.strip().rstrip(";").strip()
-    tokens = _tokenise(newick)
-    root, _ = _parse_node(tokens, 0)
+    if require_branch_lengths:
+        missing = [
+            node.name or "<internal>"
+            for node in _collect_nodes(root)
+            if node is not root and not node.has_length
+        ]
+        if missing:
+            sample = ", ".join(repr(name) for name in missing[:3])
+            suffix = "…" if len(missing) > 3 else ""
+            raise ValueError(
+                "newick parse: explicit branch length required on every "
+                f"non-root edge; missing for {sample}{suffix}"
+            )
     return root
 
 
@@ -132,12 +289,36 @@ def _parse_newick(newick: str) -> Node:
 # Translate map application
 # ---------------------------------------------------------------------------
 
-def _apply_translate(node: Node, translate: dict[str, str]) -> None:
-    """Recursively replace integer tip tokens with taxon names."""
-    if node.is_tip and node.name in translate:
-        node.name = translate[node.name]
-    for child in node.children:
-        _apply_translate(child, translate)
+def _apply_translate(node: Node, translate: Mapping[str, str]) -> None:
+    """Replace tip tokens with taxon names without recursive traversal."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.is_tip and current.name in translate:
+            current.name = _strip_outer_quotes(str(translate[current.name]))
+        stack.extend(current.children)
+
+
+def parse_newick(
+    newick: str,
+    *,
+    translate: Mapping[str, str] | None = None,
+    require_branch_lengths: bool = False,
+) -> Node:
+    """Parse one raw Newick tree without assigning plotting coordinates.
+
+    ``translate`` maps source tip tokens to taxon names. Set
+    ``require_branch_lengths=True`` for scientific calculations that require
+    an explicit finite length on every non-root edge. Visualization callers
+    retain the historical behavior in which an omitted length becomes zero.
+    """
+    root = _parse_newick(
+        newick,
+        require_branch_lengths=require_branch_lengths,
+    )
+    if translate:
+        _apply_translate(root, translate)
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -147,37 +328,62 @@ def _apply_translate(node: Node, translate: dict[str, str]) -> None:
 def _assign_x(node: Node, parent_x: float = 0.0) -> None:
     """Assign cumulative root-to-node x positions."""
     node.x = parent_x + node.length
-    for child in node.children:
-        _assign_x(child, node.x)
+    stack = [(child, node.x) for child in reversed(node.children)]
+    while stack:
+        current, current_parent_x = stack.pop()
+        current.x = current_parent_x + current.length
+        stack.extend(
+            (child, current.x) for child in reversed(current.children)
+        )
 
 
 def _assign_y(node: Node, counter: list[int]) -> None:
     """Assign y positions: tips get integer ranks, internals get child mean."""
-    if not node.children:
-        node.y = float(counter[0])
-        counter[0] += 1
-    else:
-        for child in node.children:
-            _assign_y(child, counter)
-        node.y = sum(c.y for c in node.children) / len(node.children)
+    stack: list[tuple[Node, bool]] = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if not current.children:
+            current.y = float(counter[0])
+            counter[0] += 1
+        elif expanded:
+            current.y = sum(c.y for c in current.children) / len(current.children)
+        else:
+            stack.append((current, True))
+            stack.extend((child, False) for child in reversed(current.children))
 
 def _ladderize(node: Node) -> None:
-    """Recursively sort children so the subtree with fewer tips comes first.
+    """Sort children so the subtree with fewer tips comes first.
     
     This gives an ascending staircase layout (smallest clade on top).
     Does not change topology.
     """
-    for child in node.children:
-        _ladderize(child)
-    if node.children:
-        node.children.sort(key=lambda n: _count_tips(n))
+    tip_counts: dict[int, int] = {}
+    stack: list[tuple[Node, bool]] = [(node, False)]
+    while stack:
+        current, expanded = stack.pop()
+        if not current.children:
+            tip_counts[id(current)] = 1
+        elif expanded:
+            current.children.sort(key=lambda child: tip_counts[id(child)])
+            tip_counts[id(current)] = sum(
+                tip_counts[id(child)] for child in current.children
+            )
+        else:
+            stack.append((current, True))
+            stack.extend((child, False) for child in reversed(current.children))
 
 
 def _count_tips(node: Node) -> int:
     """Count the number of tips in a subtree."""
-    if not node.children:
-        return 1
-    return sum(_count_tips(c) for c in node.children)
+    count = 0
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.children:
+            stack.extend(current.children)
+        else:
+            count += 1
+    return count
 
 def _assign_layout(root: Node) -> None:
     _ladderize(root)
@@ -186,9 +392,12 @@ def _assign_layout(root: Node) -> None:
 
 
 def _collect_nodes(node: Node) -> list[Node]:
-    result = [node]
-    for child in node.children:
-        result.extend(_collect_nodes(child))
+    result: list[Node] = []
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        result.append(current)
+        stack.extend(reversed(current.children))
     return result
 
 
@@ -210,7 +419,8 @@ _TREE_LINE_RE = re.compile(
 
 def _strip_outer_quotes(label: str) -> str:
     if len(label) >= 2 and label[0] == label[-1] and label[0] in ("'", '"'):
-        return label[1:-1]
+        quote = label[0]
+        return label[1:-1].replace(quote + quote, quote)
     return label
 
 
@@ -281,9 +491,7 @@ def parse_nexus(nexus_bytes: bytes) -> tuple[Node, dict[str, str]]:
     if newick is None:
         raise ValueError("No 'tree ... = <newick>' line found in NEXUS bytes.")
 
-    root = _parse_newick(newick)
-    if translate:
-        _apply_translate(root, translate)
+    root = parse_newick(newick, translate=translate)
 
     for node in _collect_nodes(root):
         node.is_tip = not bool(node.children)
@@ -390,4 +598,3 @@ def build_tree_traces(
         ))
 
     return traces
-

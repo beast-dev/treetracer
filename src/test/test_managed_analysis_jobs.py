@@ -18,6 +18,10 @@ from treetracer.clade_freq._subprocess_worker import (
     compute_clade_frequencies_worker_entry,
 )
 from treetracer.ess._rf_trace_worker import compute_rf_trace_worker_entry
+from treetracer.rf.sparse_snapshots import (
+    SparseSnapshot,
+    sparse_snapshot_npz_payload,
+)
 
 
 def _wait_for_terminal(manager, ref, timeout=2.0):
@@ -50,6 +54,25 @@ def _registered_callback(name, register):
         found = matches()
     assert found
     return found[-1]
+
+
+def _write_sparse_snapshot(path, presence, bits, leaf_names):
+    names = tuple(f"tree-{index}" for index in range(len(presence)))
+    column_rows = [np.flatnonzero(row).astype(np.uint32) for row in presence]
+    sparse = SparseSnapshot(
+        tree_names=names,
+        leaf_names=tuple(leaf_names),
+        n_clades=bits.shape[0],
+        packed_clades=np.packbits(bits, axis=1, bitorder="little"),
+        row_offsets=np.asarray(
+            [0, *np.cumsum([len(row) for row in column_rows])],
+            dtype=np.uint64,
+        ),
+        column_indices=np.concatenate(column_rows),
+        rooted=True,
+    )
+    np.savez(path, **sparse_snapshot_npz_payload(sparse))
+    return sparse
 
 
 @pytest.fixture(autouse=True)
@@ -94,19 +117,14 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
         ],
         dtype=np.uint8,
     )
-    np.savez(
-        path,
-        presence=presence,
-        bipartition_bits=bits,
-        leaf_names=np.array(["'A'", "B", "C"]),
-    )
+    _write_sparse_snapshot(path, presence, bits, ("'A'", "B", "C"))
 
     result = compute_clade_frequencies_worker_entry(
         snapshots_path=str(path),
         columns=[1, 3],
         counts_1=[1, 1],
         counts_2=[2, 1],
-        n_trees_1=2,
+        n_trees_1=3,
         n_trees_2=2,
     )
 
@@ -114,9 +132,67 @@ def test_clade_worker_decodes_only_requested_columns(tmp_path):
     assert {row["column_j"] for row in result["rows"]} == {1, 3}
     by_column = {row["column_j"]: row for row in result["rows"]}
     assert by_column[1]["split_key"] == (1, 2)
-    assert by_column[1]["freq_1"] == pytest.approx(0.5)
+    assert by_column[1]["freq_1"] == 1 / 3
+    assert by_column[1]["freq_1"] != float(np.float32(1 / 3))
     assert by_column[1]["freq_2"] == pytest.approx(1.0)
     assert by_column[3]["split_key"] == (2,)
+    assert result["snapshot_input_mode"] == "sparse"
+
+
+def test_clade_worker_sparse_snapshot_counts_selected_rows(tmp_path):
+    presence = np.array(
+        [
+            [1, 1, 0, 0],
+            [1, 0, 1, 1],
+            [0, 1, 1, 0],
+            [1, 1, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    bits = np.array(
+        [
+            [1, 0, 0],
+            [0, 1, 1],
+            [1, 1, 0],
+            [0, 0, 1],
+        ],
+        dtype=np.uint8,
+    )
+    names = tuple(f"tree-{index}" for index in range(len(presence)))
+    sparse_path = tmp_path / "sparse_snapshot.npz"
+    _write_sparse_snapshot(
+        sparse_path,
+        presence,
+        bits,
+        ("'A'", "B", "C"),
+    )
+
+    kwargs = {
+        "columns": [1, 3],
+        "counts_1": None,
+        "counts_2": None,
+        "n_trees_1": 0,
+        "n_trees_2": 0,
+        "tree_names_1": list(names[:2]),
+        "tree_names_2": list(names[2:]),
+        "full_distmat_names": list(names),
+    }
+    sparse_result = compute_clade_frequencies_worker_entry(
+        snapshots_path=str(sparse_path),
+        **kwargs,
+    )
+
+    assert sparse_result["snapshot_input_mode"] == "sparse"
+    assert sparse_result["leaf_names"] == ["A", "B", "C"]
+    assert sparse_result["n_trees_1"] == 2
+    assert sparse_result["n_trees_2"] == 2
+    by_column = {
+        row["column_j"]: row for row in sparse_result["rows"]
+    }
+    assert by_column[1]["freq_1"] == pytest.approx(0.5)
+    assert by_column[1]["freq_2"] == pytest.approx(1.0)
+    assert by_column[3]["freq_1"] == pytest.approx(0.5)
+    assert by_column[3]["freq_2"] == pytest.approx(0.5)
 
 
 def test_rf_trace_terminal_replays_cached_render_until_ack(monkeypatch):
@@ -213,7 +289,52 @@ def test_stage_four_submit_callbacks_have_matching_idle_output_shapes():
     )
 
     assert len(rf_submit(None, None, None, None, None, None)) == 5
-    assert len(clade_submit(None, None, None, None)) == 7
+    assert len(clade_submit(None, None, None, None, False)) == 7
+
+
+def test_clade_scatter_filter_keeps_only_exclusive_consensus_membership():
+    frame = pd.DataFrame(
+        [
+            {
+                "split_id": 0,
+                "clade_size": 5,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": True,
+            },
+            {
+                "split_id": 1,
+                "clade_size": 5,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": False,
+            },
+            {
+                "split_id": 2,
+                "clade_size": 8,
+                "in_consensus_tree_1": False,
+                "in_consensus_tree_2": True,
+            },
+            {
+                "split_id": 3,
+                "clade_size": 2,
+                "in_consensus_tree_1": True,
+                "in_consensus_tree_2": False,
+            },
+        ]
+    )
+
+    unfiltered_membership = clade_explore._filter_clade_frequency_frame(
+        frame,
+        min_clade_size=5,
+        exclusive_only=False,
+    )
+    exclusive_membership = clade_explore._filter_clade_frequency_frame(
+        frame,
+        min_clade_size=5,
+        exclusive_only=True,
+    )
+
+    assert unfiltered_membership["split_id"].tolist() == [0, 1, 2]
+    assert exclusive_membership["split_id"].tolist() == [1, 2]
 
 
 def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
@@ -242,6 +363,7 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
         consensus_columns_1=frozenset({2}),
         consensus_columns_2=frozenset({2, 5}),
         min_clade_size=2,
+        exclusive_only=False,
     )
     worker_result = {
         "rows": [

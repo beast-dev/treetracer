@@ -607,6 +607,21 @@ def _build_scatter_fig(df_plot, label1, label2):
     return fig
 
 
+def _filter_clade_frequency_frame(
+    frame: pd.DataFrame,
+    *,
+    min_clade_size: int,
+    exclusive_only: bool,
+) -> pd.DataFrame:
+    """Apply the two user-facing scatter filters to comparison records."""
+    visible = frame["clade_size"] >= min_clade_size
+    if exclusive_only:
+        visible &= frame["in_consensus_tree_1"].ne(
+            frame["in_consensus_tree_2"]
+        )
+    return frame.loc[visible]
+
+
 @dataclass(frozen=True, slots=True)
 class _CladeComparisonFinalizationContext:
     source_distmat: str
@@ -617,6 +632,7 @@ class _CladeComparisonFinalizationContext:
     consensus_columns_1: frozenset[int]
     consensus_columns_2: frozenset[int]
     min_clade_size: int
+    exclusive_only: bool
 
 
 def _cached_counts_for_columns(entry, columns):
@@ -695,7 +711,11 @@ def _finalize_clade_comparison_job(
             "None of the selected consensus-tree clades are available to plot"
         )
     frame = pd.DataFrame(records)
-    plotted = frame[frame["clade_size"] >= context.min_clade_size]
+    plotted = _filter_clade_frequency_frame(
+        frame,
+        min_clade_size=context.min_clade_size,
+        exclusive_only=context.exclusive_only,
+    )
     figure = _build_scatter_fig(plotted, context.label_1, context.label_2)
     state.store_clade_frequency_result(
         ref.job_id,
@@ -707,9 +727,17 @@ def _finalize_clade_comparison_job(
         },
     )
     elapsed = float(result.get("elapsed", 0.0))
+    snapshot_input_text = {
+        "sparse": "generic sparse CSR snapshot",
+        "rooted_facts": "rooted facts",
+    }.get(
+        result.get("snapshot_input_mode"),
+        "worker-reported snapshot representation",
+    )
     add_log(
         f"Compared {len(records)} consensus-tree clades for "
-        f"{context.source_distmat} in {elapsed:.3f}s."
+        f"{context.source_distmat} in {elapsed:.3f}s "
+        f"using {snapshot_input_text}."
     )
     return {
         "result_key": ref.job_id,
@@ -900,26 +928,28 @@ def register_clade_explore_callbacks():
     @callback(
         Output("clade-freq-scatter", "figure", allow_duplicate=True),
         Input("clade-freq-min-clade-size", "value"),
+        Input("clade-freq-exclusive-only", "checked"),
         State("clade-freq-data-store", "data"),
         prevent_initial_call=True,
     )
-    def filter_clade_freq_plot(min_clade_size, store_data):
-        """Filter the scatter on min-clade-size slider changes.
+    def filter_clade_freq_plot(min_clade_size, exclusive_only, store_data):
+        """Filter the scatter when either display control changes.
 
         Patches only ``data[0]`` (the Scattergl trace) — x/y/customdata/
         marker.color — so Plotly doesn't rebuild the figure or remount
-        the dcc.Graph on every drag tick. The click-marker overlay
-        (trace 1) is left intact, which means a previously-clicked
-        point's red ring can land on a filtered-away coordinate; the
-        user just re-clicks if they want it on a currently-visible
-        point.
+        the dcc.Graph on every drag tick. The click-marker overlay is
+        cleared so a red ring cannot remain at a filtered-away coordinate.
         """
         if not store_data:
             return no_update
 
         df = pd.DataFrame(store_data)
         min_size = int(min_clade_size or 2)
-        df_plot = df[df["clade_size"] >= min_size]
+        df_plot = _filter_clade_frequency_frame(
+            df,
+            min_clade_size=min_size,
+            exclusive_only=bool(exclusive_only),
+        )
 
         patch = Patch()
         patch["data"][0]["x"] = df_plot["freq_1"].tolist()
@@ -928,6 +958,8 @@ def register_clade_explore_callbacks():
             df_plot[["split_id", "clade_size", "consensus_tree_membership"]].values.tolist()
         )
         patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
+        patch["data"][1]["x"] = []
+        patch["data"][1]["y"] = []
         return patch
 
     # ------ Clade Frequency Comparison: enable Compare button ------
@@ -956,6 +988,7 @@ def register_clade_explore_callbacks():
         State("clade-freq-consensus-tree-select-1", "value"),
         State("clade-freq-consensus-tree-select-2", "value"),
         State("clade-freq-min-clade-size", "value"),
+        State("clade-freq-exclusive-only", "checked"),
         prevent_initial_call=True,
     )
     def compute_and_plot_clade_frequencies(
@@ -963,6 +996,7 @@ def register_clade_explore_callbacks():
         uid1,
         uid2,
         min_clade_size,
+        exclusive_only,
     ):
         """Prepare and submit a selective, process-isolated comparison."""
         if not n_clicks or not uid1 or not uid2:
@@ -1033,6 +1067,7 @@ def register_clade_explore_callbacks():
             consensus_columns_1=columns_1,
             consensus_columns_2=columns_2,
             min_clade_size=min_size,
+            exclusive_only=bool(exclusive_only),
         )
 
         try:
@@ -1282,8 +1317,8 @@ def register_clade_explore_callbacks():
 
         # Single highlight (same on both trees): consensus tree 1 and consensus tree 2 are
         # both anchored to one source matrix (the Compare-clade dropdowns
-        # filter to the active distmat), so a column in the rooted
-        # presence table represents the same descendant set in both.
+        # filter to the active distmat), so a column in the rooted clade
+        # catalog represents the same descendant set in both.
         highlight = set(resolved["tip_names"])
 
         # Containment is an O(1) ``column_j ∈ cols_in_consensus_tree`` check

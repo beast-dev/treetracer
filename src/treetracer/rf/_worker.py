@@ -10,14 +10,15 @@ back across the process boundary.
 
 def compute_rf(names, newicks, translate_maps, map_indices, save_path,
                is_rooted=True, progress=None):
-    """Compute pairwise RF distances + the per-tree split presence matrix in
-    a single rapidtrees call, and persist both to disk.
+    """Compute pairwise RF distances and persist compact clade snapshots.
 
-    Routes through ``rf_distance_with_snapshots_from_newick_iter``, which
-    calls rapidtrees' ``pairwise_rf_with_snapshots_from_newick_iter``. RF
-    runs on u32 split IDs against a globally-deduped bipartition table, so
-    a comparison is a single integer compare and a large run's working set
-    stays in cache rather than DRAM.
+    One ``rf_distance_with_sparse_snapshots_from_newick_iter`` call returns the
+    RF matrix and CSR clade rows. Rooted inputs also ask RapidTrees for branch
+    lengths, from which ``rooted_facts_from_sparse`` derives MrHIPSTR heights
+    and directly observed splits in NumPy. Rooted inputs that are not strictly
+    binary keep the CSR snapshot from the same call. The persisted snapshot
+    never contains a dense tree-by-clade presence matrix or an unpacked
+    clade-by-taxon matrix.
 
     ``is_rooted`` (forwarded as ``rooted=`` to rapidtrees):
       * True  → every internal-node descendant set is one clade. Honest
@@ -32,18 +33,17 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
     Two files are written:
 
     - ``save_path``:                        uint16 ``.npy`` n×n RF matrix.
-    - ``<save_path stem>_snapshots.npz``:   ``presence`` (uint8, n_trees ×
-                                            n_clades-or-bipartitions) plus
-                                            ``leaf_names`` (alphabetical
-                                            taxon list).
+    - ``<save_path stem>_snapshots.npz``: versioned rooted-facts arrays or a
+      versioned generic CSR snapshot, including a bit-packed clade catalog.
 
-    The presence matrix isn't free to compute, but it's the sufficient
-    statistic for every topology-based convergence diagnostic
-    (Pseudo-ESS, Fréchet correlation ESS, ASDSF) — saving it now means
-    those callers can read it from disk later without re-parsing .trees
-    files or recomputing snapshots.
+    MrHIPSTR reads compact rooted facts when present and reparses source trees
+    only when the generic CSR representation lacks heights and observed
+    parent/child splits.
 
-    Returns (result_names, elapsed). Both matrices stay on disk, never
+    Returns ``(result_names, elapsed, rf_details)``. ``rf_details`` records
+    the RF interpretation and whether rooted facts were derived, so the
+    parent console can report the observed path rather than infer it from
+    the requested rooting mode. The large arrays stay on disk and are never
     pickled across the process boundary.
     """
     import time
@@ -63,37 +63,84 @@ def compute_rf(names, newicks, translate_maps, map_indices, save_path,
         wlog = lambda _msg: None  # noqa: E731 — best-effort logging
 
     t0 = time.time()
-    wlog("compute_rf: importing rapidtrees binding (.rf.rf_distance_with_snapshots_from_newick_iter)")
-    from .rf import rf_distance_with_snapshots_from_newick_iter
-    wlog(f"compute_rf: rapidtrees imported in {time.time() - t0:.3f}s; calling pairwise RF")
+    wlog("compute_rf: importing rapidtrees RF wrappers")
+    from .rf import rf_distance_with_sparse_snapshots_from_newick_iter
+    from .rooted_facts import rooted_facts_from_sparse, rooted_facts_npz_payload
+    from .sparse_snapshots import sparse_snapshot_npz_payload
+
+    wlog(
+        "compute_rf: rapidtrees imported in "
+        f"{time.time() - t0:.3f}s; calling pairwise RF"
+    )
     call_t0 = time.time()
-    result_names, rf_matrix, presence, leaf_names, _n_bip, bipartition_bits = (
-        rf_distance_with_snapshots_from_newick_iter(
-            names, iter(newicks), translate_maps, map_indices,
-            rooted=is_rooted, progress=progress,
+    result_names, rf_matrix, sparse_snapshot = (
+        rf_distance_with_sparse_snapshots_from_newick_iter(
+            names,
+            iter(newicks),
+            translate_maps,
+            map_indices,
+            rooted=is_rooted,
+            progress=progress,
+            lengths=is_rooted,
         )
     )
+    rooted_facts = None
+    rooted_facts_status = "not_applicable_unrooted"
+    if is_rooted:
+        try:
+            rooted_facts = rooted_facts_from_sparse(sparse_snapshot)
+            rooted_facts_status = "used"
+        except ValueError as exc:
+            # Rooted facts need strictly binary trees with finite heights.
+            # Other rooted inputs keep RF/MCC support through the CSR
+            # snapshot; MrHIPSTR retains its source-Newick ingestion path.
+            wlog(
+                "compute_rf: rooted facts unavailable for this dataset; "
+                f"keeping clade snapshots ({exc})"
+            )
+            rooted_facts_status = "input_incompatible"
+    sparse_snapshot_source = (
+        "rooted_facts" if rooted_facts is not None else "sparse_endpoint"
+    )
+    snapshot_n_trees = sparse_snapshot.n_trees
+    snapshot_n_clades = sparse_snapshot.n_clades
+    snapshot_n_entries = sparse_snapshot.n_entries
     wlog(
         f"compute_rf: rapidtrees returned in {time.time() - call_t0:.3f}s; "
-        f"rf_matrix.shape={rf_matrix.shape}, presence.shape={presence.shape}"
+        f"rf_matrix.shape={rf_matrix.shape}, "
+        f"snapshot_trees={snapshot_n_trees}, "
+        f"snapshot_clades={snapshot_n_clades}, "
+        f"snapshot_entries={snapshot_n_entries}, "
+        f"rooted_facts={'yes' if rooted_facts is not None else 'no'}, "
+        f"sparse_snapshot={sparse_snapshot_source}"
     )
     # rf_matrix is uint32 from Rust; downcast to uint16 for disk storage
     # (RF distances are bounded by 2*(n_taxa-3), trivially fits).
     wlog(f"compute_rf: saving uint16 distmat to {save_path!r}")
     np.save(save_path, rf_matrix.astype(np.uint16))
 
-    # Save the presence matrix + leaf_names alongside, with a derived path
-    # so a single registry entry implicitly knows where to find both.
+    # Save only the compact snapshot alongside the RF matrix. Rooted facts
+    # already contain fixed-width sparse clade rows; all other inputs use CSR.
     snap_path = Path(save_path).with_name(Path(save_path).stem + "_snapshots.npz")
     wlog(f"compute_rf: saving snapshot .npz to {str(snap_path)!r}")
-    np.savez(snap_path,
-             presence=presence,
-             leaf_names=np.array(leaf_names),
-             bipartition_bits=bipartition_bits)
+    if rooted_facts is not None:
+        snapshot_arrays = rooted_facts_npz_payload(rooted_facts)
+    else:
+        snapshot_arrays = sparse_snapshot_npz_payload(sparse_snapshot)
+    np.savez(snap_path, **snapshot_arrays)
     wlog("compute_rf: both files written; returning")
 
     elapsed = time.time() - t0
-    return list(result_names), elapsed
+    rf_details = {
+        "rf_mode": (
+            "rooted_clades" if is_rooted else "unrooted_bipartitions"
+        ),
+        "rooted_facts_used": rooted_facts is not None,
+        "rooted_facts_status": rooted_facts_status,
+        "sparse_snapshot_used": True,
+        "sparse_snapshot_source": sparse_snapshot_source,
+    }
+    return list(result_names), elapsed, rf_details
 
 
 def compute_mds_worker(matrix_path, n_components, progress_path=None):

@@ -3,6 +3,19 @@
  * Dash auto-serves every .css file under assets/ and injects it into
  * the app's <head>. */
 
+/* Selectable console output.
+ *
+ * The native pywebview shell disables text selection on the document body.
+ * Override that only for the log content and its dynamically rendered spans,
+ * so users can select and copy console messages without making the rest of
+ * the application UI selectable. */
+#log-content,
+#log-content * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
+
 /* Loaded-tree card filename.
  *
  * Collapsed: clamped to 2 lines so a stack of cards stays compact.
@@ -99,23 +112,27 @@
 }
 
 .tt-consensus-tree-name-col {
-  width: 34%;
+  width: 29%;
 }
 
 .tt-consensus-tree-run-col {
-  width: 20%;
+  width: 16%;
 }
 
 .tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-name-col {
-  width: 28%;
+  width: 23%;
 }
 
 .tt-consensus-tree-registry-table-with-mode .tt-consensus-tree-run-col {
-  width: 16%;
+  width: 13%;
 }
 
 .tt-consensus-tree-mode-col {
   width: 72px;
+}
+
+.tt-consensus-tree-method-col {
+  width: 84px;
 }
 
 .tt-consensus-tree-col {
@@ -145,6 +162,10 @@
   container-type: inline-size;
 }
 
+.tt-summary-method-control {
+  flex-shrink: 0;
+}
+
 .tt-analysis-shortenable-button {
   min-width: 60px;
   flex-shrink: 0;
@@ -155,6 +176,10 @@
 }
 
 @container (max-width: 1399px) {
+  .tt-summary-method-label {
+    display: none;
+  }
+
   .tt-analysis-collapse-button {
     width: 34px;
     min-width: 34px;
@@ -184,6 +209,10 @@
 }
 
 @container (max-width: 1279px) {
+  .tt-summary-method-select {
+    width: 154px !important;
+  }
+
   .tt-analysis-shortenable-button .tt-analysis-full-label {
     display: none;
   }

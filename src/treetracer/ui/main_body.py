@@ -2,6 +2,11 @@
 to live inline) + delegates to the per-panel modules for the other three
 tabs. Also defines the About modal that lives at the main-body level."""
 
+from importlib.metadata import (
+    PackageNotFoundError,
+    version as distribution_version,
+)
+
 import dash_mantine_components as dmc
 from dash import dcc, html
 
@@ -13,6 +18,15 @@ from .panels.within_run import _add_within_run_panel
 from .rename_modal import _add_rename_modal
 
 
+def _rapidtrees_version_text() -> str:
+    """Return a user-facing label for the installed RapidTrees wheel."""
+    try:
+        installed_version = distribution_version("rapidtrees")
+    except PackageNotFoundError:
+        return "RapidTrees version unavailable"
+    return f"RapidTrees v{installed_version}"
+
+
 def _add_about_modal():
     return dmc.Modal(
         id="about-modal",
@@ -21,7 +35,18 @@ def _add_about_modal():
         children=[
             dmc.Stack(
                 [
-                    dmc.Title("TreeTracer v0.97", order=3),
+                    dmc.Stack(
+                        [
+                            dmc.Title("TreeTracer v0.97", order=3),
+                            dmc.Text(
+                                _rapidtrees_version_text(),
+                                id="about-rapidtrees-version",
+                                size="xs",
+                                c="dimmed",
+                            ),
+                        ],
+                        gap=2,
+                    ),
                     dmc.Text(
                         "TreeTracer is a diagnostic tool used to visualize convergence of tree topologies"
                     ),

@@ -1,4 +1,5 @@
 import re
+import time
 
 from dash import html, callback, clientside_callback, ctx, Input, Output, Patch, State, no_update
 import dash_mantine_components as dmc
@@ -7,6 +8,9 @@ import pandas as pd
 
 from ..logger import add_log
 from ..state import get_mds_result
+from ..ui.widgets import (
+    SUMMARY_METHOD_MRHIPSTR,
+)
 from ..plot_utils import (
     make_plot_grid, add_trace_multiplot_interleaved, placeholder_fig,
     retheme_figure,
@@ -782,6 +786,9 @@ def register_treespace_callbacks():
     )
     def view_consensus_tree(n_clicks, selected_pairs, plot_config,
                       selected_key, results):
+        click_started_at = time.perf_counter()
+        click_started_wall_time = time.time()
+
         from ..background_jobs import JobBusyError
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
@@ -791,8 +798,9 @@ def register_treespace_callbacks():
             return (no_update,) * 4
 
         def _err(msg, autoclose=5000):
+            add_log(f"[Summary tree/Between] {msg}", "ERROR")
             return (False, False, dmc.Notification(
-                title="Consensus tree Error", message=msg,
+                title="Summary Tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
             ), no_update)
@@ -825,9 +833,12 @@ def register_treespace_callbacks():
 
         # Plain-dict records the persistent worker can pickle.
         matched_records = matched[[
-            "name", "file_source", "line_offset", "line_length", "metadata",
+            "name", "file_source", "newick_offset", "newick_length",
+            "line_offset", "line_length", "metadata",
         ]].to_dict("records")
         for rec in matched_records:
+            rec["newick_offset"] = int(rec["newick_offset"])
+            rec["newick_length"] = int(rec["newick_length"])
             rec["line_offset"] = int(rec["line_offset"])
             rec["line_length"] = int(rec["line_length"])
 
@@ -849,12 +860,17 @@ def register_treespace_callbacks():
                     consensus_tree_coord_by_tree_name
                 ),
                 store_target="treespace-view-consensus-tree-store",
+                summary_method=SUMMARY_METHOD_MRHIPSTR,
+                click_started_at=click_started_at,
+                click_started_wall_time=click_started_wall_time,
             )
         except JobBusyError as exc:
             return _err(
                 f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
                 "is still finishing. Please wait for it to complete."
             )
+        except ValueError as exc:
+            return _err(str(exc))
 
         # The immutable job store wakes the one global reconciler.
         return True, True, no_update, job_ref.as_dict()

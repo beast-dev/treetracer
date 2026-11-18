@@ -80,7 +80,7 @@ def _normalise_counts(entry, source_distmat):
         except KeyError as exc:
             raise ValueError(
                 "clade-frequency comparison requires a sparse RF snapshot; "
-                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+                "recompute the RF matrix with RapidTrees 0.13.0 or newer"
             ) from exc
         if sparse_snapshot.tree_names != tuple(full_names):
             raise ValueError(

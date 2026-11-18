@@ -234,7 +234,7 @@ def compute_consensus_tree_worker_entry(
         except KeyError as exc:
             raise ValueError(
                 f"{method} requires a sparse RF snapshot; recompute the RF "
-                "matrix with RapidTrees 0.9.1 or newer"
+                "matrix with RapidTrees 0.13.0 or newer"
             ) from exc
         sparse_presence_mode = (
             "sparse"

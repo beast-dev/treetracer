@@ -276,7 +276,7 @@ def compute_consensus_tree_for_selection(matched_rows, db_manager, source_distma
         except KeyError as exc:
             raise ValueError(
                 "consensus-tree computation requires a sparse RF snapshot; "
-                "recompute the RF matrix with RapidTrees 0.9.1 or newer"
+                "recompute the RF matrix with RapidTrees 0.13.0 or newer"
             ) from exc
         if sparse_snapshot.tree_names != tuple(full_names):
             raise ValueError(

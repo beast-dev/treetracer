@@ -295,7 +295,7 @@ def get_canonical_keys(source_distmat):
         except KeyError as exc:
             raise ValueError(
                 f"snapshot for {source_distmat!r} has no sparse clade "
-                "representation; recompute it with RapidTrees 0.9.1 or newer"
+                "representation; recompute it with RapidTrees 0.13.0 or newer"
             ) from exc
         tuples = sparse_clade_tip_indices(sparse_snapshot)
         raw_leaf_names = sparse_snapshot.leaf_names

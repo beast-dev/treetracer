@@ -7,7 +7,7 @@ from dash import dcc, html
 
 from ...icons import icon
 from ...plot_utils import placeholder_fig
-from ..widgets import stop_button
+from ..widgets import progress_block, stop_button
 
 
 def _add_treespace_panel():
@@ -26,6 +26,7 @@ def _add_treespace_panel():
                          "children": dmc.Stack(
                              [dmc.Text("Computing summary tree…",
                                        size="sm", c="dimmed"),
+                              *progress_block("consensus-treespace"),
                               stop_button("consensus-treespace")],
                              align="center", gap="xs", mt="sm")},
         ),

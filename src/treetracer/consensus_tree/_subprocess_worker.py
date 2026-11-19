@@ -7,6 +7,9 @@ path or the synthetic MrHIPSTR path without sharing parent memory.
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -22,6 +25,38 @@ def _normalise_summary_method(value: object) -> str:
             f"unsupported summary_method {value!r}; expected one of {supported}"
         )
     return method
+
+
+def _progress_reporter(progress_path: Optional[str]):
+    """Return ``stage(start, end, label)`` for the overlay's progress bar.
+
+    Each call records the start of a step in the progress file the parent's
+    reconciler polls, and returns ``progress(fraction)`` for that step's loop.
+    Loop updates are written at most every 100 ms. ``None`` writes nothing.
+    """
+    last_write = 0.0
+
+    def write(fraction: float, label: str, force: bool = False) -> None:
+        nonlocal last_write
+        now = time.monotonic()
+        if progress_path is None or (not force and now - last_write < 0.1):
+            return
+        last_write = now
+        try:
+            Path(progress_path).write_text(
+                json.dumps(
+                    {"fraction": fraction, "phase": "computing", "label": label}
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # A missed update only delays the bar.
+
+    def stage(start: float, end: float, label: str):
+        write(start, label, force=True)
+        return lambda fraction: write(start + (end - start) * fraction, label)
+
+    return stage
 
 
 def _compute_mcc_statistics(
@@ -132,6 +167,7 @@ def compute_consensus_tree_worker_entry(
     source_preambles: Dict[str, bytes],
     is_rooted: bool = True,
     summary_method: str = "mrhipstr",
+    progress_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compute an MCC or MrHIPSTR summary and assemble its NEXUS bytes.
 
@@ -139,7 +175,8 @@ def compute_consensus_tree_worker_entry(
     still use ``newick_offset`` and ``newick_length`` to stream selected source
     Newicks once for heights and observed splits. Omitting ``summary_method``
     selects MrHIPSTR. MCC remains available by passing
-    ``summary_method="mcc"`` explicitly.
+    ``summary_method="mcc"`` explicitly. ``progress_path`` names the JSON file
+    that feeds the overlay's progress bar; ``None`` disables progress.
     """
     import time
 
@@ -218,6 +255,8 @@ def compute_consensus_tree_worker_entry(
             "missing_taxa": missing_taxa,
         }
 
+    stage = _progress_reporter(progress_path)
+    stage(0.0, 0.11, "Loading snapshot…")
     snapshot_started_at = time.perf_counter()
     wlog(f"loading summary-tree snapshot {snapshots_path!r}")
     snap = np.load(snapshots_path, allow_pickle=False)
@@ -300,16 +339,19 @@ def compute_consensus_tree_worker_entry(
                 wlog=wlog,
                 rooted_facts=rooted_facts,
                 sparse_snapshot=sparse_presence,
+                stage=stage,
             )
         else:
             # Preserve the original MCC objective and source-line
             # serialization.
             from ..rf.sparse_snapshots import count_sparse_columns
 
+            stage(0.11, 0.40, "Counting clades…")
             counts = count_sparse_columns(
                 sparse_presence,
                 selected_idx,
             ).astype(np.int32)
+            stage(0.40, 0.90, "Scoring trees…")
             consensus_tree_local, log_clade_cred = (
                 compute_consensus_tree_index_sparse(
                     sparse_presence,
@@ -376,6 +418,7 @@ def compute_consensus_tree_worker_entry(
         mrhipstr_result["snapshot_input_mode"] = snapshot_input_mode
         return mrhipstr_result
 
+    stage(0.90, 1.0, "Writing summary tree…")
     consensus_tree_file_path = source_file_paths[
         consensus_tree_record["file_source"]
     ]
@@ -437,6 +480,7 @@ def _compute_mrhipstr_result(
     wlog: Any,
     rooted_facts: Any = None,
     sparse_snapshot: Any = None,
+    stage: Any = _progress_reporter(None),
 ) -> Dict[str, Any]:
     """Run MrHIPSTR from rooted facts, falling back to source Newicks."""
     import statistics
@@ -458,6 +502,7 @@ def _compute_mrhipstr_result(
         decode_rooted_clade_catalog_from_sparse_snapshot,
     )
 
+    stage(0.11, 0.17, "Counting clades…")
     started = time.perf_counter()
     if rooted_facts is not None:
         selected_counts = count_selected_clades_from_rooted_facts(
@@ -490,6 +535,7 @@ def _compute_mrhipstr_result(
 
     started = time.perf_counter()
     if rooted_facts is None:
+        stage(0.17, 0.53, "Parsing source trees…")
         wlog("MrHIPSTR source-tree ingestion started")
         source_records = _iter_source_tree_records(
             matched_records,
@@ -513,6 +559,7 @@ def _compute_mrhipstr_result(
             selected_idx,
             catalog=catalog,
             snapshot_counts=selected_counts,
+            progress=stage(0.17, 0.53, "Gathering splits and heights…"),
         )
         ingestion_label = "rooted-facts aggregation"
     profile["source_tree_ingestion_seconds"] = (
@@ -530,6 +577,7 @@ def _compute_mrhipstr_result(
         catalog=catalog,
         snapshot_counts=selected_counts,
         source_summary=source_summary,
+        progress=stage(0.53, 0.80, "Running MrHIPSTR…"),
     )
     topology_seconds = time.perf_counter() - started
     profile["topology_search_seconds"] = topology_seconds
@@ -540,6 +588,7 @@ def _compute_mrhipstr_result(
         f"elapsed={topology_seconds:.3f}s"
     )
 
+    stage(0.80, 0.98, "Writing summary tree…")
     started = time.perf_counter()
     wlog("MrHIPSTR mean-height serialization started")
     exported = serialize_mrhipstr_tree(

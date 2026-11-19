@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import dendropy
 import numpy as np
 import pytest
 
 from treetracer.consensus_tree._subprocess_worker import (
+    _progress_reporter,
     compute_consensus_tree_worker_entry,
 )
 from treetracer.db.process_trees import process_nexus_trees_streaming
@@ -118,6 +122,49 @@ def _parse_nexus_tree(nexus_bytes):
         schema="nexus",
         preserve_underscores=True,
     )
+
+
+def test_progress_reporter_scales_loop_fractions_and_throttles(tmp_path):
+    progress_path = tmp_path / "consensus.progress"
+
+    def written_fraction():
+        data = json.loads(progress_path.read_text(encoding="utf-8"))
+        return data["fraction"]
+
+    progress = _progress_reporter(str(progress_path))(0.2, 0.6, "Step…")
+    assert written_fraction() == 0.2
+    progress(0.5)  # Within 100 ms of the step's own write, so skipped.
+    assert written_fraction() == 0.2
+    time.sleep(0.11)
+    progress(0.5)
+    assert written_fraction() == pytest.approx(0.4)
+
+    _progress_reporter(None)(0.0, 1.0, "No file")(0.5)  # Writes nothing.
+
+
+@pytest.mark.parametrize(
+    ("summary_method", "last_step"),
+    [("mrhipstr", 0.8), ("mcc", 0.9)],
+)
+def test_worker_leaves_its_last_step_in_the_progress_file(
+    tmp_path,
+    summary_method,
+    last_step,
+):
+    kwargs, _ = _build_worker_inputs(tmp_path)
+    progress_path = tmp_path / "consensus.progress"
+
+    compute_consensus_tree_worker_entry(
+        **kwargs,
+        summary_method=summary_method,
+        progress_path=str(progress_path),
+    )
+
+    assert json.loads(progress_path.read_text(encoding="utf-8")) == {
+        "fraction": last_step,
+        "phase": "computing",
+        "label": "Writing summary tree…",
+    }
 
 
 def test_worker_explicit_method_preserves_mcc_path(tmp_path):

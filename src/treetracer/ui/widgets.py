@@ -104,6 +104,26 @@ def stop_button(which: str):
     )
 
 
+def progress_block(which: str) -> list:
+    """Progress bar and label for a loading overlay, updated by the job
+    reconciler through the same pattern-matching IDs as ``computing_banner``."""
+    return [
+        dmc.Progress(
+            id={"type": "compute-progress-bar", "which": which},
+            value=0,
+            size="md",
+            color="blue",
+            w=260,
+        ),
+        dmc.Text(
+            "Preparing…",
+            size="xs",
+            c="dimmed",
+            id={"type": "compute-progress-label", "which": which},
+        ),
+    ]
+
+
 def computing_banner(title: str, message: str, which: str,
                      show_progress: bool = False):
     """A blue "computing…" Alert with an embedded Stop button — the

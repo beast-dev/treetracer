@@ -288,6 +288,23 @@ def test_reconciler_piggybacks_receipts_as_state_without_an_ack_callback():
     assert "acknowledge_terminal_receipt" not in callback_names
 
 
+def test_summary_tree_overlays_carry_reconciler_progress_bars():
+    from treetracer.ui.panels.treespace import _add_treespace_panel
+    from treetracer.ui.panels.within_run import _add_within_run_panel
+
+    for build_panel, which in (
+        (_add_treespace_panel, "consensus-treespace"),
+        (_add_within_run_panel, "consensus-tree-within"),
+    ):
+        overlay = build_panel().children[0]
+        overlay_ids = [
+            getattr(child, "id", None)
+            for child in overlay.loaderProps["children"].children
+        ]
+        assert {"type": "compute-progress-bar", "which": which} in overlay_ids
+        assert {"type": "compute-progress-label", "which": which} in overlay_ids
+
+
 def test_reconciler_uses_wildcards_for_dynamic_progress_banners():
     """RF and MDS banners never coexist, so concrete Outputs are unsafe.
 

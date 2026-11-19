@@ -8,7 +8,7 @@ helpers only when they already hold a version-3 ``RootedFactsSnapshot``.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -210,8 +210,12 @@ def source_summary_from_rooted_facts(
     catalog: RootedCladeCatalog,
     snapshot_counts: SelectedCladeCounts,
     chunk_rows: int = _COUNT_CHUNK_ROWS,
+    progress: Callable[[float], None] | None = None,
 ) -> SourceTreeSummary:
-    """Aggregate selected heights and observed splits without parsing Newick."""
+    """Aggregate selected heights and observed splits without parsing Newick.
+
+    ``progress``, when given, receives the fraction of selected rows read.
+    """
     snapshot = _require_snapshot(rooted_facts)
     rows = _normalise_selected_rows(selected_rows, n_trees=snapshot.n_trees)
     chunk_rows = _normalise_chunk_rows(chunk_rows)
@@ -230,6 +234,8 @@ def source_summary_from_rooted_facts(
         dtype=np.bool_,
     )
     for start in range(0, rows.size, chunk_rows):
+        if progress is not None:
+            progress(start / rows.size)
         row_block = rows[start : start + chunk_rows]
         columns = snapshot.clade_columns[row_block]
         heights = snapshot.node_heights[row_block]

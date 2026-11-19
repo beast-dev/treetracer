@@ -219,6 +219,44 @@ def test_rooted_facts_summary_cross_checks_selected_counts():
         )
 
 
+def test_rooted_facts_loops_report_rising_progress_without_changing_results():
+    _, _, facts = _rooted_facts()
+    rows = [0, 1, 2, 3, 4]
+    prepared = prepare_mrhipstr_inputs_from_rooted_facts(
+        facts,
+        rows,
+        chunk_rows=2,
+    )
+    summary_fractions = []
+    topology_fractions = []
+
+    summary = source_summary_from_rooted_facts(
+        facts,
+        rows,
+        catalog=prepared.catalog,
+        snapshot_counts=prepared.snapshot_counts,
+        chunk_rows=2,
+        progress=summary_fractions.append,
+    )
+    topology = compute_mrhipstr_topology(
+        catalog=prepared.catalog,
+        snapshot_counts=prepared.snapshot_counts,
+        source_summary=summary,
+        progress=topology_fractions.append,
+    )
+
+    assert summary == prepared.source_summary
+    assert topology == compute_mrhipstr_topology(
+        catalog=prepared.catalog,
+        snapshot_counts=prepared.snapshot_counts,
+        source_summary=prepared.source_summary,
+    )
+    assert summary_fractions == [0.0, 0.4, 0.8]
+    assert topology_fractions[0] == 0.0
+    assert topology_fractions == sorted(topology_fractions)
+    assert topology_fractions[-1] < 1.0
+
+
 def _random_rooted_tree(rng, taxa):
     """A random rooted binary Newick with its clade heights and observed splits, summed root-down as the NumPy derivation does."""
     nodes = [(frozenset([taxon]), taxon) for taxon in taxa]

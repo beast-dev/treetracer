@@ -5,7 +5,7 @@ serialize all heavy work, so the browser needs only one polling owner.  This
 module is that owner:
 
 * one 250 ms interval callback observes the active managed job;
-* the same callback samples RF/MDS progress sidecars;
+* the same callback samples RF/MDS/consensus progress sidecars;
 * terminal state is copied into one small, replayable browser event;
 * job-specific presentation callbacks render that event and write a dedicated
   receipt in the same response as their UI;
@@ -173,7 +173,8 @@ def _read_rf_progress(ref: JobRef, progress_path: Any):
     return percentage, label
 
 
-def _read_mds_progress(ref: JobRef, progress_path: Any):
+def _read_phase_progress(ref: JobRef, progress_path: Any):
+    """Read an MDS or consensus ``{fraction, phase, label}`` progress file."""
     if not progress_path:
         return no_update, no_update
     try:
@@ -193,10 +194,11 @@ def _progress_component_updates(
     component_ids: Any,
     rf_progress: tuple[Any, Any],
     mds_progress: tuple[Any, Any],
+    consensus_progress: tuple[Any, Any],
     *,
     position: int,
 ) -> list[Any]:
-    """Map RF/MDS progress to only the dynamic components in the layout.
+    """Map RF/MDS/consensus progress to only the mounted components.
 
     Dash rejects a callback response if it names a concrete Output component
     that is not currently mounted. RF and MDS banners are mutually exclusive
@@ -214,6 +216,8 @@ def _progress_component_updates(
             updates.append(rf_progress[position])
         elif which == "mds":
             updates.append(mds_progress[position])
+        elif str(which).startswith("consensus"):
+            updates.append(consensus_progress[position])
         else:
             updates.append(no_update)
     return updates
@@ -224,18 +228,21 @@ def _dynamic_progress_outputs(
     progress_label_ids: Any,
     rf_progress: tuple[Any, Any] = (no_update, no_update),
     mds_progress: tuple[Any, Any] = (no_update, no_update),
+    consensus_progress: tuple[Any, Any] = (no_update, no_update),
 ) -> tuple[list[Any], list[Any]]:
     return (
         _progress_component_updates(
             progress_bar_ids,
             rf_progress,
             mds_progress,
+            consensus_progress,
             position=0,
         ),
         _progress_component_updates(
             progress_label_ids,
             rf_progress,
             mds_progress,
+            consensus_progress,
             position=1,
         ),
     )
@@ -347,6 +354,7 @@ def register_job_reconciliation_callbacks():
 
         rf_progress = (no_update, no_update)
         mds_progress = (no_update, no_update)
+        consensus_progress = (no_update, no_update)
         terminal_event = no_update
 
         if snapshot.terminal is not None:
@@ -381,10 +389,16 @@ def register_job_reconciliation_callbacks():
                 rf_progress = _terminal_progress(terminal_progress)
             elif active.kind == "mds":
                 mds_progress = _terminal_progress(terminal_progress)
+            elif active.kind == "consensus":
+                consensus_progress = _terminal_progress(terminal_progress)
         elif active.kind == "rf":
             rf_progress = _read_rf_progress(active, rf_progress_path)
         elif active.kind == "mds":
-            mds_progress = _read_mds_progress(active, mds_progress_path)
+            mds_progress = _read_phase_progress(active, mds_progress_path)
+        elif active.kind == "consensus":
+            consensus_progress = _read_phase_progress(
+                active, snapshot.metadata.get("progress_path")
+            )
         elif (n_intervals or 0) % 20 == 0:
             _wlog(
                 "[parent] reconcile_compute_job: "
@@ -400,6 +414,7 @@ def register_job_reconciliation_callbacks():
             progress_label_ids,
             rf_progress,
             mds_progress,
+            consensus_progress,
         )
         return (
             False,

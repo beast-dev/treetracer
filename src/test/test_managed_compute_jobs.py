@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -567,6 +570,7 @@ def test_synthetic_mrhipstr_registry_entry_produces_no_mds_overlay():
 
 def test_consensus_submit_carries_mrhipstr_method_to_worker_and_context(
     monkeypatch,
+    tmp_path,
 ):
     submitted = {}
     log_calls = []
@@ -600,7 +604,7 @@ def test_consensus_submit_carries_mrhipstr_method_to_worker_and_context(
     monkeypatch.setattr(
         consensus_tree_compute._state,
         "get_snapshots_path",
-        lambda _name: "/tmp/RF_001_snapshots.npz",
+        lambda _name: str(tmp_path / "RF_001_snapshots.npz"),
     )
     monkeypatch.setattr(
         consensus_tree_compute._state,
@@ -644,6 +648,15 @@ def test_consensus_submit_carries_mrhipstr_method_to_worker_and_context(
     assert submitted["args"][3] == "compute_consensus_tree"
     assert submitted["kwargs"]["summary_method"] == "mrhipstr"
     assert submitted["kwargs"]["metadata"]["summary_method"] == "mrhipstr"
+    # The overlay's bar starts from a fresh 0% file next to the snapshot.
+    progress_path = str(tmp_path / "consensus.progress")
+    assert submitted["kwargs"]["progress_path"] == progress_path
+    assert submitted["kwargs"]["metadata"]["progress_path"] == progress_path
+    assert json.loads(Path(progress_path).read_text(encoding="utf-8")) == {
+        "fraction": 0.0,
+        "phase": "starting",
+        "label": "Preparing…",
+    }
     context = submitted["kwargs"]["finalizer"].keywords["context"]
     assert context.summary_method == "mrhipstr"
     assert context.click_started_at == context.submit_started_at
@@ -662,6 +675,7 @@ def test_consensus_submit_carries_mrhipstr_method_to_worker_and_context(
 
 def test_consensus_submit_uses_midpoint_rooted_mcc_for_unrooted_matrix(
     monkeypatch,
+    tmp_path,
 ):
     submitted = {}
     log_calls = []
@@ -700,7 +714,7 @@ def test_consensus_submit_uses_midpoint_rooted_mcc_for_unrooted_matrix(
     monkeypatch.setattr(
         consensus_tree_compute._state,
         "get_snapshots_path",
-        lambda _name: "/tmp/RF_unrooted_snapshots.npz",
+        lambda _name: str(tmp_path / "RF_unrooted_snapshots.npz"),
     )
     monkeypatch.setattr(
         consensus_tree_compute._state,
@@ -747,6 +761,68 @@ def test_consensus_submit_uses_midpoint_rooted_mcc_for_unrooted_matrix(
         "[MCC/Between] Starting summary-tree computation" in message
         for message, _level in log_calls
     )
+
+
+def test_reconciler_drives_consensus_overlay_bars_from_progress_file(
+    monkeypatch,
+    tmp_path,
+):
+    manager = JobManager(id_factory=lambda: "consensus-progress-job")
+    monkeypatch.setattr(job_reconcile, "job_manager", manager)
+    progress_path = tmp_path / "consensus.progress"
+    progress_path.write_text(
+        json.dumps(
+            {
+                "fraction": 0.5,
+                "phase": "computing",
+                "label": "Running MrHIPSTR…",
+            }
+        ),
+        encoding="utf-8",
+    )
+    reconcile = _registered_callback(
+        "reconcile_compute_job",
+        job_reconcile.register_job_reconciliation_callbacks,
+    )
+    which = ("consensus-treespace", "consensus-tree-within", "rf")
+    bar_ids = [{"type": "compute-progress-bar", "which": w} for w in which]
+    label_ids = [{"type": "compute-progress-label", "which": w} for w in which]
+
+    release = threading.Event()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        ref = manager.submit(
+            executor,
+            "consensus",
+            release.wait,
+            metadata={"progress_path": str(progress_path)},
+        )
+        try:
+            outputs = reconcile(
+                1,
+                None,
+                None,
+                None,
+                ref.as_dict(),
+                None,
+                None,
+                {"busy": False},
+                None,
+                None,
+                bar_ids,
+                label_ids,
+                [],
+            )
+            progress = manager.snapshot(ref).progress
+        finally:
+            release.set()
+
+    assert outputs[3] == [50.0, 50.0, no_update]
+    assert outputs[4] == [
+        "Running MrHIPSTR… (50%)",
+        "Running MrHIPSTR… (50%)",
+        no_update,
+    ]
+    assert progress.fraction == 0.5
 
 
 def test_consensus_finalization_failure_reenables_origin_button(monkeypatch):

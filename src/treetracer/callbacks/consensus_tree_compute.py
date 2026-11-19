@@ -23,9 +23,11 @@ metadata, and calling ``submit_consensus_tree_job`` here.
 from __future__ import annotations
 
 import copy
+import json
 import time
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import dash_mantine_components as dmc
@@ -759,6 +761,18 @@ def submit_consensus_tree_job(
         dispatch_started_at=dispatch_started_at,
         dispatch_wall_time=dispatch_wall_time,
     )
+    # The worker overwrites this file at each step. Writing 0% first resets
+    # the overlay's bar and replaces any file a stopped job left behind.
+    progress_path = str(Path(snapshots_path).with_name("consensus.progress"))
+    try:
+        Path(progress_path).write_text(
+            json.dumps(
+                {"fraction": 0.0, "phase": "starting", "label": "Preparing…"}
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
     ref = job_manager.submit(
         _get_executor(),
         "consensus",
@@ -773,12 +787,14 @@ def submit_consensus_tree_job(
         source_preambles=source_preambles,
         is_rooted=distmat_is_rooted,
         summary_method=summary_method,
+        progress_path=progress_path,
         metadata={
             "display_name": f"{mode} {summary_method} summary tree",
             "mode": mode,
             "source_distmat": source_distmat,
             "summary_method": summary_method,
             "store_target": store_target,
+            "progress_path": progress_path,
         },
         finalizer=partial(
             _finalize_consensus_tree_job,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -704,6 +704,7 @@ def compute_hipstr_topology(
     snapshot_counts: SelectedCladeCounts,
     source_summary: SourceTreeSummary,
     majority_rule: bool,
+    progress: Callable[[float], None] | None = None,
 ) -> HipstrTopology:
     """Select a HIPSTR topology with the supplied Java recurrence.
 
@@ -715,6 +716,8 @@ def compute_hipstr_topology(
     Exact objective ties are resolved by the lexicographically smallest
     canonical child-bitset pair. This makes the selected topology reproducible
     without changing the Java formulation or its optimum score.
+
+    ``progress``, when given, receives the fraction of clades scored.
     """
     if not isinstance(majority_rule, bool):
         raise TypeError("majority_rule must be a bool")
@@ -738,7 +741,10 @@ def compute_hipstr_topology(
     )
     scores: dict[int, float] = {}
     backpointers: dict[int, tuple[int, int]] = {}
-    for clade_bits in ordered_clades:
+    tick = max(1, len(ordered_clades) // 100)
+    for index, clade_bits in enumerate(ordered_clades):
+        if progress is not None and index % tick == 0:
+            progress(index / len(ordered_clades))
         if clade_bits.bit_count() == 1:
             # The Java implementation uses log(1) for a tip whenever it is a
             # child, so singleton subtrees contribute exactly zero.
@@ -860,6 +866,7 @@ def compute_mrhipstr_topology(
     catalog: RootedCladeCatalog,
     snapshot_counts: SelectedCladeCounts,
     source_summary: SourceTreeSummary,
+    progress: Callable[[float], None] | None = None,
 ) -> HipstrTopology:
     """Select an MrHIPSTR topology using the Java ``1E10`` formulation."""
     return compute_hipstr_topology(
@@ -867,6 +874,7 @@ def compute_mrhipstr_topology(
         snapshot_counts=snapshot_counts,
         source_summary=source_summary,
         majority_rule=True,
+        progress=progress,
     )
 
 

@@ -150,7 +150,7 @@ def _build_result_table(results: list[dict[str, Any]]):
                     # dmc.TableTh("Median"),
                     # dmc.TableTh("Max"),
                     # dmc.TableTh("# refs"),
-                    dmc.TableTh("Frechet"),
+                    dmc.TableTh("Fréchet Correlation ESS"),
                 ])
             ),
             dmc.TableTbody(rows),

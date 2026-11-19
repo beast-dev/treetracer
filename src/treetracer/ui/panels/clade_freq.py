@@ -16,11 +16,13 @@ def _add_clade_freq_panel():
     The CONTROLS — two consensus-tree dropdowns and the Compare button —
     live in ``clade-consensus-tree-paper`` (immediately under the consensus tree table
     they pull from). This paper is just the output surface: the
-    scatter, the two sliders that re-shape it, and the tanglegram
+    scatter, its filters, and the tanglegram
     below.
 
     Components built here:
         clade-freq-min-clade-size   horizontal slider above the scatter
+        clade-freq-exclusive-only   show only clades found in exactly one
+                                    selected consensus tree
         clade-freq-plot             scatter (freq_1 vs freq_2)
         clade-freq-tanglegram       pair of trees with red-highlighted
                                     clicked clade
@@ -40,22 +42,45 @@ def _add_clade_freq_panel():
         # Min-clade-size sits directly above the scatter it filters —
         # placing it between scatter and tanglegram (as previously)
         # left it visually orphaned from either chart.
-        dmc.Stack([
-            dmc.Text("Minimum clade size", size="md", fw=500),
-            dmc.Slider(
-                id="clade-freq-min-clade-size",
-                min=2, max=50, step=1, value=5,
-                w=300,
-                size="md",
-                marks=[
-                    {"value": 2,  "label": "2"},
-                    {"value": 10, "label": "10"},
-                    {"value": 25, "label": "25"},
-                    {"value": 50, "label": "50"},
-                ],
-                styles={"markLabel": {"fontSize": "13px"}},
-            ),
-        ], gap=6, mt=4, mb=12),
+        dmc.Group(
+            [
+                dmc.Stack(
+                    [
+                        dmc.Text("Minimum clade size", size="md", fw=500),
+                        dmc.Slider(
+                            id="clade-freq-min-clade-size",
+                            min=2,
+                            max=50,
+                            step=1,
+                            value=5,
+                            w=300,
+                            size="md",
+                            marks=[
+                                {"value": 2, "label": "2"},
+                                {"value": 10, "label": "10"},
+                                {"value": 25, "label": "25"},
+                                {"value": 50, "label": "50"},
+                            ],
+                            styles={"markLabel": {"fontSize": "13px"}},
+                        ),
+                    ],
+                    gap=6,
+                ),
+                dmc.Checkbox(
+                    id="clade-freq-exclusive-only",
+                    label=(
+                        "Show only clades present in a single consensus tree"
+                    ),
+                    checked=False,
+                    size="sm",
+                ),
+            ],
+            justify="space-between",
+            align="center",
+            w="100%",
+            mt=4,
+            mb=12,
+        ),
 
         dcc.Loading(
             html.Div(id="clade-freq-plot"),

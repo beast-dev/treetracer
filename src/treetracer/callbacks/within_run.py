@@ -21,6 +21,8 @@ color-gradient toggle) read the user's current zoom out of
 ``uirevision`` alone has proven unreliable across full figure replacements.
 """
 
+import time
+
 from dash import callback, clientside_callback, Input, Output, Patch, State, no_update, ctx, html
 import dash_mantine_components as dmc
 from ..icons import icon
@@ -28,8 +30,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
+from ..logger import add_log
 from ..theme import get_template
 from ..plot_utils import retheme_figure
+from ..ui.widgets import (
+    SUMMARY_METHOD_MRHIPSTR,
+)
 from .job_reconcile import is_compute_busy
 
 
@@ -802,6 +808,9 @@ def register_within_run_callbacks():
         selected_run,
         results,
     ):
+        click_started_at = time.perf_counter()
+        click_started_wall_time = time.time()
+
         from ..background_jobs import JobBusyError
         from ..logger import notif_id
         from ..db.tree_service import get_tree_service
@@ -811,8 +820,9 @@ def register_within_run_callbacks():
             return (no_update,) * 4
 
         def _err(msg, autoclose=5000):
+            add_log(f"[Summary tree/Within] {msg}", "ERROR")
             return (False, False, dmc.Notification(
-                title="Consensus tree Error", message=msg,
+                title="Summary Tree Error", message=msg,
                 color="red", action="show", autoClose=autoclose,
                 id=notif_id(),
             ), no_update)
@@ -827,7 +837,7 @@ def register_within_run_callbacks():
 
         df_run, _ = _filter_to_run(mds_result, selected_run)
         if df_run is None:
-            return (no_update,) * 5
+            return (no_update,) * 4
         sel_df = df_run[df_run["treenum"].isin(selected_treenums)]
         tree_names = sel_df["tree"].tolist()
         if not tree_names:
@@ -844,9 +854,12 @@ def register_within_run_callbacks():
             )
 
         matched_records = matched[[
-            "name", "file_source", "line_offset", "line_length", "metadata",
+            "name", "file_source", "newick_offset", "newick_length",
+            "line_offset", "line_length", "metadata",
         ]].to_dict("records")
         for rec in matched_records:
+            rec["newick_offset"] = int(rec["newick_offset"])
+            rec["newick_length"] = int(rec["newick_length"])
             rec["line_offset"] = int(rec["line_offset"])
             rec["line_length"] = int(rec["line_length"])
 
@@ -871,12 +884,17 @@ def register_within_run_callbacks():
                     consensus_tree_coord_by_tree_name
                 ),
                 store_target="within-run-view-consensus-tree-store",
+                summary_method=SUMMARY_METHOD_MRHIPSTR,
+                click_started_at=click_started_at,
+                click_started_wall_time=click_started_wall_time,
             )
         except JobBusyError as exc:
             return _err(
                 f"Another computation ({exc.active.kind.replace('_', ' ').upper()}) "
                 "is still finishing. Please wait for it to complete."
             )
+        except ValueError as exc:
+            return _err(str(exc))
 
         return True, True, no_update, job_ref.as_dict()
 

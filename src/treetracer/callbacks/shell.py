@@ -138,8 +138,13 @@ def register_shell_callbacks():
                               style={"color": "#8b949e"}),
                     html.Span(f"{entry['level']}: ",
                               style={"color": color, "fontWeight": "bold"}),
-                    html.Span(entry["message"],
-                              style={"color": "#c9d1d9"}),
+                    html.Span(
+                        entry["message"],
+                        style={
+                            "color": "#c9d1d9",
+                            "whiteSpace": "pre-wrap",
+                        },
+                    ),
                 ], style={"marginBottom": "2px"})
             )
         return elements

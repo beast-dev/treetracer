@@ -56,6 +56,35 @@ def _presence_from_dendropy(tlist):
     return presence
 
 
+def test_consensus_tree_score_uses_double_precision():
+    presence = np.asarray(
+        [
+            [1, 1, 1, 0],
+            [1, 1, 0, 1],
+            [1, 0, 1, 1],
+        ],
+        dtype=np.uint8,
+    )
+
+    winner, score = compute_consensus_tree_index(presence)
+    counts = presence.sum(axis=0)
+    frequencies = counts.astype(np.float64) / np.float64(len(presence))
+    log_frequencies = np.log(
+        np.where(counts > 0, frequencies, np.float64(1.0))
+    )
+    expected = float(
+        presence[winner].astype(np.float64) @ log_frequencies
+    )
+    old_float32_score = float(
+        presence[winner].astype(np.float32)
+        @ log_frequencies.astype(np.float32)
+    )
+
+    assert winner == 0
+    assert score == expected
+    assert abs(score - old_float32_score) > 1e-9
+
+
 @pytest.mark.integration
 def test_consensus_tree_algorithm_matches_dendropy_50(dendropy_trees_50):
     dendropy = pytest.importorskip("dendropy")

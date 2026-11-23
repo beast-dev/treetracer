@@ -69,6 +69,8 @@ def compute_clade_frequencies_worker_entry(
     tree_names_1: list[str] | None = None,
     tree_names_2: list[str] | None = None,
     full_distmat_names: list[str] | None = None,
+    row_indices_1: list[int] | None = None,
+    row_indices_2: list[int] | None = None,
 ) -> dict[str, Any]:
     """Compute frequencies and decode only requested snapshot columns."""
     import time
@@ -139,9 +141,32 @@ def compute_clade_frequencies_worker_entry(
             copy=False,
         ) / np.float64(denominator_2)
 
+        from ..rf.rooted_facts import snapshot_has_rooted_facts
+
+        clade_metrics: dict[int, Any] = {}
+        tip_rows: list[dict[str, Any]] = []
+        has_instability = False
+        if (
+            snapshot_has_rooted_facts(snapshot)
+            and row_indices_1
+            and row_indices_2
+        ):
+            from .sister_instability import compute_sister_instability_from_npz
+
+            clade_metrics, tip_rows = compute_sister_instability_from_npz(
+                snapshot,
+                row_indices_1=row_indices_1,
+                row_indices_2=row_indices_2,
+                clade_columns=columns,
+                packed_clades=sparse_snapshot.packed_clades,
+                leaf_names=leaf_names,
+            )
+            has_instability = bool(tip_rows)
+
         rows = []
         for position, column in enumerate(columns):
             split_key = selected_keys[position]
+            metrics = clade_metrics.get(int(column))
             rows.append(
                 {
                     "split_key": split_key,
@@ -149,6 +174,14 @@ def compute_clade_frequencies_worker_entry(
                     "freq_1": float(frequencies_1[position]),
                     "freq_2": float(frequencies_2[position]),
                     "clade_size": len(split_key),
+                    "clade_instability": (
+                        metrics.clade_instability if metrics is not None else None
+                    ),
+                    "instab_1": metrics.instab_1 if metrics is not None else None,
+                    "instab_2": metrics.instab_2 if metrics is not None else None,
+                    "between_shift": (
+                        metrics.between_shift if metrics is not None else None
+                    ),
                 }
             )
 
@@ -162,5 +195,7 @@ def compute_clade_frequencies_worker_entry(
         "n_trees_1": denominator_1,
         "n_trees_2": denominator_2,
         "snapshot_input_mode": snapshot_input_mode,
+        "has_instability": has_instability,
+        "tip_rows": tip_rows,
         "elapsed": time.perf_counter() - started,
     }

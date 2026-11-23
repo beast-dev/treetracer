@@ -519,6 +519,36 @@ def clear_clade_freq_caches():
     _get_tanglegram_layout.cache_clear()
 
 
+def _format_instability_hover(clade_instab, between_shift) -> str:
+    if clade_instab is None:
+        return ""
+    if between_shift is not None:
+        return (
+            f"<br>Sister instability: {float(clade_instab):.3f} "
+            f"(Shift: {float(between_shift):.3f})"
+        )
+    return f"<br>Sister instability: {float(clade_instab):.3f}"
+
+
+def _scatter_customdata(df_plot: pd.DataFrame) -> list[list[Any]]:
+    if df_plot.empty:
+        return []
+    hover = (
+        df_plot["instability_hover"]
+        if "instability_hover" in df_plot.columns
+        else [""] * len(df_plot)
+    )
+    return [
+        [int(sid), int(size), str(mem), str(inst)]
+        for sid, size, mem, inst in zip(
+            df_plot["split_id"],
+            df_plot["clade_size"],
+            df_plot["consensus_tree_membership"],
+            hover,
+        )
+    ]
+
+
 def _build_scatter_fig(df_plot, label1, label2):
     import plotly.graph_objects as go
     fig = go.Figure()
@@ -546,26 +576,15 @@ def _build_scatter_fig(df_plot, label1, label2):
             color=df_plot["clade_size"],
             colorscale=_scatter_colorscale(),
             showscale=True,
-            colorbar=dict(title="Clade size", thickness=12),
+            colorbar=dict(title=dict(text="Clade size"), thickness=12),
             opacity=0.75,
         ),
-        # customdata carries the row's split_id (integer key into the
-        # per-distmat canonical_keys cache) and clade_size. Using an
-        # integer ID dodges the previous fragile comma-joined-string
-        # round-trip — taxon names with embedded commas no longer break
-        # the click→tanglegram path.
-        # ``.values.tolist()`` converts the numpy int32 array to native
-        # Python ints in nested lists. Scattergl serialises this more
-        # reliably through clickData than a raw numpy 2D array — without
-        # it some Plotly versions drop customdata or pass it as a flat
-        # array, which breaks the click→tanglegram resolution below.
-        customdata=df_plot[
-            ["split_id", "clade_size", "consensus_tree_membership"]
-        ].values.tolist(),
+        customdata=_scatter_customdata(df_plot),
         hovertemplate=(
             "<b>Clade (%{customdata[1]} tips)</b><br>"
             "Group 1: %{x:.3f}<br>"
-            "Group 2: %{y:.3f}<br>"
+            "Group 2: %{y:.3f}"
+            "%{customdata[3]}<br>"
             "In: %{customdata[2]}"
             "<extra></extra>"
         ),
@@ -669,6 +688,10 @@ def _finalize_clade_comparison_job(
         if not isinstance(row, dict):
             raise TypeError("clade-frequency row must be a mapping")
         column_j = int(row["column_j"])
+        clade_size = int(row["clade_size"])
+        if clade_size < 2:
+            # Singletons live exclusively in the Tip Instability Table.
+            continue
         in_1 = column_j in context.consensus_columns_1
         in_2 = column_j in context.consensus_columns_2
         if not (in_1 or in_2):
@@ -688,16 +711,32 @@ def _finalize_clade_comparison_job(
                 "clade-frequency split references an unknown leaf index"
             ) from exc
 
+        clade_instab = row.get("clade_instability")
+        instab_1 = row.get("instab_1")
+        instab_2 = row.get("instab_2")
+        between_shift = row.get("between_shift")
+
         split_id = len(records)
         records.append(
             {
                 "split_id": split_id,
                 "freq_1": float(row["freq_1"]),
                 "freq_2": float(row["freq_2"]),
-                "clade_size": int(row["clade_size"]),
+                "clade_size": clade_size,
                 "in_consensus_tree_1": in_1,
                 "in_consensus_tree_2": in_2,
                 "consensus_tree_membership": membership,
+                "clade_instability": (
+                    float(clade_instab) if clade_instab is not None else None
+                ),
+                "instab_1": float(instab_1) if instab_1 is not None else None,
+                "instab_2": float(instab_2) if instab_2 is not None else None,
+                "between_shift": (
+                    float(between_shift) if between_shift is not None else None
+                ),
+                "instability_hover": _format_instability_hover(
+                    clade_instab, between_shift
+                ),
             }
         )
         resolution[split_id] = {
@@ -717,6 +756,8 @@ def _finalize_clade_comparison_job(
         exclusive_only=context.exclusive_only,
     )
     figure = _build_scatter_fig(plotted, context.label_1, context.label_2)
+    tip_rows = list(result.get("tip_rows") or [])
+    has_instability = bool(result.get("has_instability") and tip_rows)
     state.store_clade_frequency_result(
         ref.job_id,
         {
@@ -724,6 +765,10 @@ def _finalize_clade_comparison_job(
             "resolution": resolution,
             "figure": figure.to_dict(),
             "pair": (context.uid_1, context.uid_2),
+            "label_1": context.label_1,
+            "label_2": context.label_2,
+            "tip_rows": tip_rows,
+            "has_instability": has_instability,
         },
     )
     elapsed = float(result.get("elapsed", 0.0))
@@ -954,9 +999,7 @@ def register_clade_explore_callbacks():
         patch = Patch()
         patch["data"][0]["x"] = df_plot["freq_1"].tolist()
         patch["data"][0]["y"] = df_plot["freq_2"].tolist()
-        patch["data"][0]["customdata"] = (
-            df_plot[["split_id", "clade_size", "consensus_tree_membership"]].values.tolist()
-        )
+        patch["data"][0]["customdata"] = _scatter_customdata(df_plot)
         patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
         patch["data"][1]["x"] = []
         patch["data"][1]["y"] = []
@@ -1045,11 +1088,19 @@ def register_clade_explore_callbacks():
             counts_1, n_trees_1 = _cached_counts_for_columns(entry1, columns)
             counts_2, n_trees_2 = _cached_counts_for_columns(entry2, columns)
             needs_fallback = counts_1 is None or counts_2 is None
-            full_names = (
-                list(state.get_distmat_names(source_1))
-                if needs_fallback
-                else None
-            )
+            distmat_names = state.get_distmat_names(source_1)
+            name_to_idx = {str(n): i for i, n in enumerate(distmat_names)}
+            row_indices_1 = [
+                name_to_idx[str(n)]
+                for n in (entry1.get("tree_names") or [])
+                if str(n) in name_to_idx
+            ] or None
+            row_indices_2 = [
+                name_to_idx[str(n)]
+                for n in (entry2.get("tree_names") or [])
+                if str(n) in name_to_idx
+            ] or None
+            full_names = list(distmat_names) if needs_fallback else None
             snapshots_path = str(state.get_snapshots_path(source_1))
         except (KeyError, ValueError, FileNotFoundError) as exc:
             return error(f"Error preparing clade comparison: {exc}")
@@ -1093,6 +1144,8 @@ def register_clade_explore_callbacks():
                     else None
                 ),
                 full_distmat_names=full_names,
+                row_indices_1=row_indices_1,
+                row_indices_2=row_indices_2,
                 metadata={
                     "display_name": "Clade Frequency Comparison",
                     "source_distmat": source_1,

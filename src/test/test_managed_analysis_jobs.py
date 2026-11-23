@@ -375,11 +375,11 @@ def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(
                 "clade_size": 2,
             },
             {
-                "split_key": (1,),
+                "split_key": (0, 1),
                 "column_j": 5,
                 "freq_1": 0.0,
                 "freq_2": 0.4,
-                "clade_size": 1,
+                "clade_size": 2,
             },
         ],
         "leaf_names": ["A", "B", "C"],

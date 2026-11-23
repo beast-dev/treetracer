@@ -129,18 +129,17 @@ def _subtree_branch_segments(mrca, x_offset, x_scale, x_flip):
     return xs, ys
 
 
-def _compute_tip_sisters(root):
-    """Map tip name -> ``(parent, siblings)`` for O(1) consensus-sister lookup."""
+def _compute_node_sisters(root):
+    """Map node id (and tip name) -> ``(parent, siblings)`` for O(1) sister lookup."""
     sisters = {}
     for node in _collect_nodes(root):
         if not node.children:
             continue
         for child in node.children:
+            entry = (node, [sib for sib in node.children if sib is not child])
+            sisters[id(child)] = entry
             if child.is_tip:
-                sisters[child.name] = (
-                    node,
-                    [sib for sib in node.children if sib is not child],
-                )
+                sisters[child.name] = entry
     return sisters
 
 
@@ -259,45 +258,58 @@ def _get_tanglegram_layout(uid1, uid2):
         "skeleton_traces": skeleton,
         "yspan1": _compute_yspans(root1),
         "yspan2": _compute_yspans(root2),
-        "sisters1": _compute_tip_sisters(root1),
-        "sisters2": _compute_tip_sisters(root2),
+        "sisters1": _compute_node_sisters(root1),
+        "sisters2": _compute_node_sisters(root2),
     }
 
 
-# Trace indices in the assembled tanglegram figure (branches first so tip
-# markers sit on top). Skeleton indices (0, 1, 4, 5) are static; the rest
-# are dynamic overlays updated via ``dash.Patch``.
+# Trace indices in the assembled tanglegram figure (branches and sister
+# connectors come before the red tip/connector overlays so the selected tip
+# always draws cleanly on top). Skeleton indices (0, 1, 5, 6) are static.
 #
 #   0: left branches          (static, dimmed)
 #   1: right branches         (static, dimmed)
-#   2: blue subtree branches  (dynamic) — MRCA subtree (clade) or G1 sister (tip)
-#   3: green sister branches  (dynamic) — G2 consensus sister subtree (tip only)
-#   4: left grey tips         (static)
-#   5: right grey tips        (static)
-#   6: blue G1 sister tips    (dynamic) — tip mode only
-#   7: green G2 sister tips   (dynamic) — tip mode only
-#   8: left red highlight     (dynamic)
-#   9: right red highlight    (dynamic)
-#  10: red connectors         (dynamic)
-#  11: MRCA node markers      (dynamic) — clade mode only
-#  12: complement tips        (dynamic) — green, clade mode only
-#  13: complement connectors  (dynamic) — green, clade mode only
-_TANGLEGRAM_MRCA_SUBTREE         = 2
-_TANGLEGRAM_TIP_SISTER_RIGHT     = 3
-_TANGLEGRAM_TIP_SISTER_TIPS_LEFT  = 6
-_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT = 7
-_TANGLEGRAM_HIGHLIGHT_LEFT       = 8
-_TANGLEGRAM_HIGHLIGHT_RIGHT      = 9
-_TANGLEGRAM_CONNECTORS           = 10
-_TANGLEGRAM_MRCA_MARKER          = 11
-_TANGLEGRAM_COMPLEMENT_TIPS      = 12
-_TANGLEGRAM_COMPLEMENT_CONN      = 13
+#   2: clade MRCA branches    (dynamic) — blue, clade mode only
+#   3: G1 sister branches     (dynamic) — blue, origin + monophyletic landing
+#   4: G2 sister branches     (dynamic) — green, origin + monophyletic landing
+#   5: left grey tips         (static)
+#   6: right grey tips        (static)
+#   7: blue G1 sister conns   (dynamic) — thin low-alpha, Connect sister ON
+#   8: green G2 sister conns  (dynamic) — thin low-alpha, Connect sister ON
+#   9: blue G1 sister tips    (dynamic) — origin; +right landing when ON
+#  10: green G2 sister tips   (dynamic) — origin; +left landing when ON
+#  11: left red highlight     (dynamic)
+#  12: right red highlight    (dynamic)
+#  13: red connectors         (dynamic)
+#  14: clade MRCA markers     (dynamic) — clade mode only
+#  15: G1 sister MRCA marker  (dynamic) — blue diamond
+#  16: G2 sister MRCA marker  (dynamic) — green diamond
+#  17: complement tips        (dynamic) — green, clade mode only
+#  18: complement connectors  (dynamic) — green, clade mode only
+_TANGLEGRAM_MRCA_SUBTREE          = 2
+_TANGLEGRAM_SISTER_BRANCH_LEFT    = 3
+_TANGLEGRAM_SISTER_BRANCH_RIGHT   = 4
+_TANGLEGRAM_TIP_SISTER_CONN_LEFT  = 7
+_TANGLEGRAM_TIP_SISTER_CONN_RIGHT = 8
+_TANGLEGRAM_TIP_SISTER_TIPS_LEFT  = 9
+_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT = 10
+_TANGLEGRAM_HIGHLIGHT_LEFT        = 11
+_TANGLEGRAM_HIGHLIGHT_RIGHT       = 12
+_TANGLEGRAM_CONNECTORS            = 13
+_TANGLEGRAM_MRCA_MARKER           = 14
+_TANGLEGRAM_SISTER_MRCA_LEFT      = 15
+_TANGLEGRAM_SISTER_MRCA_RIGHT     = 16
+_TANGLEGRAM_COMPLEMENT_TIPS       = 17
+_TANGLEGRAM_COMPLEMENT_CONN       = 18
 
 # Colours for the MRCA and tip-sister emphasis overlays.
-_SKELETON_DIM      = "#c8c8c8"   # branches outside the highlighted subtree
-_MRCA_ACCENT       = "#1c7ed6"   # blue: MRCA subtree or G1 consensus sister
-_TIP_SISTER_ACCENT = "#2f9e44"   # green: G2 consensus sister
-_MRCA_MARKER       = "#1864ab"   # the MRCA node marker
+_SKELETON_DIM            = "#c8c8c8"   # branches outside the highlighted subtree
+_MRCA_ACCENT             = "#1c7ed6"   # blue: MRCA subtree or G1 consensus sister
+_TIP_SISTER_ACCENT       = "#2f9e44"   # green: G2 consensus sister
+_TIP_SISTER_CONN_LEFT    = "rgba(28,126,214,0.35)"
+_TIP_SISTER_CONN_RIGHT   = "rgba(47,158,68,0.35)"
+_MRCA_MARKER             = "#1864ab"   # blue diamond marker
+_TIP_SISTER_MARKER_RIGHT = "#2b8a3e"   # green diamond marker
 
 # Off-white backbone for dark mode: the light-grey ``_SKELETON_DIM``
 # recedes on a white canvas, but needs to be lighter to stay legible
@@ -328,16 +340,19 @@ def _highlight_overlay_trace(
     color="#e63946",
     size=8,
     extra="",
+    also_tips=None,
 ):
-    """Build a coloured tip-marker overlay trace for one tree."""
+    """Build a coloured tip-marker overlay trace (optionally across both trees)."""
     xs, ys, names = [], [], []
+    tip_maps = (tips_by_name, also_tips) if also_tips is not None else (tips_by_name,)
     for name in highlight:
-        coord = tips_by_name.get(name)
-        if coord is None:
-            continue
-        xs.append(coord[0])
-        ys.append(coord[1])
-        names.append(name)
+        for tip_map in tip_maps:
+            coord = tip_map.get(name)
+            if coord is None:
+                continue
+            xs.append(coord[0])
+            ys.append(coord[1])
+            names.append(name)
     return dict(
         type="scatter",
         x=xs, y=ys,
@@ -349,9 +364,16 @@ def _highlight_overlay_trace(
     )
 
 
-def _connector_overlay_trace(tips1, tips2, highlight):
-    """Build the red-line connector overlay between the two trees for
-    all tip names in *highlight* that exist on both sides."""
+def _connector_overlay_trace(
+    tips1,
+    tips2,
+    highlight,
+    *,
+    color="rgba(230,57,70,0.7)",
+    width=1.5,
+    extra="",
+):
+    """Build a connector overlay between the two trees for tips present on both sides."""
     xs, ys, names = [], [], []
     for name in highlight:
         c1 = tips1.get(name)
@@ -365,10 +387,223 @@ def _connector_overlay_trace(tips1, tips2, highlight):
         type="scatter",
         x=xs, y=ys,
         mode="lines",
-        line=dict(color="rgba(230,57,70,0.7)", width=1.5),
+        line=dict(color=color, width=width),
         text=[n for n in names for _ in range(3)],
+        hovertemplate=f"%{{text}}<extra>{extra}</extra>",
+        showlegend=False,
+    )
+
+
+def _mrca_diamond_trace(xs, ys, texts, color):
+    return dict(
+        type="scatter",
+        x=xs,
+        y=ys,
+        mode="markers",
+        marker=dict(
+            symbol="diamond",
+            size=9,
+            color=color,
+            line=dict(color="white", width=1.5),
+        ),
+        text=texts,
         hovertemplate="%{text}<extra></extra>",
         showlegend=False,
+    )
+
+
+def _sister_side_geometry(
+    sib_entry,
+    sister_names,
+    *,
+    origin_tree,
+    landing_tree,
+    connect: bool,
+    show_origin: bool,
+    label: str,
+):
+    """Build branch segments and MRCA diamond coords/labels for one sister clade."""
+    bx, by, mx, my, mtext = [], [], [], [], []
+    if not sib_entry or not sister_names or not (connect or show_origin):
+        return bx, by, mx, my, mtext
+
+    o_spans, o_xoff, o_xscale, o_xflip = origin_tree
+    parent, siblings = sib_entry
+    sx, sy = _sister_branch_segments(parent, siblings, o_xoff, o_xscale, o_xflip)
+    bx += sx
+    by += sy
+    o_mrca = siblings[0] if len(siblings) == 1 else parent
+    lo, hi = o_spans[id(o_mrca)]
+    o_n = int(round(hi - lo)) + 1
+    scaled = o_mrca.x * o_xscale
+    mx.append((o_xoff - scaled) if o_xflip else (o_xoff + scaled))
+    my.append(o_mrca.y)
+    mtext.append(f"{label} MRCA — {o_n} tip{'s' if o_n != 1 else ''}")
+
+    if not connect:
+        return bx, by, mx, my, mtext
+
+    l_root, l_spans, l_tips, l_sisters, l_xoff, l_xscale, l_xflip = landing_tree
+    ys = [l_tips[n][1] for n in sister_names if n in l_tips]
+    if ys:
+        l_mrca = _find_mrca(l_root, l_spans, min(ys), max(ys))
+        lo, hi = l_spans[id(l_mrca)]
+        l_n = int(round(hi - lo)) + 1
+        scaled = l_mrca.x * l_xscale
+        mx.append((l_xoff - scaled) if l_xflip else (l_xoff + scaled))
+        my.append(l_mrca.y)
+        mtext.append(f"{label} MRCA — {l_n} tip{'s' if l_n != 1 else ''}")
+        # Only colour landing branches when intact/monophyletic on the opposite tree
+        # so a shattered sister does not paint half the opposite skeleton.
+        if l_n == len(sister_names):
+            l_parent_entry = l_sisters.get(id(l_mrca))
+            if l_parent_entry:
+                lsx, lsy = _sister_branch_segments(
+                    l_parent_entry[0], [l_mrca], l_xoff, l_xscale, l_xflip
+                )
+            else:
+                lsx, lsy = _subtree_branch_segments(l_mrca, l_xoff, l_xscale, l_xflip)
+            bx += lsx
+            by += lsy
+    return bx, by, mx, my, mtext
+
+
+def _sister_overlay_bundle(
+    s1,
+    s2,
+    layout,
+    *,
+    connect: bool,
+    show_origin_when_disconnected: bool,
+):
+    """Build all 8 sister traces: left/right branches, connectors, tips, and MRCA markers."""
+    tips1, tips2 = layout["tips1"], layout["tips2"]
+    right_xoff = layout["right_start"] + 1.0
+    left_names = (
+        [n.name for sib in s1[1] for n in _collect_nodes(sib) if n.is_tip]
+        if s1
+        else []
+    )
+    right_names = (
+        [n.name for sib in s2[1] for n in _collect_nodes(sib) if n.is_tip]
+        if s2
+        else []
+    )
+
+    lbx, lby, lmx, lmy, lmt = _sister_side_geometry(
+        s1,
+        left_names,
+        origin_tree=(layout["yspan1"], 0.0, layout["scale1"], False),
+        landing_tree=(
+            layout["root2"],
+            layout["yspan2"],
+            tips2,
+            layout["sisters2"],
+            right_xoff,
+            layout["scale2"],
+            True,
+        ),
+        connect=connect,
+        show_origin=show_origin_when_disconnected,
+        label="G1 sister",
+    )
+    rbx, rby, rmx, rmy, rmt = _sister_side_geometry(
+        s2,
+        right_names,
+        origin_tree=(layout["yspan2"], right_xoff, layout["scale2"], True),
+        landing_tree=(
+            layout["root1"],
+            layout["yspan1"],
+            tips1,
+            layout["sisters1"],
+            0.0,
+            layout["scale1"],
+            False,
+        ),
+        connect=connect,
+        show_origin=show_origin_when_disconnected,
+        label="G2 sister",
+    )
+
+    show_left = left_names if (connect or show_origin_when_disconnected) else []
+    show_right = right_names if (connect or show_origin_when_disconnected) else []
+    branch_left = _branch_overlay_trace(lbx, lby, _MRCA_ACCENT)
+    branch_right = _branch_overlay_trace(rbx, rby, _TIP_SISTER_ACCENT)
+    conn_left = _connector_overlay_trace(
+        tips1,
+        tips2,
+        left_names if connect else [],
+        color=_TIP_SISTER_CONN_LEFT,
+        width=1.0,
+        extra="G1 sister",
+    )
+    conn_right = _connector_overlay_trace(
+        tips1,
+        tips2,
+        right_names if connect else [],
+        color=_TIP_SISTER_CONN_RIGHT,
+        width=1.0,
+        extra="G2 sister",
+    )
+    tips_left = _highlight_overlay_trace(
+        tips1,
+        show_left,
+        color=_MRCA_ACCENT,
+        size=7,
+        extra="G1 sister",
+        also_tips=tips2 if connect else None,
+    )
+    tips_right = _highlight_overlay_trace(
+        tips2,
+        show_right,
+        color=_TIP_SISTER_ACCENT,
+        size=7,
+        extra="G2 sister",
+        also_tips=tips1 if connect else None,
+    )
+    mrca_left = _mrca_diamond_trace(lmx, lmy, lmt, _MRCA_MARKER)
+    mrca_right = _mrca_diamond_trace(rmx, rmy, rmt, _TIP_SISTER_MARKER_RIGHT)
+    return (
+        branch_left,
+        branch_right,
+        conn_left,
+        conn_right,
+        tips_left,
+        tips_right,
+        mrca_left,
+        mrca_right,
+    )
+
+
+def _tip_sister_overlay_traces(taxon, layout, *, connect: bool):
+    """Build all 8 sister overlay traces for a selected tip."""
+    s1 = layout["sisters1"].get(taxon) if taxon else None
+    s2 = layout["sisters2"].get(taxon) if taxon else None
+    return _sister_overlay_bundle(
+        s1, s2, layout, connect=connect, show_origin_when_disconnected=True
+    )
+
+
+def _clade_sister_overlay_traces(highlight, layout, *, connect: bool):
+    """Build all 8 sister overlay traces for a selected clade on monophyletic sides only."""
+    if not connect:
+        return _sister_overlay_bundle(
+            None, None, layout, connect=False, show_origin_when_disconnected=False
+        )
+    entries = []
+    for root, spans, tips, sisters in (
+        (layout["root1"], layout["yspan1"], layout["tips1"], layout["sisters1"]),
+        (layout["root2"], layout["yspan2"], layout["tips2"], layout["sisters2"]),
+    ):
+        ys = [tips[name][1] for name in highlight if name in tips]
+        if len(ys) != len(highlight) or not ys:
+            entries.append(None)
+            continue
+        mrca = _find_mrca(root, spans, min(ys), max(ys))
+        mrca_tips = {n.name for n in _collect_nodes(mrca) if n.is_tip}
+        entries.append(sisters.get(id(mrca)) if mrca_tips == highlight else None)
+    return _sister_overlay_bundle(
+        entries[0], entries[1], layout, connect=True, show_origin_when_disconnected=False
     )
 
 def _complement_tips_trace(complement, tips1, tips2):
@@ -1938,9 +2173,18 @@ def register_clade_explore_callbacks():
         State("tanglegram-yscale-slider", "value"),
         State("clade-freq-tanglegram-pair-store", "data"),
         State("tanglegram-complement-toggle", "checked"),
+        State("tanglegram-sister-toggle", "checked"),
         prevent_initial_call=True,
     )
-    def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair, complement_on):
+    def draw_tanglegram(
+        click_data,
+        uid1,
+        uid2,
+        px_per_tip,
+        current_pair,
+        complement_on,
+        sister_on,
+    ):
         """Draw or patch the tanglegram for a clicked clade, selected tip, or dismiss."""
         same_pair = bool(uid1 and uid2 and current_pair == [uid1, uid2])
         if not click_data:
@@ -1948,16 +2192,24 @@ def register_clade_explore_callbacks():
                 return no_update, no_update, no_update, False
             # Clear dynamic overlays back to the dimmed skeleton on dismiss / filter change.
             patch = Patch()
-            for idx in (_TANGLEGRAM_MRCA_SUBTREE, _TANGLEGRAM_TIP_SISTER_RIGHT):
+            for idx in (
+                _TANGLEGRAM_MRCA_SUBTREE,
+                _TANGLEGRAM_SISTER_BRANCH_LEFT,
+                _TANGLEGRAM_SISTER_BRANCH_RIGHT,
+            ):
                 patch["data"][idx]["x"] = []
                 patch["data"][idx]["y"] = []
             for idx in (
+                _TANGLEGRAM_TIP_SISTER_CONN_LEFT,
+                _TANGLEGRAM_TIP_SISTER_CONN_RIGHT,
                 _TANGLEGRAM_TIP_SISTER_TIPS_LEFT,
                 _TANGLEGRAM_TIP_SISTER_TIPS_RIGHT,
                 _TANGLEGRAM_HIGHLIGHT_LEFT,
                 _TANGLEGRAM_HIGHLIGHT_RIGHT,
                 _TANGLEGRAM_CONNECTORS,
                 _TANGLEGRAM_MRCA_MARKER,
+                _TANGLEGRAM_SISTER_MRCA_LEFT,
+                _TANGLEGRAM_SISTER_MRCA_RIGHT,
                 _TANGLEGRAM_COMPLEMENT_TIPS,
                 _TANGLEGRAM_COMPLEMENT_CONN,
             ):
@@ -1990,55 +2242,18 @@ def register_clade_explore_callbacks():
             hl_left = _highlight_overlay_trace(tips1, highlight)
             hl_right = _highlight_overlay_trace(tips2, highlight)
             connectors = _connector_overlay_trace(tips1, tips2, highlight)
-
-            # Highlight each consensus tree's immediate sister branches and tip points.
-            s1 = layout["sisters1"].get(taxon)
-            s2 = layout["sisters2"].get(taxon)
-            left_sx, left_sy = (
-                _sister_branch_segments(s1[0], s1[1], 0.0, layout["scale1"], False)
-                if s1
-                else ([], [])
-            )
-            right_sx, right_sy = (
-                _sister_branch_segments(
-                    s2[0], s2[1], right_start + 1.0, layout["scale2"], True
-                )
-                if s2
-                else ([], [])
-            )
-            left_sister_names = (
-                [n.name for sib in s1[1] for n in _collect_nodes(sib) if n.is_tip]
-                if s1
-                else []
-            )
-            right_sister_names = (
-                [n.name for sib in s2[1] for n in _collect_nodes(sib) if n.is_tip]
-                if s2
-                else []
-            )
-            mrca_subtree = _branch_overlay_trace(left_sx, left_sy, _MRCA_ACCENT)
-            tip_sister_right = _branch_overlay_trace(right_sx, right_sy, _TIP_SISTER_ACCENT)
-            tip_sister_tips_left = _highlight_overlay_trace(
-                tips1, left_sister_names, color=_MRCA_ACCENT, size=7, extra="G1 sister"
-            )
-            tip_sister_tips_right = _highlight_overlay_trace(
-                tips2, right_sister_names, color=_TIP_SISTER_ACCENT, size=7, extra="G2 sister"
-            )
-            mrca_marker = dict(
-                type="scatter",
-                x=[],
-                y=[],
-                mode="markers",
-                marker=dict(
-                    symbol="diamond",
-                    size=10,
-                    color=_MRCA_MARKER,
-                    line=dict(color="white", width=1.5),
-                ),
-                text=[],
-                hovertemplate="%{text}<extra></extra>",
-                showlegend=False,
-            )
+            mrca_subtree = _branch_overlay_trace([], [], _MRCA_ACCENT)
+            mrca_marker = _mrca_diamond_trace([], [], [], _MRCA_MARKER)
+            (
+                sister_branch_left,
+                sister_branch_right,
+                tip_sister_conn_left,
+                tip_sister_conn_right,
+                tip_sister_tips_left,
+                tip_sister_tips_right,
+                sister_mrca_left,
+                sister_mrca_right,
+            ) = _tip_sister_overlay_traces(taxon, layout, connect=bool(sister_on))
             comp_tips = _complement_tips_trace(set(), tips1, tips2)
             comp_conn = _complement_connector_trace(tips1, tips2, set(), set())
             tip_row = next(
@@ -2069,13 +2284,16 @@ def register_clade_explore_callbacks():
             mrca_subtree, mrca_marker, complement_per_tree = _build_mrca_traces(
                 highlight, layout
             )
-            tip_sister_right = _branch_overlay_trace([], [], _TIP_SISTER_ACCENT)
-            tip_sister_tips_left = _highlight_overlay_trace(
-                tips1, [], color=_MRCA_ACCENT, size=7, extra="G1 sister"
-            )
-            tip_sister_tips_right = _highlight_overlay_trace(
-                tips2, [], color=_TIP_SISTER_ACCENT, size=7, extra="G2 sister"
-            )
+            (
+                sister_branch_left,
+                sister_branch_right,
+                tip_sister_conn_left,
+                tip_sister_conn_right,
+                tip_sister_tips_left,
+                tip_sister_tips_right,
+                sister_mrca_left,
+                sister_mrca_right,
+            ) = _clade_sister_overlay_traces(highlight, layout, connect=bool(sister_on))
             complement1 = complement_per_tree["tips1"]
             complement2 = complement_per_tree["tips2"]
             title_children = _tanglegram_title_children(
@@ -2093,17 +2311,24 @@ def register_clade_explore_callbacks():
 
         if same_pair:
             patch = Patch()
-            patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["x"] = mrca_subtree["x"]
-            patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["y"] = mrca_subtree["y"]
-            patch["data"][_TANGLEGRAM_TIP_SISTER_RIGHT]["x"] = tip_sister_right["x"]
-            patch["data"][_TANGLEGRAM_TIP_SISTER_RIGHT]["y"] = tip_sister_right["y"]
             for idx, trace in (
+                (_TANGLEGRAM_MRCA_SUBTREE,        mrca_subtree),
+                (_TANGLEGRAM_SISTER_BRANCH_LEFT,  sister_branch_left),
+                (_TANGLEGRAM_SISTER_BRANCH_RIGHT, sister_branch_right),
+            ):
+                patch["data"][idx]["x"] = trace["x"]
+                patch["data"][idx]["y"] = trace["y"]
+            for idx, trace in (
+                (_TANGLEGRAM_TIP_SISTER_CONN_LEFT,  tip_sister_conn_left),
+                (_TANGLEGRAM_TIP_SISTER_CONN_RIGHT, tip_sister_conn_right),
                 (_TANGLEGRAM_TIP_SISTER_TIPS_LEFT,  tip_sister_tips_left),
                 (_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, tip_sister_tips_right),
                 (_TANGLEGRAM_HIGHLIGHT_LEFT,        hl_left),
                 (_TANGLEGRAM_HIGHLIGHT_RIGHT,       hl_right),
                 (_TANGLEGRAM_CONNECTORS,            connectors),
                 (_TANGLEGRAM_MRCA_MARKER,           mrca_marker),
+                (_TANGLEGRAM_SISTER_MRCA_LEFT,      sister_mrca_left),
+                (_TANGLEGRAM_SISTER_MRCA_RIGHT,     sister_mrca_right),
                 (_TANGLEGRAM_COMPLEMENT_TIPS,       comp_tips),
                 (_TANGLEGRAM_COMPLEMENT_CONN,       comp_conn),
             ):
@@ -2114,9 +2339,11 @@ def register_clade_explore_callbacks():
 
         skel = layout["skeleton_traces"]
         traces = [
-            skel[0], skel[2], mrca_subtree, tip_sister_right,
-            skel[1], skel[3], tip_sister_tips_left, tip_sister_tips_right,
+            skel[0], skel[2], mrca_subtree, sister_branch_left, sister_branch_right,
+            skel[1], skel[3], tip_sister_conn_left, tip_sister_conn_right,
+            tip_sister_tips_left, tip_sister_tips_right,
             hl_left, hl_right, connectors, mrca_marker,
+            sister_mrca_left, sister_mrca_right,
             comp_tips, comp_conn,
         ]
         height = _tanglegram_height(px_per_tip, layout["max_y"])
@@ -2228,7 +2455,7 @@ def register_clade_explore_callbacks():
         them. Their styling was baked in at first render, so
         the patch never re-sends marker/line/mode.
         """
-        # Need a rendered clade tanglegram — no-op in tip mode or before any click.
+        # Need a rendered clade tanglegram — Clade complement is disabled in tip mode.
         if not click_data or click_data.get("kind") == "tip" or not uid1 or not uid2:
             return no_update
         layout = _get_tanglegram_layout(uid1, uid2)
@@ -2261,6 +2488,73 @@ def register_clade_explore_callbacks():
         for idx, trace in (
             (_TANGLEGRAM_COMPLEMENT_TIPS, comp_tips),
             (_TANGLEGRAM_COMPLEMENT_CONN, comp_conn),
+        ):
+            patch["data"][idx]["x"] = trace["x"]
+            patch["data"][idx]["y"] = trace["y"]
+            patch["data"][idx]["text"] = trace["text"]
+        return patch
+
+    @callback(
+        Output("clade-freq-tanglegram", "figure", allow_duplicate=True),
+        Input("tanglegram-sister-toggle", "checked"),
+        State("clade-freq-click-store", "data"),
+        State("clade-freq-consensus-tree-select-1", "value"),
+        State("clade-freq-consensus-tree-select-2", "value"),
+        prevent_initial_call=True,
+    )
+    def toggle_sister_connectors(checked, click_data, uid1, uid2):
+        """Show or hide cross-tree G1/G2 sister connectors and landing tips."""
+        if not click_data or not uid1 or not uid2:
+            return no_update
+        layout = _get_tanglegram_layout(uid1, uid2)
+        if layout is None:
+            return no_update
+
+        if click_data.get("kind") == "tip":
+            taxon = str(click_data.get("taxon") or "")
+            if not taxon:
+                return no_update
+            (
+                branch_left,
+                branch_right,
+                conn_left,
+                conn_right,
+                tips_left,
+                tips_right,
+                mrca_left,
+                mrca_right,
+            ) = _tip_sister_overlay_traces(taxon, layout, connect=bool(checked))
+        else:
+            resolved = _resolved_clade(click_data, expected_pair=(uid1, uid2))
+            if resolved is None:
+                return no_update
+            (
+                branch_left,
+                branch_right,
+                conn_left,
+                conn_right,
+                tips_left,
+                tips_right,
+                mrca_left,
+                mrca_right,
+            ) = _clade_sister_overlay_traces(
+                set(resolved["tip_names"]), layout, connect=bool(checked)
+            )
+
+        patch = Patch()
+        for idx, trace in (
+            (_TANGLEGRAM_SISTER_BRANCH_LEFT,  branch_left),
+            (_TANGLEGRAM_SISTER_BRANCH_RIGHT, branch_right),
+        ):
+            patch["data"][idx]["x"] = trace["x"]
+            patch["data"][idx]["y"] = trace["y"]
+        for idx, trace in (
+            (_TANGLEGRAM_TIP_SISTER_CONN_LEFT,  conn_left),
+            (_TANGLEGRAM_TIP_SISTER_CONN_RIGHT, conn_right),
+            (_TANGLEGRAM_TIP_SISTER_TIPS_LEFT,  tips_left),
+            (_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, tips_right),
+            (_TANGLEGRAM_SISTER_MRCA_LEFT,      mrca_left),
+            (_TANGLEGRAM_SISTER_MRCA_RIGHT,     mrca_right),
         ):
             patch["data"][idx]["x"] = trace["x"]
             patch["data"][idx]["y"] = trace["y"]

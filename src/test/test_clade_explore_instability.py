@@ -557,8 +557,8 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
     assert no_style == {"display": "none"}
 
 
-def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
-    """Tip tanglegram highlights red connector + G1/G2 consensus sisters, clears to skeleton, and disables complement."""
+def test_tip_mode_tanglegram_consensus_sisters_complement_and_clear():
+    """Tip tanglegram highlights G1/G2 sisters; complement toggle connects sisters with landing tips under red."""
     from dash import no_update
 
     def _nexus(newick):
@@ -600,6 +600,7 @@ def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
                 "records": [],
                 "resolution": {
                     0: {"source_distmat": "RF_001", "column_j": 10, "tip_names": ("A", "B")},
+                    1: {"source_distmat": "RF_001", "column_j": 11, "tip_names": ("A", "B", "R")},
                 },
                 "pair": (uid1, uid2),
                 "has_instability": True,
@@ -607,8 +608,8 @@ def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
                     {
                         "taxon": "R",
                         "between_shift": 0.875,
-                        "top_sister_1": "{A, B} 100%",
-                        "top_sister_2": "E (cherry) 50%, {D, E} 50%",
+                        "top_sister_1": "2-tip sister (100%)",
+                        "top_sister_2": "1-tip cherry (50%), 2-tip sister (50%)",
                     }
                 ],
             },
@@ -616,45 +617,127 @@ def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
 
         draw_cb = _registered_callback("draw_tanglegram")
         comp_cb = _registered_callback("toggle_complement_highlights")
+        sister_cb = _registered_callback("toggle_sister_connectors")
 
         tip_click = {"kind": "tip", "taxon": "R", "result_key": "k-tang", "_t": 1}
-        fig, pair, title, comp_disabled = draw_cb(tip_click, uid1, uid2, 1, None, True)
+        # Tip mode with Connect sister OFF: origin sister branches + tips + MRCA diamonds, connectors empty, complement disabled.
+        fig, pair, title, comp_disabled = draw_cb(tip_click, uid1, uid2, 1, None, False, False)
         assert pair == [uid1, uid2]
         assert comp_disabled is True
-        assert len(fig.data) == 14
-        # Red tip markers + single connector for R.
+        assert len(fig.data) == 19
+        assert (
+            clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT
+            < clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT
+            < clade_explore._TANGLEGRAM_CONNECTORS
+        )
+        assert fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT].line.width == 1.0
+        assert fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT].line.width == 1.0
+        assert len(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT].x) == 0
+        assert len(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT].x) == 0
         assert list(fig.data[clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT].text) == ["R"]
         assert list(fig.data[clade_explore._TANGLEGRAM_HIGHLIGHT_RIGHT].text) == ["R"]
         assert len(fig.data[clade_explore._TANGLEGRAM_CONNECTORS].x) == 3
-        # Left consensus sister {A, B} (blue) and right cherry sister E (green) branches + tip points.
-        assert len(fig.data[clade_explore._TANGLEGRAM_MRCA_SUBTREE].x) > 0
-        assert len(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT].x) > 0
-        assert set(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT].text) == {"A", "B"}
+        assert len(fig.data[clade_explore._TANGLEGRAM_MRCA_SUBTREE].x) == 0
+        assert len(fig.data[clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT].x) > 0
+        assert len(fig.data[clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT].x) > 0
+        assert list(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT].text) == ["A", "B"]
         assert list(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT].text) == ["E"]
-        # MRCA diamond and complement traces remain empty in tip mode.
-        assert len(fig.data[clade_explore._TANGLEGRAM_MRCA_MARKER].x) == 0
-        assert len(fig.data[clade_explore._TANGLEGRAM_COMPLEMENT_TIPS].x) == 0
+        assert list(fig.data[clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT].text) == ["G1 sister MRCA — 2 tips"]
+        assert list(fig.data[clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT].text) == ["G2 sister MRCA — 1 tip"]
         assert "0.88" in str(title)
 
-        # Complement toggle no-ops in tip mode.
+        # Clade complement no-ops in tip mode.
         assert comp_cb(True, tip_click, uid1, uid2) is no_update
 
-        # Switching to a clade click on same pair Patches cleanly and re-enables complement.
-        clade_click = {"kind": "clade", "split_id": 0, "result_key": "k-tang", "_t": 2}
+        # Connect sister ON in tip mode: connects G1 sister (A, B) in blue and G2 sister (E) in green,
+        # colors intact landing branches, and places origin + landing MRCA diamonds on both trees.
+        patch_on = sister_cb(True, tip_click, uid1, uid2)
+        on_ops = _patch_ops(patch_on)
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT, "x")]) == 6
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT, "x")]) == 3
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "x")]) == 4
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "x")]) == 2
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT, "x")]) > len(
+            fig.data[clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT].x
+        )
+        assert len(on_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT, "x")]) > len(
+            fig.data[clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT].x
+        )
+        assert on_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT, "text")] == [
+            "G1 sister MRCA — 2 tips",
+            "G1 sister MRCA — 2 tips",
+        ]
+        assert on_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT, "text")] == [
+            "G2 sister MRCA — 1 tip",
+            "G2 sister MRCA — 1 tip",
+        ]
+
+        # Connect sister OFF in tip mode hides sister connectors and keeps origin-side sister branches/tips/MRCA.
+        patch_off = sister_cb(False, tip_click, uid1, uid2)
+        off_ops = _patch_ops(patch_off)
+        assert off_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT, "x")] == []
+        assert off_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT, "x")] == []
+        assert len(off_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "x")]) == 2
+        assert len(off_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "x")]) == 1
+        assert off_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT, "text")] == [
+            "G1 sister MRCA — 2 tips"
+        ]
+
+        # Clade mode ({A, B}, monophyletic in BOTH trees): Connect sister OFF clears sister traces & re-enables complement.
+        clade_both = {"kind": "clade", "split_id": 0, "result_key": "k-tang", "_t": 2}
         patch_clade, pair2, _, comp_disabled_clade = draw_cb(
-            clade_click, uid1, uid2, 1, [uid1, uid2], False
+            clade_both, uid1, uid2, 1, [uid1, uid2], False, False
         )
         assert pair2 is no_update
         assert comp_disabled_clade is False
         clade_ops = _patch_ops(patch_clade)
-        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT, "x")] == []
-        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "x")] == []
-        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "x")] == []
+        for idx in (
+            clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT,
+            clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT,
+            clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT,
+            clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT,
+        ):
+            assert clade_ops[("data", idx, "x")] == []
         assert len(clade_ops[("data", clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT, "x")]) == 2
+
+        # Connect sister ON for {A, B}: colors G1 sister (R, blue) & G2 sister (C, green) branches + MRCA diamonds + connectors.
+        patch_clade_sis = sister_cb(True, clade_both, uid1, uid2)
+        cs_ops = _patch_ops(patch_clade_sis)
+        assert cs_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "text")] == ["R", "R"]
+        assert cs_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "text")] == ["C", "C"]
+        assert len(cs_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT, "x")]) > 0
+        assert len(cs_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT, "x")]) > 0
+        assert cs_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT, "text")] == [
+            "G1 sister MRCA — 1 tip",
+            "G1 sister MRCA — 1 tip",
+        ]
+        assert cs_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT, "text")] == [
+            "G2 sister MRCA — 1 tip",
+            "G2 sister MRCA — 1 tip",
+        ]
+        assert len(cs_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT, "x")]) == 3
+        assert len(cs_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT, "x")]) == 3
+
+        # Clade mode ({A, B, R}, monophyletic ONLY in G1, broken in G2): only blue G1 sister (C) branches/MRCA/connectors drawn.
+        clade_g1_only = {"kind": "clade", "split_id": 1, "result_key": "k-tang", "_t": 3}
+        patch_g1_sis = sister_cb(True, clade_g1_only, uid1, uid2)
+        g1_ops = _patch_ops(patch_g1_sis)
+        assert g1_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "text")] == ["C", "C"]
+        assert len(g1_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT, "x")]) > 0
+        assert len(g1_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT, "x")]) == 2
+        assert len(g1_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT, "x")]) == 3
+        assert g1_ops[("data", clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT, "x")] == []
+        assert g1_ops[("data", clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT, "x")] == []
+        assert g1_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "x")] == []
+        assert g1_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT, "x")] == []
 
         # Dismissing selection (click_data=None) Patches all dynamic overlays back to [].
         patch_clear, pair3, title_clear, comp_disabled_clear = draw_cb(
-            None, uid1, uid2, 1, [uid1, uid2], False
+            None, uid1, uid2, 1, [uid1, uid2], False, True
         )
         assert pair3 is no_update
         assert title_clear == ""
@@ -662,13 +745,18 @@ def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
         clear_ops = _patch_ops(patch_clear)
         for idx in (
             clade_explore._TANGLEGRAM_MRCA_SUBTREE,
-            clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT,
+            clade_explore._TANGLEGRAM_SISTER_BRANCH_LEFT,
+            clade_explore._TANGLEGRAM_SISTER_BRANCH_RIGHT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_CONN_LEFT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_CONN_RIGHT,
             clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT,
             clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT,
             clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT,
             clade_explore._TANGLEGRAM_HIGHLIGHT_RIGHT,
             clade_explore._TANGLEGRAM_CONNECTORS,
             clade_explore._TANGLEGRAM_MRCA_MARKER,
+            clade_explore._TANGLEGRAM_SISTER_MRCA_LEFT,
+            clade_explore._TANGLEGRAM_SISTER_MRCA_RIGHT,
             clade_explore._TANGLEGRAM_COMPLEMENT_TIPS,
             clade_explore._TANGLEGRAM_COMPLEMENT_CONN,
         ):

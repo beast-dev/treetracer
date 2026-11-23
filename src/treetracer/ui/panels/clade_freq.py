@@ -461,6 +461,31 @@ def _add_clade_freq_panel():
                              style={"writingMode": "vertical-rl",
                                     "transform": "rotate(180deg)"}),
                 ], gap=4, align="center", wrap="nowrap"),
+                dmc.Group([
+                    dmc.Box(
+                        dmc.Tooltip(
+                            label=(
+                                "Connect G1 (blue) and G2 (green) immediate sister "
+                                "clades across both trees (monophyletic sides only)"
+                            ),
+                            position="left",
+                            withArrow=True,
+                            children=dmc.Switch(
+                                id="tanglegram-sister-toggle",
+                                label="",
+                                checked=False,
+                                size="sm",
+                                color="blue",
+                                style={"transform": "translateX(-10px) rotate(90deg)"},
+                            ),
+                        ),
+                        style={"width": 40, "height": 48, "display": "flex",
+                               "alignItems": "center", "justifyContent": "center"},
+                    ),
+                    dmc.Text("Connect sister", size="md", fw=500,
+                             style={"writingMode": "vertical-rl",
+                                    "transform": "rotate(180deg)"}),
+                ], gap=4, align="center", wrap="nowrap"),
             ], gap=6, align="center", pt=8,
                # Pin the Expand-tree slider + Clade-complement toggle so
                # they stay reachable while a tall tanglegram scrolls past.

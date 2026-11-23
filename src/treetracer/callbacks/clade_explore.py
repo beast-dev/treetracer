@@ -21,6 +21,8 @@ import pandas as pd
 from .. import state
 from ..background_jobs import JobBusyError, JobRef, JobState, job_manager
 from ..clade_freq.layout import parse_nexus, build_tree_traces, _collect_nodes
+from ..clade_freq.sister_instability import format_tip_instability_tsv
+from ..icons import icon
 from ..logger import add_log
 from ..theme import get_template, DARK_TEMPLATE
 from ..plot_utils import retheme_figure
@@ -631,14 +633,108 @@ def _filter_clade_frequency_frame(
     *,
     min_clade_size: int,
     exclusive_only: bool,
+    color_by: str = "clade_size",
+    min_instability: float = 0.0,
 ) -> pd.DataFrame:
-    """Apply the two user-facing scatter filters to comparison records."""
-    visible = frame["clade_size"] >= min_clade_size
+    """Apply the user-facing scatter filters to comparison records."""
+    if frame.empty:
+        return frame
+    if color_by == "clade_instability" and "clade_instability" in frame.columns:
+        instab = pd.to_numeric(frame["clade_instability"], errors="coerce")
+        visible = (
+            (frame["clade_size"] >= 2)
+            & instab.notna()
+            & (instab >= float(min_instability))
+        )
+    else:
+        visible = frame["clade_size"] >= min_clade_size
     if exclusive_only:
         visible &= frame["in_consensus_tree_1"].ne(
             frame["in_consensus_tree_2"]
         )
     return frame.loc[visible]
+
+
+_TIP_FOOTER_DEFAULT_HINT = (
+    "Click ⊙ on any taxon to highlight its jump in the tanglegram and ring "
+    "every clade containing it on the scatter."
+)
+
+
+def _shift_pill_class(value: float) -> str:
+    if value >= 0.40:
+        return "tt-shift-pill tt-shift-red"
+    if value >= 0.10:
+        return "tt-shift-pill tt-shift-amber"
+    return "tt-shift-pill tt-shift-neutral"
+
+
+def _sort_tip_rows(tip_rows: list[dict[str, Any]], sort_by: str | None) -> list[dict[str, Any]]:
+    key = sort_by or "between_shift"
+    if key == "taxon":
+        return sorted(tip_rows, key=lambda r: str(r["taxon"]).lower())
+    if key == "combined_instability":
+        return sorted(
+            tip_rows,
+            key=lambda r: (-float(r["combined_instability"]), -float(r["between_shift"]), str(r["taxon"])),
+        )
+    if key == "instab_1":
+        return sorted(
+            tip_rows,
+            key=lambda r: (-float(r["instab_1"]), -float(r["between_shift"]), str(r["taxon"])),
+        )
+    if key == "instab_2":
+        return sorted(
+            tip_rows,
+            key=lambda r: (-float(r["instab_2"]), -float(r["between_shift"]), str(r["taxon"])),
+        )
+    return sorted(
+        tip_rows,
+        key=lambda r: (-float(r["between_shift"]), -float(r["combined_instability"]), str(r["taxon"])),
+    )
+
+
+def _tip_detail_footer(selected_row: dict[str, Any] | None):
+    if selected_row is None:
+        return dmc.Text(_TIP_FOOTER_DEFAULT_HINT, size="xs", c="dimmed")
+    p1_pct = round(float(selected_row.get("p_cherry_1", 0.0)) * 100)
+    p2_pct = round(float(selected_row.get("p_cherry_2", 0.0)) * 100)
+    n_sis = int(selected_row.get("n_sisters_comb", 0))
+    return html.Div(
+        [
+            dmc.Group(
+                [
+                    html.Span(
+                        [
+                            html.Strong("Selected: "),
+                            html.Span(
+                                selected_row["taxon"],
+                                style={"fontFamily": "monospace", "fontWeight": 600, "color": "#e63946"},
+                            ),
+                        ]
+                    ),
+                    dmc.Text(
+                        f"{n_sis} distinct sisters · Cherry: {p1_pct}% (G1) / {p2_pct}% (G2)",
+                        size="xs",
+                        c="dimmed",
+                    ),
+                ],
+                justify="space-between",
+                gap="xs",
+                wrap="wrap",
+            ),
+            html.Div(
+                [
+                    html.Strong("G1: "),
+                    html.Span(str(selected_row.get("top_sister_1", "—"))),
+                    html.Span("  →  ", style={"fontWeight": 600, "color": "#e63946"}),
+                    html.Strong("G2: "),
+                    html.Span(str(selected_row.get("top_sister_2", "—"))),
+                ],
+                style={"marginTop": "2px", "overflowWrap": "anywhere"},
+            ),
+        ]
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -968,42 +1064,331 @@ def register_clade_explore_callbacks():
         new_sel2 = sel2 if sel2 in valid_uids else None
         return options, False, new_sel1, options, False, new_sel2
 
-    # ------ Clade Frequency Comparison: filter the scatter ------
+    # ------ Clade Frequency Comparison: toggle sliders & filter scatter ------
+
+    @callback(
+        Output("clade-freq-size-slider-wrap", "style"),
+        Output("clade-freq-instability-slider-wrap", "style"),
+        Input("clade-freq-color-by", "value"),
+    )
+    def toggle_clade_freq_slider_wrappers(color_by):
+        if color_by == "clade_instability":
+            return {"display": "none"}, {}
+        return {}, {"display": "none"}
 
     @callback(
         Output("clade-freq-scatter", "figure", allow_duplicate=True),
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Input("clade-freq-color-by", "value"),
         Input("clade-freq-min-clade-size", "value"),
+        Input("clade-freq-min-instability", "value"),
         Input("clade-freq-exclusive-only", "checked"),
         State("clade-freq-data-store", "data"),
         prevent_initial_call=True,
     )
-    def filter_clade_freq_plot(min_clade_size, exclusive_only, store_data):
-        """Filter the scatter when either display control changes.
-
-        Patches only ``data[0]`` (the Scattergl trace) — x/y/customdata/
-        marker.color — so Plotly doesn't rebuild the figure or remount
-        the dcc.Graph on every drag tick. The click-marker overlay is
-        cleared so a red ring cannot remain at a filtered-away coordinate.
-        """
+    def filter_clade_freq_plot(
+        color_by,
+        min_clade_size,
+        min_instability,
+        exclusive_only,
+        store_data,
+    ):
+        """Patch scatter ``data[0]`` on mode/slider/checkbox changes and clear selection."""
         if not store_data:
-            return no_update
+            return no_update, no_update
 
         df = pd.DataFrame(store_data)
-        min_size = int(min_clade_size or 2)
+        has_instab_col = (
+            "clade_instability" in df.columns
+            and pd.to_numeric(df["clade_instability"], errors="coerce").notna().any()
+        )
+        mode = (
+            "clade_instability"
+            if color_by == "clade_instability" and has_instab_col
+            else "clade_size"
+        )
         df_plot = _filter_clade_frequency_frame(
             df,
-            min_clade_size=min_size,
+            min_clade_size=int(min_clade_size or 2),
             exclusive_only=bool(exclusive_only),
+            color_by=mode,
+            min_instability=float(min_instability or 0.0),
         )
 
         patch = Patch()
         patch["data"][0]["x"] = df_plot["freq_1"].tolist()
         patch["data"][0]["y"] = df_plot["freq_2"].tolist()
         patch["data"][0]["customdata"] = _scatter_customdata(df_plot)
-        patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
+        if mode == "clade_instability":
+            patch["data"][0]["marker"]["color"] = (
+                df_plot["clade_instability"].astype(float).tolist()
+            )
+            patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Instability"
+            patch["data"][0]["marker"]["cauto"] = False
+            patch["data"][0]["marker"]["cmin"] = 0.0
+            patch["data"][0]["marker"]["cmax"] = 1.0
+        else:
+            patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
+            patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Clade size"
+            patch["data"][0]["marker"]["cauto"] = True
+            patch["data"][0]["marker"]["cmin"] = None
+            patch["data"][0]["marker"]["cmax"] = None
         patch["data"][1]["x"] = []
         patch["data"][1]["y"] = []
-        return patch
+        return patch, None
+
+    # ------ Tip Instability Table: reactive sync, render, pagination, TSV ------
+
+    @callback(
+        Output("clade-freq-color-by", "data"),
+        Output("clade-freq-color-by", "value"),
+        Output("clade-freq-color-by-tooltip", "disabled"),
+        Output("tip-instability-sort", "value"),
+        Output("tip-instability-search", "value"),
+        Output("tip-instability-limit-store", "data", allow_duplicate=True),
+        Output("tip-instability-export-btn", "disabled"),
+        Output("tip-instability-controls", "style"),
+        Input("clade-freq-result-key-store", "data"),
+        State("clade-freq-color-by", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_instability_controls_on_result(result_key, current_color_by):
+        """Sync dropdown availability, default sort, and resets on Compare/Clear."""
+        cached = state.get_clade_frequency_result(result_key) if result_key else None
+        has_instab = bool(cached and cached.get("has_instability"))
+        color_options = [
+            {"value": "clade_size", "label": "Clade size"},
+            {
+                "value": "clade_instability",
+                "label": "Clade instability",
+                "disabled": not has_instab,
+            },
+        ]
+        # Always start/reset to Clade size so freshly built scatter matches dropdown.
+        color_value = no_update if current_color_by == "clade_size" else "clade_size"
+        tooltip_disabled = has_instab or cached is None
+
+        default_sort = "between_shift"
+        if has_instab:
+            tip_rows = cached.get("tip_rows") or []
+            max_shift = max((float(r["between_shift"]) for r in tip_rows), default=0.0)
+            if max_shift <= 1e-12:
+                default_sort = "combined_instability"
+
+        controls_style = {} if has_instab else {"display": "none"}
+        return (
+            color_options,
+            color_value,
+            tooltip_disabled,
+            default_sort,
+            "",
+            50,
+            not has_instab,
+            controls_style,
+        )
+
+    @callback(
+        Output("tip-instability-limit-store", "data", allow_duplicate=True),
+        Input("tip-instability-show-more", "n_clicks"),
+        State("tip-instability-limit-store", "data"),
+        prevent_initial_call=True,
+    )
+    def bump_tip_instability_limit(n_clicks, current_limit):
+        if not n_clicks:
+            return no_update
+        return int(current_limit or 50) + 50
+
+    @callback(
+        Output("tip-instability-table-body", "children"),
+        Output("tip-instability-badge", "children"),
+        Output("tip-instability-badge", "style"),
+        Output("tip-instability-summary", "children"),
+        Output("tip-instability-show-more", "style"),
+        Output("tip-instability-detail-footer", "children"),
+        Input("clade-freq-result-key-store", "data"),
+        Input("tip-instability-search", "value"),
+        Input("tip-instability-sort", "value"),
+        Input("tip-instability-limit-store", "data"),
+        Input("clade-freq-click-store", "data"),
+        prevent_initial_call=True,
+    )
+    def render_tip_instability_table(
+        result_key,
+        search_text,
+        sort_by,
+        limit,
+        click_data,
+    ):
+        cached = state.get_clade_frequency_result(result_key) if result_key else None
+        if cached is None:
+            return (
+                "",
+                "",
+                {"display": "none"},
+                "",
+                {"display": "none"},
+                _tip_detail_footer(None),
+            )
+
+        if not cached.get("has_instability"):
+            empty = html.Div(
+                [
+                    icon("tabler:info-circle", size=24, style={"opacity": 0.6}),
+                    dmc.Text("Tip Instability Unavailable", fw=600, size="sm"),
+                    dmc.Text(
+                        "Immediate sister-clade Jaccard instability requires strictly "
+                        "binary rooted trees with persisted RootedFactsSnapshot splits. "
+                        "Unrooted bipartition scatter and tanglegram views remain active.",
+                        size="xs",
+                        c="dimmed",
+                    ),
+                ],
+                className="tt-tip-instability-empty",
+            )
+            return empty, "", {"display": "none"}, "", {"display": "none"}, ""
+
+        tip_rows = cached.get("tip_rows") or []
+        n_shifting = sum(1 for r in tip_rows if float(r["between_shift"]) > 0.05)
+        n_unstable = sum(1 for r in tip_rows if float(r["combined_instability"]) > 0.05)
+        if n_shifting:
+            badge_text = f"{n_shifting} shifting"
+        elif n_unstable:
+            badge_text = f"{n_unstable} unstable"
+        else:
+            badge_text = "stable"
+
+        query = (search_text or "").strip().lower()
+        filtered = (
+            [r for r in tip_rows if query in str(r["taxon"]).lower()]
+            if query
+            else tip_rows
+        )
+        ordered = _sort_tip_rows(filtered, sort_by)
+        cap = max(50, int(limit or 50))
+        shown = ordered[:cap]
+
+        selected_taxon = (
+            click_data.get("taxon")
+            if isinstance(click_data, dict) and click_data.get("kind") == "tip"
+            else None
+        )
+        selected_row = (
+            next((r for r in tip_rows if r["taxon"] == selected_taxon), None)
+            if selected_taxon
+            else None
+        )
+
+        body_rows = []
+        for row in shown:
+            taxon = str(row["taxon"])
+            is_selected = taxon == selected_taxon
+            shift_val = float(row["between_shift"])
+            body_rows.append(
+                dmc.TableTr(
+                    [
+                        dmc.TableTd(
+                            html.Span(taxon, className="tt-tip-taxon-text", title=taxon)
+                        ),
+                        dmc.TableTd(
+                            html.Span(
+                                f"{shift_val:.2f}",
+                                className=_shift_pill_class(shift_val),
+                            ),
+                            className="tt-tip-col-shift",
+                        ),
+                        dmc.TableTd(
+                            f"{float(row['instab_1']):.2f}",
+                            className="tt-tip-col-num",
+                        ),
+                        dmc.TableTd(
+                            f"{float(row['instab_2']):.2f}",
+                            className="tt-tip-col-num",
+                        ),
+                        dmc.TableTd(
+                            f"{float(row['combined_instability']):.2f}",
+                            className="tt-tip-col-num",
+                        ),
+                        dmc.TableTd(
+                            dmc.ActionIcon(
+                                "⊙",
+                                id={"type": "tip-instability-focus", "taxon": taxon},
+                                size="xs",
+                                variant="filled" if is_selected else "subtle",
+                                color="red" if is_selected else "gray",
+                                **{"aria-label": f"Focus {taxon}"},
+                            ),
+                            className="tt-tip-col-action",
+                        ),
+                    ],
+                    className="tt-tip-row-selected" if is_selected else "",
+                )
+            )
+
+        if body_rows:
+            table = dmc.Table(
+                [
+                    dmc.TableThead(
+                        dmc.TableTr(
+                            [
+                                dmc.TableTh("Taxon"),
+                                dmc.TableTh("Shift", className="tt-tip-col-shift"),
+                                dmc.TableTh("G1", className="tt-tip-col-num"),
+                                dmc.TableTh("G2", className="tt-tip-col-num"),
+                                dmc.TableTh("Comb.", className="tt-tip-col-num"),
+                                dmc.TableTh("", className="tt-tip-col-action"),
+                            ]
+                        )
+                    ),
+                    dmc.TableTbody(body_rows),
+                ],
+                className="tt-tip-instability-table",
+                highlightOnHover=True,
+            )
+            summary = (
+                f"Showing {len(shown)} of {len(ordered)} tips · "
+                f"{n_shifting} with Shift > 0.05 · {n_unstable} with Comb. > 0.05"
+            )
+        else:
+            table = dmc.Text(
+                f"No taxa matching '{(search_text or '').strip()}'.",
+                size="xs",
+                c="dimmed",
+                ta="center",
+                mt="md",
+            )
+            summary = f"0 of {len(tip_rows)} tips"
+
+        show_more_style = {} if len(shown) < len(ordered) else {"display": "none"}
+        return (
+            table,
+            badge_text,
+            {},
+            summary,
+            show_more_style,
+            _tip_detail_footer(selected_row),
+        )
+
+    @callback(
+        Output("tip-instability-download", "data"),
+        Input("tip-instability-export-btn", "n_clicks"),
+        State("clade-freq-result-key-store", "data"),
+        prevent_initial_call=True,
+    )
+    def export_tip_instability_tsv(n_clicks, result_key):
+        if not n_clicks or not result_key:
+            return no_update
+        cached = state.get_clade_frequency_result(result_key)
+        if not cached or not cached.get("has_instability"):
+            return no_update
+        tip_rows = cached.get("tip_rows") or []
+        if not tip_rows:
+            return no_update
+        label_1 = str(cached.get("label_1", "G1")).replace("/", "_").replace(" ", "_")
+        label_2 = str(cached.get("label_2", "G2")).replace("/", "_").replace(" ", "_")
+        return dcc.send_string(
+            format_tip_instability_tsv(tip_rows),
+            filename=f"{label_1}_vs_{label_2}_tip_instability.tsv",
+        )
 
     # ------ Clade Frequency Comparison: enable Compare button ------
 

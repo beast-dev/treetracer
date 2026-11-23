@@ -239,3 +239,151 @@
 [data-mantine-color-scheme="dark"] .rc-slider-track {
   background-color: #748ffc;
 }
+
+/* Tip Instability Table (Compare Consensus side-by-side workspace). */
+.tt-tip-instability-card {
+  display: flex;
+  flex-direction: column;
+  height: 450px;
+}
+
+.tt-tip-instability-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tt-tip-instability-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.tt-tip-instability-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--mantine-color-body);
+  font-size: 11px;
+  padding: 5px 4px;
+}
+
+.tt-tip-instability-table td {
+  padding: 4px;
+  font-size: 12px;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.tt-tip-col-shift {
+  width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-tip-col-num {
+  width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-tip-col-action {
+  width: 32px;
+  text-align: center;
+}
+
+.tt-tip-taxon-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.tt-shift-pill {
+  display: inline-block;
+  min-width: 42px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.tt-shift-neutral {
+  background: rgba(134, 142, 150, 0.14);
+  color: var(--mantine-color-dimmed);
+}
+
+.tt-shift-amber {
+  background: rgba(245, 159, 0, 0.18);
+  color: #b45309;
+}
+
+.tt-shift-red {
+  background: rgba(230, 57, 70, 0.16);
+  color: #c92a2a;
+}
+
+.tt-tip-row-selected {
+  background: rgba(230, 57, 70, 0.10) !important;
+  box-shadow: inset 3px 0 0 #e63946;
+}
+
+.tt-tip-instability-footer {
+  border-top: 1px solid var(--mantine-color-default-border);
+  padding-top: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.tt-tip-instability-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+  gap: 8px;
+}
+
+.tt-tip-filter-banner {
+  display: inline-flex;
+  padding: 2px 8px;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(230, 57, 70, 0.35);
+  background: rgba(230, 57, 70, 0.10);
+  color: #c92a2a;
+}
+
+[data-mantine-color-scheme="dark"] .tt-shift-neutral {
+  background: rgba(134, 142, 150, 0.22);
+  color: #adb5bd;
+}
+
+[data-mantine-color-scheme="dark"] .tt-shift-amber {
+  background: rgba(250, 176, 5, 0.22);
+  color: #ffd43b;
+}
+
+[data-mantine-color-scheme="dark"] .tt-shift-red {
+  background: rgba(255, 107, 107, 0.24);
+  color: #ff8787;
+}
+
+[data-mantine-color-scheme="dark"] .tt-tip-row-selected {
+  background: rgba(255, 107, 107, 0.16) !important;
+  box-shadow: inset 3px 0 0 #ff6b6b;
+}
+
+[data-mantine-color-scheme="dark"] .tt-tip-filter-banner {
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.16);
+  color: #ffa8a8;
+}

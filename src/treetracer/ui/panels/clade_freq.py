@@ -9,28 +9,20 @@ defines only the output surface.
 import dash_mantine_components as dmc
 from dash import dcc, html
 
+from ...icons import icon
+
 
 def _add_clade_freq_panel():
     """Output paper for the Clade Frequency Comparison feature.
 
     The CONTROLS — two consensus-tree dropdowns and the Compare button —
-    live in ``clade-consensus-tree-paper`` (immediately under the consensus tree table
-    they pull from). This paper is just the output surface: the
-    scatter, its filters, and the tanglegram
-    below.
-
-    Components built here:
-        clade-freq-min-clade-size   horizontal slider above the scatter
-        clade-freq-exclusive-only   show only clades found in exactly one
-                                    selected consensus tree
-        clade-freq-plot             scatter (freq_1 vs freq_2)
-        clade-freq-tanglegram       pair of trees with red-highlighted
-                                    clicked clade
-        tanglegram-yscale-slider    vertical slider beside the tanglegram
+    live in ``clade-consensus-tree-paper``. This paper holds the output
+    surface: scatter controls, side-by-side scatter + Tip Instability Table,
+    and the tanglegram below.
     """
     return dmc.Paper([
         dmc.Group([
-            dmc.Title("Clade Frequency Comparison", order=5),
+            dmc.Title("Clade Frequency & Tip Instability Comparison", order=5),
             dmc.Badge(
                 "select two consensus trees above and click Compare",
                 variant="light", size="sm",
@@ -39,32 +31,99 @@ def _add_clade_freq_panel():
 
         dmc.Space(h=10),
 
-        # Min-clade-size sits directly above the scatter it filters —
-        # placing it between scatter and tanglegram (as previously)
-        # left it visually orphaned from either chart.
+        # Controls strip above the scatter. Keep ``clade-freq-exclusive-only``
+        # as the direct last child of this space-between Group (pinned by
+        # ``test_app_smoke``). Two dedicated slider wrappers toggle CSS display
+        # on mode switch so Dash never evaluates an integer size threshold
+        # against [0, 1] instability.
         dmc.Group(
             [
-                dmc.Stack(
+                dmc.Group(
                     [
-                        dmc.Text("Minimum clade size", size="md", fw=500),
-                        dmc.Slider(
-                            id="clade-freq-min-clade-size",
-                            min=2,
-                            max=50,
-                            step=1,
-                            value=5,
-                            w=300,
-                            size="md",
-                            marks=[
-                                {"value": 2, "label": "2"},
-                                {"value": 10, "label": "10"},
-                                {"value": 25, "label": "25"},
-                                {"value": 50, "label": "50"},
-                            ],
-                            styles={"markLabel": {"fontSize": "13px"}},
+                        dmc.Tooltip(
+                            id="clade-freq-color-by-tooltip",
+                            label=(
+                                "Clade instability requires strictly binary "
+                                "rooted snapshots (RootedFactsSnapshot)"
+                            ),
+                            disabled=True,
+                            withArrow=True,
+                            children=dmc.Select(
+                                id="clade-freq-color-by",
+                                label="Color & filter by",
+                                data=[
+                                    {"value": "clade_size", "label": "Clade size"},
+                                    {
+                                        "value": "clade_instability",
+                                        "label": "Clade instability",
+                                    },
+                                ],
+                                value="clade_size",
+                                allowDeselect=False,
+                                size="sm",
+                                w=185,
+                            ),
+                        ),
+                        html.Div(
+                            dmc.Stack(
+                                [
+                                    dmc.Text("Minimum clade size", size="sm", fw=500),
+                                    dmc.Slider(
+                                        id="clade-freq-min-clade-size",
+                                        min=2,
+                                        max=50,
+                                        step=1,
+                                        value=5,
+                                        w=260,
+                                        size="md",
+                                        marks=[
+                                            {"value": 2, "label": "2"},
+                                            {"value": 10, "label": "10"},
+                                            {"value": 25, "label": "25"},
+                                            {"value": 50, "label": "50"},
+                                        ],
+                                        styles={"markLabel": {"fontSize": "12px"}},
+                                    ),
+                                ],
+                                gap=6,
+                            ),
+                            id="clade-freq-size-slider-wrap",
+                        ),
+                        html.Div(
+                            dmc.Stack(
+                                [
+                                    dmc.Text(
+                                        "Minimum clade instability",
+                                        size="sm",
+                                        fw=500,
+                                    ),
+                                    dmc.Slider(
+                                        id="clade-freq-min-instability",
+                                        min=0.0,
+                                        max=1.0,
+                                        step=0.05,
+                                        value=0.0,
+                                        w=260,
+                                        size="md",
+                                        marks=[
+                                            {"value": 0.0, "label": "0.0"},
+                                            {"value": 0.25, "label": "0.25"},
+                                            {"value": 0.5, "label": "0.50"},
+                                            {"value": 0.75, "label": "0.75"},
+                                            {"value": 1.0, "label": "1.0"},
+                                        ],
+                                        styles={"markLabel": {"fontSize": "12px"}},
+                                    ),
+                                ],
+                                gap=6,
+                            ),
+                            id="clade-freq-instability-slider-wrap",
+                            style={"display": "none"},
                         ),
                     ],
-                    gap=6,
+                    gap="lg",
+                    align="flex-end",
+                    wrap="wrap",
                 ),
                 dmc.Checkbox(
                     id="clade-freq-exclusive-only",
@@ -82,10 +141,165 @@ def _add_clade_freq_panel():
             mb=12,
         ),
 
-        dcc.Loading(
-            html.Div(id="clade-freq-plot"),
-            type="circle",
-            parent_style={"minHeight": "200px"},
+        dmc.Grid(
+            [
+                dmc.GridCol(
+                    [
+                        dmc.Group(
+                            [
+                                dmc.Text(
+                                    "",
+                                    id="clade-freq-tip-filter-banner-text",
+                                    size="xs",
+                                    fw=600,
+                                ),
+                                dmc.ActionIcon(
+                                    "×",
+                                    id="clade-freq-tip-banner-dismiss",
+                                    size="xs",
+                                    variant="subtle",
+                                    color="red",
+                                    **{"aria-label": "Clear selected tip"},
+                                ),
+                            ],
+                            id="clade-freq-tip-filter-banner",
+                            className="tt-tip-filter-banner",
+                            gap=6,
+                            align="center",
+                            style={"display": "none"},
+                        ),
+                        dcc.Loading(
+                            html.Div(id="clade-freq-plot"),
+                            type="circle",
+                            parent_style={"minHeight": "450px"},
+                        ),
+                    ],
+                    span={"base": 12, "lg": 7},
+                ),
+                dmc.GridCol(
+                    dmc.Paper(
+                        [
+                            dmc.Group(
+                                [
+                                    dmc.Group(
+                                        [
+                                            dmc.Text("Tip Instability", fw=600, size="sm"),
+                                            dmc.Badge(
+                                                "",
+                                                id="tip-instability-badge",
+                                                variant="light",
+                                                color="red",
+                                                size="sm",
+                                                style={"display": "none"},
+                                            ),
+                                        ],
+                                        gap="xs",
+                                    ),
+                                    dmc.Button(
+                                        "Export TSV",
+                                        id="tip-instability-export-btn",
+                                        leftSection=icon("tabler:download", size=14),
+                                        variant="light",
+                                        size="xs",
+                                        disabled=True,
+                                    ),
+                                ],
+                                justify="space-between",
+                                align="center",
+                            ),
+                            dcc.Download(id="tip-instability-download"),
+                            dmc.Group(
+                                [
+                                    dmc.TextInput(
+                                        id="tip-instability-search",
+                                        placeholder="Search taxon...",
+                                        size="xs",
+                                        style={"flex": "1"},
+                                    ),
+                                    dmc.Select(
+                                        id="tip-instability-sort",
+                                        size="xs",
+                                        w=150,
+                                        allowDeselect=False,
+                                        value="between_shift",
+                                        data=[
+                                            {
+                                                "value": "between_shift",
+                                                "label": "Shift (desc)",
+                                            },
+                                            {
+                                                "value": "combined_instability",
+                                                "label": "Combined (desc)",
+                                            },
+                                            {
+                                                "value": "instab_1",
+                                                "label": "Group 1 (desc)",
+                                            },
+                                            {
+                                                "value": "instab_2",
+                                                "label": "Group 2 (desc)",
+                                            },
+                                            {
+                                                "value": "taxon",
+                                                "label": "Taxon (A–Z)",
+                                            },
+                                        ],
+                                    ),
+                                ],
+                                id="tip-instability-controls",
+                                gap="xs",
+                                mt="xs",
+                                mb="xs",
+                                wrap="nowrap",
+                            ),
+                            html.Div(
+                                id="tip-instability-table-body",
+                                className="tt-tip-instability-scroll",
+                            ),
+                            dmc.Group(
+                                [
+                                    dmc.Text(
+                                        "",
+                                        id="tip-instability-summary",
+                                        size="xs",
+                                        c="dimmed",
+                                    ),
+                                    dmc.Button(
+                                        "Show more",
+                                        id="tip-instability-show-more",
+                                        variant="subtle",
+                                        size="compact-xs",
+                                        style={"display": "none"},
+                                    ),
+                                ],
+                                id="tip-instability-pagination-bar",
+                                justify="space-between",
+                                align="center",
+                                mt=6,
+                            ),
+                            html.Div(
+                                dmc.Text(
+                                    "Click ⊙ on any taxon to highlight its jump in "
+                                    "the tanglegram and ring every clade containing "
+                                    "it on the scatter.",
+                                    size="xs",
+                                    c="dimmed",
+                                ),
+                                id="tip-instability-detail-footer",
+                                className="tt-tip-instability-footer",
+                            ),
+                        ],
+                        withBorder=True,
+                        radius="sm",
+                        p="sm",
+                        className="tt-tip-instability-card",
+                    ),
+                    span={"base": 12, "lg": 5},
+                ),
+            ],
+            gutter="md",
+            align="stretch",
+            mb="sm",
         ),
         # Tanglegram + its vertical Expand-tree slider. The slider
         # scales the figure's y-axis so it reads naturally as a
@@ -256,6 +470,7 @@ def _add_clade_freq_panel():
                }),
         ], gap="md", align="flex-start", wrap="nowrap"),
         dcc.Store(id="clade-freq-tanglegram-pair-store"),
+        dcc.Store(id="tip-instability-limit-store", storage_type="memory", data=50),
     ], p="md", withBorder=True, radius="sm",
        # Hidden until ``compute_and_plot_clade_frequencies`` succeeds —
        # nothing useful to show before Compare has run. Cleared back to

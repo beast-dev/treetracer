@@ -354,12 +354,20 @@
 
 .tt-tip-filter-banner {
   display: inline-flex;
-  padding: 2px 8px;
-  margin-bottom: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  margin-bottom: 8px;
   border-radius: 999px;
   border: 1px solid rgba(230, 57, 70, 0.35);
   background: rgba(230, 57, 70, 0.10);
   color: #c92a2a;
+}
+
+.tt-tip-filter-banner-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 [data-mantine-color-scheme="dark"] .tt-shift-neutral {

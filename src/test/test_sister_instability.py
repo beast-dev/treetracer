@@ -105,9 +105,9 @@ def test_6taxon_toy_exact(tmp_path):
     assert by_tip["R"]["n_sisters_comb"] == 3
     assert by_tip["R"]["p_cherry_1"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["R"]["p_cherry_2"] == pytest.approx(0.5, abs=1e-12)
-    assert by_tip["R"]["top_sister_1"] == "{A, B} 100%"
-    assert "E (cherry) 50%" in by_tip["R"]["top_sister_2"]
-    assert "{D, E} 50%" in by_tip["R"]["top_sister_2"]
+    assert by_tip["R"]["top_sister_1"] == "2-tip sister (100%)"
+    assert "1-tip cherry (50%)" in by_tip["R"]["top_sister_2"]
+    assert "2-tip sister (50%)" in by_tip["R"]["top_sister_2"]
 
     expected_clades = {
         frozenset({"A", "B"}): (0.0, 0.0, 0.5, 1.0),
@@ -410,8 +410,8 @@ def test_packed_vs_matmul_parity():
     for field in ("instab_1", "instab_2", "combined_instability", "between_shift"):
         assert t0_packed[field] == pytest.approx(t0_matmul[field], abs=1e-12)
     assert t0_matmul["n_sisters_comb"] == k_sisters
-    # Every sister in Group 1 has p = 1/150 < 0.05, so Algorithm 2 keeps top 1 + 149 more.
-    assert "+ 149 more" in t0_matmul["top_sister_1"]
+    # Every sister in Group 1 has p = 1/150 (~0.67%), so top 1 formats compactly at (1%).
+    assert t0_matmul["top_sister_1"].endswith("(1%)")
 
 
 def test_root_stem_and_quoted_names():
@@ -440,8 +440,14 @@ def test_root_stem_and_quoted_names():
     assert by_tip["T_root"]["combined_instability"] == pytest.approx(1.0 / 3.0, abs=1e-12)
     assert by_tip["T_root"]["p_cherry_1"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["T_root"]["p_cherry_2"] == pytest.approx(1.0, abs=1e-12)
-    assert by_tip["T_root"]["top_sister_1"].startswith("Clade (3 tips:")
-    assert by_tip["T_root"]["top_sister_2"] == "T_a (cherry) 100%"
+    assert by_tip["T_root"]["top_sister_1"] == "3-tip sister (100%)"
+    assert by_tip["T_root"]["top_sister_2"] == "1-tip cherry (100%)"
+
+    from treetracer.clade_freq.sister_instability import _format_pct
+
+    assert _format_pct(1.0) == "100%"
+    assert _format_pct(0.999) == ">99%"
+    assert _format_pct(0.002) == "<1%"
 
 
 def test_npz_selective_reads_preloaded_reuse_and_tsv():

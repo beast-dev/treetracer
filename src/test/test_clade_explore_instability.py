@@ -440,3 +440,240 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv():
     assert "Tip Instability Unavailable" in str(empty_body)
     assert empty_badge_style == {"display": "none"}
 
+
+def test_tip_click_filters_scatter_banner_and_dismiss():
+    """Tip selection filters data[0] to clades containing that tip; dismiss/clade click restores full scatter."""
+    from dash import no_update
+
+    store_click = _registered_callback("store_scatter_click")
+    dismiss_cb = _registered_callback("dismiss_tip_selection_banner")
+    marker_cb = _registered_callback("update_click_marker")
+
+    # Scatter click stamps kind="clade".
+    clade_payload = store_click(
+        {"points": [{"x": 0.8, "y": 0.2, "customdata": [0, 3, "G1 only", ""]}]},
+        "k-rings",
+    )
+    assert clade_payload["kind"] == "clade"
+    assert clade_payload["split_id"] == 0
+    assert dismiss_cb(1) is None
+
+    records = [
+        {
+            "split_id": 0,
+            "freq_1": 1.0,
+            "freq_2": 0.0,
+            "clade_size": 3,
+            "in_consensus_tree_1": True,
+            "in_consensus_tree_2": False,
+            "consensus_tree_membership": "G1 only",
+            "clade_instability": 0.0,
+        },
+        {
+            "split_id": 1,
+            "freq_1": 0.0,
+            "freq_2": 0.5,
+            "clade_size": 2,
+            "in_consensus_tree_1": False,
+            "in_consensus_tree_2": True,
+            "consensus_tree_membership": "G2 only",
+            "clade_instability": 0.0,
+        },
+        {
+            "split_id": 2,
+            "freq_1": 1.0,
+            "freq_2": 1.0,
+            "clade_size": 2,
+            "in_consensus_tree_1": True,
+            "in_consensus_tree_2": True,
+            "consensus_tree_membership": "both consensus trees",
+            "clade_instability": 0.5,
+        },
+    ]
+    state.store_clade_frequency_result(
+        "k-rings",
+        {
+            "records": records,
+            "resolution": {
+                0: {"source_distmat": "RF_001", "column_j": 10, "tip_names": ("A", "B", "R")},
+                1: {"source_distmat": "RF_001", "column_j": 11, "tip_names": ("E", "R")},
+                2: {"source_distmat": "RF_001", "column_j": 12, "tip_names": ("A", "B")},
+            },
+            "pair": ("u1", "u2"),
+            "has_instability": True,
+            "tip_rows": [],
+        },
+    )
+
+    # Tip R in clade_instability mode filters data[0] to splits 0 and 1 (excluding split 2) and leaves data[1] empty.
+    patch_tip, banner_style, banner_text = marker_cb(
+        {"kind": "tip", "taxon": "R", "result_key": "k-rings", "_t": 1},
+        records,
+        "clade_instability",
+        3,
+        0.0,
+        False,
+    )
+    ops = _patch_ops(patch_tip)
+    assert ops[("data", 0, "x")] == [1.0, 0.0]
+    assert ops[("data", 0, "y")] == [0.0, 0.5]
+    assert ops[("data", 1, "x")] == []
+    assert ops[("data", 1, "y")] == []
+    assert banner_style == {}
+    assert banner_text == "Showing 2 clades containing R"
+
+    # Tip R in clade_size mode with min_clade_size=3 shows only split 0 (size 3).
+    patch_tip_sz, _, banner_sz = marker_cb(
+        {"kind": "tip", "taxon": "R", "result_key": "k-rings", "_t": 2},
+        records,
+        "clade_size",
+        3,
+        0.0,
+        False,
+    )
+    assert _patch_ops(patch_tip_sz)[("data", 0, "x")] == [1.0]
+    assert banner_sz == "Showing 1 clade containing R"
+
+    # Clade click restores all visible clades in data[0], places 1 ring on data[1], and hides banner.
+    patch_clade, clade_banner_style, _ = marker_cb(
+        clade_payload, records, "clade_size", 2, 0.0, False
+    )
+    clade_ops = _patch_ops(patch_clade)
+    assert clade_ops[("data", 0, "x")] == [1.0, 0.0, 1.0]
+    assert clade_ops[("data", 1, "x")] == [0.8]
+    assert clade_banner_style == {"display": "none"}
+
+    # Dismissing (click_data=None) restores all visible clades in data[0], clears data[1], hides banner.
+    patch_clear, clear_style, clear_text = marker_cb(
+        None, records, "clade_size", 2, 0.0, False
+    )
+    clear_ops = _patch_ops(patch_clear)
+    assert clear_ops[("data", 0, "x")] == [1.0, 0.0, 1.0]
+    assert clear_ops[("data", 1, "x")] == []
+    assert clear_style == {"display": "none"}
+    assert clear_text == ""
+    no_fig, no_style, _ = marker_cb(None, None, "clade_size", 2, 0.0, False)
+    assert no_fig is no_update
+    assert no_style == {"display": "none"}
+
+
+def test_tip_mode_tanglegram_consensus_sisters_clear_and_complement_guard():
+    """Tip tanglegram highlights red connector + G1/G2 consensus sisters, clears to skeleton, and disables complement."""
+    from dash import no_update
+
+    def _nexus(newick):
+        return (
+            "#NEXUS\n"
+            "Begin trees;\n"
+            f"tree t1 = [&R] {newick}\n"
+            "End;\n"
+        ).encode("utf-8")
+
+    state.clear_all_consensus_trees()
+    clade_explore.clear_clade_freq_caches()
+    try:
+        uid1 = state.cache_consensus_tree(_nexus("((((A:1,B:1):1,R:1):1,C:1):1,(D:1,E:1):1);"))
+        uid2 = state.cache_consensus_tree(_nexus("(((A:1,B:1):1,C:1):1,(D:1,(E:1,R:1):1):1);"))
+        state.register_consensus_tree(
+            source_distmat="RF_001",
+            mode="Between",
+            run=None,
+            uuid=uid1,
+            consensus_tree={"tree_name": "G1"},
+            selection=[],
+            log_clade_credibility=0.0,
+            cols_in_consensus_tree=[10],
+        )
+        state.register_consensus_tree(
+            source_distmat="RF_001",
+            mode="Between",
+            run=None,
+            uuid=uid2,
+            consensus_tree={"tree_name": "G2"},
+            selection=[],
+            log_clade_credibility=0.0,
+            cols_in_consensus_tree=[10],
+        )
+        state.store_clade_frequency_result(
+            "k-tang",
+            {
+                "records": [],
+                "resolution": {
+                    0: {"source_distmat": "RF_001", "column_j": 10, "tip_names": ("A", "B")},
+                },
+                "pair": (uid1, uid2),
+                "has_instability": True,
+                "tip_rows": [
+                    {
+                        "taxon": "R",
+                        "between_shift": 0.875,
+                        "top_sister_1": "{A, B} 100%",
+                        "top_sister_2": "E (cherry) 50%, {D, E} 50%",
+                    }
+                ],
+            },
+        )
+
+        draw_cb = _registered_callback("draw_tanglegram")
+        comp_cb = _registered_callback("toggle_complement_highlights")
+
+        tip_click = {"kind": "tip", "taxon": "R", "result_key": "k-tang", "_t": 1}
+        fig, pair, title, comp_disabled = draw_cb(tip_click, uid1, uid2, 1, None, True)
+        assert pair == [uid1, uid2]
+        assert comp_disabled is True
+        assert len(fig.data) == 14
+        # Red tip markers + single connector for R.
+        assert list(fig.data[clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT].text) == ["R"]
+        assert list(fig.data[clade_explore._TANGLEGRAM_HIGHLIGHT_RIGHT].text) == ["R"]
+        assert len(fig.data[clade_explore._TANGLEGRAM_CONNECTORS].x) == 3
+        # Left consensus sister {A, B} (blue) and right cherry sister E (green) branches + tip points.
+        assert len(fig.data[clade_explore._TANGLEGRAM_MRCA_SUBTREE].x) > 0
+        assert len(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT].x) > 0
+        assert set(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT].text) == {"A", "B"}
+        assert list(fig.data[clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT].text) == ["E"]
+        # MRCA diamond and complement traces remain empty in tip mode.
+        assert len(fig.data[clade_explore._TANGLEGRAM_MRCA_MARKER].x) == 0
+        assert len(fig.data[clade_explore._TANGLEGRAM_COMPLEMENT_TIPS].x) == 0
+        assert "0.88" in str(title)
+
+        # Complement toggle no-ops in tip mode.
+        assert comp_cb(True, tip_click, uid1, uid2) is no_update
+
+        # Switching to a clade click on same pair Patches cleanly and re-enables complement.
+        clade_click = {"kind": "clade", "split_id": 0, "result_key": "k-tang", "_t": 2}
+        patch_clade, pair2, _, comp_disabled_clade = draw_cb(
+            clade_click, uid1, uid2, 1, [uid1, uid2], False
+        )
+        assert pair2 is no_update
+        assert comp_disabled_clade is False
+        clade_ops = _patch_ops(patch_clade)
+        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT, "x")] == []
+        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT, "x")] == []
+        assert clade_ops[("data", clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, "x")] == []
+        assert len(clade_ops[("data", clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT, "x")]) == 2
+
+        # Dismissing selection (click_data=None) Patches all dynamic overlays back to [].
+        patch_clear, pair3, title_clear, comp_disabled_clear = draw_cb(
+            None, uid1, uid2, 1, [uid1, uid2], False
+        )
+        assert pair3 is no_update
+        assert title_clear == ""
+        assert comp_disabled_clear is False
+        clear_ops = _patch_ops(patch_clear)
+        for idx in (
+            clade_explore._TANGLEGRAM_MRCA_SUBTREE,
+            clade_explore._TANGLEGRAM_TIP_SISTER_RIGHT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_LEFT,
+            clade_explore._TANGLEGRAM_TIP_SISTER_TIPS_RIGHT,
+            clade_explore._TANGLEGRAM_HIGHLIGHT_LEFT,
+            clade_explore._TANGLEGRAM_HIGHLIGHT_RIGHT,
+            clade_explore._TANGLEGRAM_CONNECTORS,
+            clade_explore._TANGLEGRAM_MRCA_MARKER,
+            clade_explore._TANGLEGRAM_COMPLEMENT_TIPS,
+            clade_explore._TANGLEGRAM_COMPLEMENT_CONN,
+        ):
+            assert clear_ops[("data", idx, "x")] == []
+    finally:
+        state.clear_all_consensus_trees()
+        clade_explore.clear_clade_freq_caches()
+

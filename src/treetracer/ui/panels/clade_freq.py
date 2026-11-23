@@ -138,8 +138,12 @@ def _add_clade_freq_panel():
             align="center",
             w="100%",
             mt=4,
-            mb=12,
+            mb=0,
         ),
+
+        # Slider marks overhang ~18px below the track; separate them cleanly
+        # from the scatter banner and Tip Instability card below.
+        dmc.Divider(mt=24, mb="sm"),
 
         dmc.Grid(
             [
@@ -150,6 +154,7 @@ def _add_clade_freq_panel():
                                 dmc.Text(
                                     "",
                                     id="clade-freq-tip-filter-banner-text",
+                                    className="tt-tip-filter-banner-text",
                                     size="xs",
                                     fw=600,
                                 ),
@@ -166,6 +171,7 @@ def _add_clade_freq_panel():
                             className="tt-tip-filter-banner",
                             gap=6,
                             align="center",
+                            wrap="nowrap",
                             style={"display": "none"},
                         ),
                         dcc.Loading(
@@ -280,8 +286,8 @@ def _add_clade_freq_panel():
                             html.Div(
                                 dmc.Text(
                                     "Click ⊙ on any taxon to highlight its jump in "
-                                    "the tanglegram and ring every clade containing "
-                                    "it on the scatter.",
+                                    "the tanglegram and filter the scatter to clades "
+                                    "containing it.",
                                     size="xs",
                                     c="dimmed",
                                 ),

@@ -197,13 +197,22 @@ def _pairwise_jaccard(
     return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0.0)
 
 
+def _format_pct(prob: float) -> str:
+    if prob >= 1.0 - 1e-12:
+        return "100%"
+    pct = round(prob * 100)
+    if pct >= 100:
+        return ">99%"
+    if pct <= 0:
+        return "<1%"
+    return f"{pct}%"
+
+
 def _format_top_sisters(
     sisters: np.ndarray,
     probs: np.ndarray | None,
     *,
-    packed_clades: np.ndarray,
     sizes: np.ndarray,
-    leaf_names: Sequence[str],
 ) -> str:
     if probs is None:
         return "—"
@@ -219,21 +228,13 @@ def _format_top_sisters(
 
     parts = []
     for i in kept:
-        col = int(sisters[i])
-        m = int(sizes[col])
-        pct = f"{round(float(probs[i]) * 100)}%"
-        bits = np.flatnonzero(np.unpackbits(packed_clades[col], bitorder="little"))[:2]
+        m = int(sizes[int(sisters[i])])
+        pct = _format_pct(float(probs[i]))
         if m == 1:
-            parts.append(f"{leaf_names[bits[0]]} (cherry) {pct}")
-        elif m == 2:
-            parts.append(f"{{{leaf_names[bits[0]]}, {leaf_names[bits[1]]}}} {pct}")
+            parts.append(f"1-tip cherry ({pct})")
         else:
-            parts.append(f"Clade ({m} tips: {leaf_names[bits[0]]}, ...) {pct}")
-
-    summary = ", ".join(parts)
-    if len(ordered) > len(kept):
-        summary += f" + {len(ordered) - len(kept)} more"
-    return summary
+            parts.append(f"{m}-tip sister ({pct})")
+    return ", ".join(parts)
 
 
 def compute_sister_instability_from_arrays(
@@ -354,12 +355,8 @@ def compute_sister_instability_from_arrays(
                     "n_sisters_comb": int(len(sisters)),
                     "p_cherry_1": float(np.clip(p1[is_cherry].sum(), 0.0, 1.0)) if p1 is not None else 0.0,
                     "p_cherry_2": float(np.clip(p2[is_cherry].sum(), 0.0, 1.0)) if p2 is not None else 0.0,
-                    "top_sister_1": _format_top_sisters(
-                        sisters, p1, packed_clades=packed_clades, sizes=sizes, leaf_names=leaves
-                    ),
-                    "top_sister_2": _format_top_sisters(
-                        sisters, p2, packed_clades=packed_clades, sizes=sizes, leaf_names=leaves
-                    ),
+                    "top_sister_1": _format_top_sisters(sisters, p1, sizes=sizes),
+                    "top_sister_2": _format_top_sisters(sisters, p2, sizes=sizes),
                 }
             )
 

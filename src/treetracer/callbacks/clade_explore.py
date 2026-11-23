@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from dash import dcc, html, callback, Input, Output, State, no_update, Patch
+from dash import dcc, html, callback, Input, Output, State, no_update, Patch, ALL, ctx
 import dash_mantine_components as dmc
 import plotly.graph_objects as go
 import numpy as np
@@ -129,6 +129,52 @@ def _subtree_branch_segments(mrca, x_offset, x_scale, x_flip):
     return xs, ys
 
 
+def _compute_tip_sisters(root):
+    """Map tip name -> ``(parent, siblings)`` for O(1) consensus-sister lookup."""
+    sisters = {}
+    for node in _collect_nodes(root):
+        if not node.children:
+            continue
+        for child in node.children:
+            if child.is_tip:
+                sisters[child.name] = (
+                    node,
+                    [sib for sib in node.children if sib is not child],
+                )
+    return sisters
+
+
+def _sister_branch_segments(parent, siblings, x_offset, x_scale, x_flip):
+    """Rectangular branch segments for a tip's immediate sister subtree(s)."""
+    def tx(x):
+        scaled = x * x_scale
+        return (x_offset - scaled) if x_flip else (x_offset + scaled)
+
+    xs, ys = [], []
+    px = tx(parent.x)
+    for sib in siblings:
+        # Stem edge back to parent ensures single-tip (cherry) sisters draw visibly.
+        xs += [px, tx(sib.x), None]
+        ys += [sib.y, sib.y, None]
+        if sib.children:
+            sub_x, sub_y = _subtree_branch_segments(sib, x_offset, x_scale, x_flip)
+            xs += sub_x
+            ys += sub_y
+    return xs, ys
+
+
+def _branch_overlay_trace(xs, ys, color):
+    return dict(
+        type="scatter",
+        x=xs,
+        y=ys,
+        mode="lines",
+        line=dict(color=color, width=2),
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def _get_tanglegram_layout(uid1, uid2):
     """Pre-computed layout values that don't depend on which clade is
@@ -213,38 +259,45 @@ def _get_tanglegram_layout(uid1, uid2):
         "skeleton_traces": skeleton,
         "yspan1": _compute_yspans(root1),
         "yspan2": _compute_yspans(root2),
+        "sisters1": _compute_tip_sisters(root1),
+        "sisters2": _compute_tip_sisters(root2),
     }
 
 
-# Trace indices in the assembled tanglegram figure. Every branch trace
-# comes first, so the tip markers — drawn afterwards — sit on top of
-# the MRCA-subtree recolour instead of being hidden under it. The
-# skeleton (indices 0, 1, 3, 4) is static; the rest are dynamic
-# overlays the click callback patches.
+# Trace indices in the assembled tanglegram figure (branches first so tip
+# markers sit on top). Skeleton indices (0, 1, 4, 5) are static; the rest
+# are dynamic overlays updated via ``dash.Patch``.
 #
-#   0: left branches         (static, dimmed)
-#   1: right branches        (static, dimmed)
-#   2: MRCA subtree branches (dynamic) — both trees, accent colour
-#   3: left grey tips        (static)
-#   4: right grey tips       (static)
-#   5: left red highlight    (dynamic)
-#   6: right red highlight   (dynamic)
-#   7: red connectors        (dynamic)
-#   8: MRCA node markers     (dynamic) — both trees
-#   9: complement tips       (dynamic) — green, both trees
-#  10: complement connectors (dynamic) — green
-_TANGLEGRAM_MRCA_SUBTREE    = 2
-_TANGLEGRAM_HIGHLIGHT_LEFT  = 5
-_TANGLEGRAM_HIGHLIGHT_RIGHT = 6
-_TANGLEGRAM_CONNECTORS      = 7
-_TANGLEGRAM_MRCA_MARKER     = 8
-_TANGLEGRAM_COMPLEMENT_TIPS = 9
-_TANGLEGRAM_COMPLEMENT_CONN = 10
+#   0: left branches          (static, dimmed)
+#   1: right branches         (static, dimmed)
+#   2: blue subtree branches  (dynamic) — MRCA subtree (clade) or G1 sister (tip)
+#   3: green sister branches  (dynamic) — G2 consensus sister subtree (tip only)
+#   4: left grey tips         (static)
+#   5: right grey tips        (static)
+#   6: blue G1 sister tips    (dynamic) — tip mode only
+#   7: green G2 sister tips   (dynamic) — tip mode only
+#   8: left red highlight     (dynamic)
+#   9: right red highlight    (dynamic)
+#  10: red connectors         (dynamic)
+#  11: MRCA node markers      (dynamic) — clade mode only
+#  12: complement tips        (dynamic) — green, clade mode only
+#  13: complement connectors  (dynamic) — green, clade mode only
+_TANGLEGRAM_MRCA_SUBTREE         = 2
+_TANGLEGRAM_TIP_SISTER_RIGHT     = 3
+_TANGLEGRAM_TIP_SISTER_TIPS_LEFT  = 6
+_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT = 7
+_TANGLEGRAM_HIGHLIGHT_LEFT       = 8
+_TANGLEGRAM_HIGHLIGHT_RIGHT      = 9
+_TANGLEGRAM_CONNECTORS           = 10
+_TANGLEGRAM_MRCA_MARKER          = 11
+_TANGLEGRAM_COMPLEMENT_TIPS      = 12
+_TANGLEGRAM_COMPLEMENT_CONN      = 13
 
-# Colours for the MRCA emphasis overlay.
-_SKELETON_DIM = "#c8c8c8"   # branches outside the MRCA subtree
-_MRCA_ACCENT  = "#1c7ed6"   # branches inside the MRCA subtree
-_MRCA_MARKER  = "#1864ab"   # the MRCA node marker
+# Colours for the MRCA and tip-sister emphasis overlays.
+_SKELETON_DIM      = "#c8c8c8"   # branches outside the highlighted subtree
+_MRCA_ACCENT       = "#1c7ed6"   # blue: MRCA subtree or G1 consensus sister
+_TIP_SISTER_ACCENT = "#2f9e44"   # green: G2 consensus sister
+_MRCA_MARKER       = "#1864ab"   # the MRCA node marker
 
 # Off-white backbone for dark mode: the light-grey ``_SKELETON_DIM``
 # recedes on a white canvas, but needs to be lighter to stay legible
@@ -268,13 +321,15 @@ def _scatter_colorscale():
     return "Turbo" if _is_dark() else "Viridis"
 
 
-def _highlight_overlay_trace(tips_by_name, highlight):
-    """Build the red-marker overlay trace for one tree.
-
-    ``tips_by_name`` is the layout cache's tip-name → (x, y) dict.
-    Returns the trace as a plain dict so Patch can splat its
-    individual fields without ever going through a go.Scatter
-    constructor."""
+def _highlight_overlay_trace(
+    tips_by_name,
+    highlight,
+    *,
+    color="#e63946",
+    size=8,
+    extra="",
+):
+    """Build a coloured tip-marker overlay trace for one tree."""
     xs, ys, names = [], [], []
     for name in highlight:
         coord = tips_by_name.get(name)
@@ -287,9 +342,9 @@ def _highlight_overlay_trace(tips_by_name, highlight):
         type="scatter",
         x=xs, y=ys,
         mode="markers",
-        marker=dict(color="#e63946", size=8),
+        marker=dict(color=color, size=size),
         text=names,
-        hovertemplate="%{text}<extra></extra>",
+        hovertemplate=f"%{{text}}<extra>{extra}</extra>",
         showlegend=False,
     )
 
@@ -461,6 +516,49 @@ def _tanglegram_title_children(label1, label2, highlight,
         html.Span("   →  "),
         fmt(label2, in_2),
     ]
+
+
+def _g1_g2_sister_spans(sister_1: str, sister_2: str) -> list:
+    """Color-coded compact G1 (blue) -> G2 (green) sister summary matching the tanglegram."""
+    return [
+        html.Span("● G1: ", style={"color": _MRCA_ACCENT, "fontWeight": 600}),
+        html.Span(sister_1),
+        html.Span("  →  ", style={"fontWeight": 600, "color": "#e63946"}),
+        html.Span("● G2: ", style={"color": _TIP_SISTER_ACCENT, "fontWeight": 600}),
+        html.Span(sister_2),
+    ]
+
+
+def _tanglegram_tip_title_children(taxon, tip_row):
+    """Sticky tanglegram title for a selected tip showing Shift and color-coded G1 -> G2 sisters."""
+    parts = [
+        html.Span("Tip ", style={"fontWeight": 500}),
+        dmc.Badge(
+            taxon,
+            color="red",
+            variant="light",
+            size="md",
+            style={
+                "fontFamily": "monospace",
+                "textTransform": "none",
+                "verticalAlign": "middle",
+            },
+        ),
+    ]
+    if tip_row is not None:
+        parts.append(
+            html.Span(
+                [
+                    html.Span(f"   Shift: {float(tip_row['between_shift']):.2f} · "),
+                    *_g1_g2_sister_spans(
+                        str(tip_row.get("top_sister_1", "—")),
+                        str(tip_row.get("top_sister_2", "—")),
+                    ),
+                ],
+                style={"fontSize": "14px", "fontWeight": 400},
+            )
+        )
+    return parts
 
 
 # Slider-default-aware tanglegram height. The slider value 1..5 is
@@ -656,9 +754,68 @@ def _filter_clade_frequency_frame(
 
 
 _TIP_FOOTER_DEFAULT_HINT = (
-    "Click ⊙ on any taxon to highlight its jump in the tanglegram and ring "
-    "every clade containing it on the scatter."
+    "Click ⊙ on any taxon to highlight its jump in the tanglegram and filter "
+    "the scatter to clades containing it."
 )
+
+
+def _build_scatter_patch(
+    store_data,
+    *,
+    color_by,
+    min_clade_size,
+    min_instability,
+    exclusive_only,
+    tip_taxon: str | None = None,
+    resolution: dict[int, Any] | None = None,
+    ring_coords: tuple[list[float], list[float]] = ([], []),
+) -> tuple[Patch, int]:
+    """Build a Patch updating scatter trace 0 (points/color) and trace 1 (ring)."""
+    df = pd.DataFrame(store_data)
+    has_instab_col = (
+        "clade_instability" in df.columns
+        and pd.to_numeric(df["clade_instability"], errors="coerce").notna().any()
+    )
+    mode = (
+        "clade_instability"
+        if color_by == "clade_instability" and has_instab_col
+        else "clade_size"
+    )
+    df_plot = _filter_clade_frequency_frame(
+        df,
+        min_clade_size=int(min_clade_size or 2),
+        exclusive_only=bool(exclusive_only),
+        color_by=mode,
+        min_instability=float(min_instability or 0.0),
+    )
+    if tip_taxon is not None and resolution is not None and not df_plot.empty:
+        keep = [
+            tip_taxon in (resolution.get(int(sid)) or {}).get("tip_names", ())
+            for sid in df_plot["split_id"]
+        ]
+        df_plot = df_plot.loc[keep]
+
+    patch = Patch()
+    patch["data"][0]["x"] = df_plot["freq_1"].tolist()
+    patch["data"][0]["y"] = df_plot["freq_2"].tolist()
+    patch["data"][0]["customdata"] = _scatter_customdata(df_plot)
+    if mode == "clade_instability":
+        patch["data"][0]["marker"]["color"] = (
+            df_plot["clade_instability"].astype(float).tolist()
+        )
+        patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Instability"
+        patch["data"][0]["marker"]["cauto"] = False
+        patch["data"][0]["marker"]["cmin"] = 0.0
+        patch["data"][0]["marker"]["cmax"] = 1.0
+    else:
+        patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
+        patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Clade size"
+        patch["data"][0]["marker"]["cauto"] = True
+        patch["data"][0]["marker"]["cmin"] = None
+        patch["data"][0]["marker"]["cmax"] = None
+    patch["data"][1]["x"] = ring_coords[0]
+    patch["data"][1]["y"] = ring_coords[1]
+    return patch, len(df_plot)
 
 
 def _shift_pill_class(value: float) -> str:
@@ -724,13 +881,10 @@ def _tip_detail_footer(selected_row: dict[str, Any] | None):
                 wrap="wrap",
             ),
             html.Div(
-                [
-                    html.Strong("G1: "),
-                    html.Span(str(selected_row.get("top_sister_1", "—"))),
-                    html.Span("  →  ", style={"fontWeight": 600, "color": "#e63946"}),
-                    html.Strong("G2: "),
-                    html.Span(str(selected_row.get("top_sister_2", "—"))),
-                ],
+                _g1_g2_sister_spans(
+                    str(selected_row.get("top_sister_1", "—")),
+                    str(selected_row.get("top_sister_2", "—")),
+                ),
                 style={"marginTop": "2px", "overflowWrap": "anywhere"},
             ),
         ]
@@ -1097,44 +1251,13 @@ def register_clade_explore_callbacks():
         if not store_data:
             return no_update, no_update
 
-        df = pd.DataFrame(store_data)
-        has_instab_col = (
-            "clade_instability" in df.columns
-            and pd.to_numeric(df["clade_instability"], errors="coerce").notna().any()
+        patch, _ = _build_scatter_patch(
+            store_data,
+            color_by=color_by,
+            min_clade_size=min_clade_size,
+            min_instability=min_instability,
+            exclusive_only=exclusive_only,
         )
-        mode = (
-            "clade_instability"
-            if color_by == "clade_instability" and has_instab_col
-            else "clade_size"
-        )
-        df_plot = _filter_clade_frequency_frame(
-            df,
-            min_clade_size=int(min_clade_size or 2),
-            exclusive_only=bool(exclusive_only),
-            color_by=mode,
-            min_instability=float(min_instability or 0.0),
-        )
-
-        patch = Patch()
-        patch["data"][0]["x"] = df_plot["freq_1"].tolist()
-        patch["data"][0]["y"] = df_plot["freq_2"].tolist()
-        patch["data"][0]["customdata"] = _scatter_customdata(df_plot)
-        if mode == "clade_instability":
-            patch["data"][0]["marker"]["color"] = (
-                df_plot["clade_instability"].astype(float).tolist()
-            )
-            patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Instability"
-            patch["data"][0]["marker"]["cauto"] = False
-            patch["data"][0]["marker"]["cmin"] = 0.0
-            patch["data"][0]["marker"]["cmax"] = 1.0
-        else:
-            patch["data"][0]["marker"]["color"] = df_plot["clade_size"].tolist()
-            patch["data"][0]["marker"]["colorbar"]["title"]["text"] = "Clade size"
-            patch["data"][0]["marker"]["cauto"] = True
-            patch["data"][0]["marker"]["cmin"] = None
-            patch["data"][0]["marker"]["cmax"] = None
-        patch["data"][1]["x"] = []
-        patch["data"][1]["y"] = []
         return patch, None
 
     # ------ Tip Instability Table: reactive sync, render, pagination, TSV ------
@@ -1676,6 +1799,7 @@ def register_clade_explore_callbacks():
         try:
             _click_counter += 1
             return {
+                "kind":       "clade",
                 "split_id":   int(custom[0]),
                 "clade_size": int(custom[1]),
                 "x":          float(point["x"]),
@@ -1687,35 +1811,127 @@ def register_clade_explore_callbacks():
             return no_update
 
     @callback(
-        Output("clade-freq-scatter", "figure", allow_duplicate=True),
-        Input("clade-freq-click-store", "data"),
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Input({"type": "tip-instability-focus", "taxon": ALL}, "n_clicks"),
+        State("clade-freq-result-key-store", "data"),
+        State("clade-freq-click-store", "data"),
         prevent_initial_call=True,
     )
-    def update_click_marker(click_data):
-        """Patch only the overlay trace (index 1) on the scatter to
-        place a hollow red circle around the clicked point.
-
-        Returns a ``Patch`` so Plotly never redraws the 40k-point
-        Scattergl trace — only the single-point overlay updates.
-        Rebuilds via the Compare button reset this overlay back to
-        empty, which is the right behaviour (a fresh comparison
-        clears the previous click).
-        """
-        if not click_data:
+    def select_tip_instability_row(n_clicks_list, result_key, current_click):
+        """Select a tip from the Tip Instability Table (or toggle it off if active)."""
+        nonlocal _click_counter
+        if not n_clicks_list or not any(n_clicks_list) or not result_key:
             return no_update
+        triggered = ctx.triggered_id
+        if not isinstance(triggered, dict) or triggered.get("type") != "tip-instability-focus":
+            return no_update
+        taxon = str(triggered["taxon"])
+        if (
+            isinstance(current_click, dict)
+            and current_click.get("kind") == "tip"
+            and current_click.get("taxon") == taxon
+        ):
+            return None
+        _click_counter += 1
+        return {
+            "kind": "tip",
+            "taxon": taxon,
+            "result_key": str(result_key),
+            "_t": _click_counter,
+        }
+
+    @callback(
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Input("clade-freq-tip-banner-dismiss", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def dismiss_tip_selection_banner(n_clicks):
+        if not n_clicks:
+            return no_update
+        return None
+
+    @callback(
+        Output("clade-freq-scatter", "figure", allow_duplicate=True),
+        Output("clade-freq-tip-filter-banner", "style"),
+        Output("clade-freq-tip-filter-banner-text", "children"),
+        Input("clade-freq-click-store", "data"),
+        State("clade-freq-data-store", "data"),
+        State("clade-freq-color-by", "value"),
+        State("clade-freq-min-clade-size", "value"),
+        State("clade-freq-min-instability", "value"),
+        State("clade-freq-exclusive-only", "checked"),
+        prevent_initial_call=True,
+    )
+    def update_click_marker(
+        click_data,
+        store_data,
+        color_by,
+        min_clade_size,
+        min_instability,
+        exclusive_only,
+    ):
+        """Update scatter points/ring on clade click, tip filter selection, or clear."""
+        hide_banner = {"display": "none"}
+        if not click_data:
+            if not store_data:
+                return no_update, hide_banner, ""
+            patch, _ = _build_scatter_patch(
+                store_data,
+                color_by=color_by,
+                min_clade_size=min_clade_size,
+                min_instability=min_instability,
+                exclusive_only=exclusive_only,
+            )
+            return patch, hide_banner, ""
+
+        kind = click_data.get("kind", "clade")
+        if kind == "tip":
+            taxon = click_data.get("taxon")
+            cached = state.get_clade_frequency_result(click_data.get("result_key"))
+            if not store_data or not taxon or cached is None:
+                return no_update, hide_banner, ""
+            patch, n_shown = _build_scatter_patch(
+                store_data,
+                color_by=color_by,
+                min_clade_size=min_clade_size,
+                min_instability=min_instability,
+                exclusive_only=exclusive_only,
+                tip_taxon=str(taxon),
+                resolution=cached.get("resolution", {}),
+            )
+            if n_shown:
+                banner_text = (
+                    f"Showing {n_shown} clade"
+                    f"{'s' if n_shown != 1 else ''} containing {taxon}"
+                )
+            else:
+                banner_text = f"No clades contain {taxon} under current filter"
+            return patch, {}, banner_text
+
         x = click_data.get("x")
         y = click_data.get("y")
         if x is None or y is None:
-            return no_update
+            return no_update, hide_banner, ""
+        if store_data:
+            patch, _ = _build_scatter_patch(
+                store_data,
+                color_by=color_by,
+                min_clade_size=min_clade_size,
+                min_instability=min_instability,
+                exclusive_only=exclusive_only,
+                ring_coords=([x], [y]),
+            )
+            return patch, hide_banner, ""
         patch = Patch()
         patch["data"][1]["x"] = [x]
         patch["data"][1]["y"] = [y]
-        return patch
+        return patch, hide_banner, ""
 
     @callback(
         Output("clade-freq-tanglegram", "figure"),
         Output("clade-freq-tanglegram-pair-store", "data"),
         Output("clade-freq-tanglegram-title", "children"),
+        Output("tanglegram-complement-toggle", "disabled"),
         Input("clade-freq-click-store", "data"),
         State("clade-freq-consensus-tree-select-1", "value"),
         State("clade-freq-consensus-tree-select-2", "value"),
@@ -1725,125 +1941,182 @@ def register_clade_explore_callbacks():
         prevent_initial_call=True,
     )
     def draw_tanglegram(click_data, uid1, uid2, px_per_tip, current_pair, complement_on):
-        """Draw a tanglegram of the two consensus trees when a clade dot is clicked.
+        """Draw or patch the tanglegram for a clicked clade, selected tip, or dismiss."""
+        same_pair = bool(uid1 and uid2 and current_pair == [uid1, uid2])
+        if not click_data:
+            if not same_pair:
+                return no_update, no_update, no_update, False
+            # Clear dynamic overlays back to the dimmed skeleton on dismiss / filter change.
+            patch = Patch()
+            for idx in (_TANGLEGRAM_MRCA_SUBTREE, _TANGLEGRAM_TIP_SISTER_RIGHT):
+                patch["data"][idx]["x"] = []
+                patch["data"][idx]["y"] = []
+            for idx in (
+                _TANGLEGRAM_TIP_SISTER_TIPS_LEFT,
+                _TANGLEGRAM_TIP_SISTER_TIPS_RIGHT,
+                _TANGLEGRAM_HIGHLIGHT_LEFT,
+                _TANGLEGRAM_HIGHLIGHT_RIGHT,
+                _TANGLEGRAM_CONNECTORS,
+                _TANGLEGRAM_MRCA_MARKER,
+                _TANGLEGRAM_COMPLEMENT_TIPS,
+                _TANGLEGRAM_COMPLEMENT_CONN,
+            ):
+                patch["data"][idx]["x"] = []
+                patch["data"][idx]["y"] = []
+                patch["data"][idx]["text"] = []
+            return patch, no_update, "", False
 
-        Two render paths:
+        if not uid1 or not uid2:
+            return no_update, no_update, no_update, no_update
 
-        * **First click on a new consensus tree pair** — build the full figure
-          (11 traces: static skeleton for both trees + dynamic overlays
-          for the MRCA subtree, the highlight, the connectors, the MRCA
-          node markers, and the green complement tips/connectors).
-          Returns a fresh figure dict and stamps the new pair into the
-          tanglegram-pair-store.
-        * **Subsequent clicks on the same pair** — return a
-          ``dash.Patch`` that updates only the 7 dynamic traces'
-          x/y/text and the title. The static skeleton (≈300 line
-          segments + 280 tip markers per tree) is never re-sent.
-
-        The clicked split is identified by an integer ``split_id``;
-        the actual tip names are resolved server-side through the immutable
-        managed comparison result identified in the click payload.
-        """
-        if not click_data or not uid1 or not uid2:
-            return no_update, no_update, no_update
-
-        resolved = _resolved_clade(click_data, expected_pair=(uid1, uid2))
-        if resolved is None:
-            # The result was reset or evicted; a fresh Compare repopulates it.
-            return no_update, no_update, no_update
-        column_j = int(resolved["column_j"])
-
-        # Single highlight (same on both trees): consensus tree 1 and consensus tree 2 are
-        # both anchored to one source matrix (the Compare-clade dropdowns
-        # filter to the active distmat), so a column in the rooted clade
-        # catalog represents the same descendant set in both.
-        highlight = set(resolved["tip_names"])
-
-        # Containment is an O(1) ``column_j ∈ cols_in_consensus_tree`` check
-        # straight off the registry entries.
-        entry1 = state.get_consensus_tree_registry_entry(uid1)
-        entry2 = state.get_consensus_tree_registry_entry(uid2)
-        cols1 = set(entry1.get("cols_in_consensus_tree") or []) if entry1 else set()
-        cols2 = set(entry2.get("cols_in_consensus_tree") or []) if entry2 else set()
-        in_1 = column_j in cols1
-        in_2 = column_j in cols2
-
-        # ── Look up (or build) the static tanglegram layout ────────────────
         layout = _get_tanglegram_layout(uid1, uid2)
         if layout is None:
-            # consensus tree NEXUS bytes evicted from cache; user must recompute.
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         tips1 = layout["tips1"]
         tips2 = layout["tips2"]
         right_start = layout["right_start"]
+        kind = click_data.get("kind", "clade")
 
-        # Group labels for the sticky title above the graph.
-        label1 = entry1["name"] if entry1 else "Group 1"
-        label2 = entry2["name"] if entry2 else "Group 2"
+        if kind == "tip":
+            cached = state.get_clade_frequency_result(click_data.get("result_key"))
+            if cached is None or tuple(cached.get("pair", ())) != (uid1, uid2):
+                return no_update, no_update, no_update, no_update
+            taxon = str(click_data.get("taxon") or "")
+            if not taxon:
+                return no_update, no_update, no_update, no_update
 
-        # ── Build the dynamic overlay traces + the sticky title ──────────
-        hl_left  = _highlight_overlay_trace(tips1, highlight)
-        hl_right = _highlight_overlay_trace(tips2, highlight)
-        connectors = _connector_overlay_trace(tips1, tips2, highlight)
-        mrca_subtree, mrca_marker, complement_per_tree = _build_mrca_traces(highlight, layout)
-        complement1 = complement_per_tree["tips1"]
-        complement2 = complement_per_tree["tips2"]
-        title_children = _tanglegram_title_children(
-            label1, label2, highlight, in_1=in_1, in_2=in_2,
-        )
+            highlight = {taxon}
+            hl_left = _highlight_overlay_trace(tips1, highlight)
+            hl_right = _highlight_overlay_trace(tips2, highlight)
+            connectors = _connector_overlay_trace(tips1, tips2, highlight)
 
-        # Build the green overlays fully styled in BOTH branches —
-        # empty data when the toggle is off — so the styling is baked
-        # into the figure once at first render and later patches only
-        # ever touch x/y/text. The grey tip base (traces 3/4) is never
-        # reduced: the green markers (size 8, opaque) sit on a higher
-        # trace index and fully occlude the grey tips (size 6) beneath,
-        # exactly like the red highlight overlay already does.
-        if complement_on:
-            comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
-            comp_conn = _complement_connector_trace(
-                tips1, tips2, complement1, complement2,
+            # Highlight each consensus tree's immediate sister branches and tip points.
+            s1 = layout["sisters1"].get(taxon)
+            s2 = layout["sisters2"].get(taxon)
+            left_sx, left_sy = (
+                _sister_branch_segments(s1[0], s1[1], 0.0, layout["scale1"], False)
+                if s1
+                else ([], [])
             )
-        else:
+            right_sx, right_sy = (
+                _sister_branch_segments(
+                    s2[0], s2[1], right_start + 1.0, layout["scale2"], True
+                )
+                if s2
+                else ([], [])
+            )
+            left_sister_names = (
+                [n.name for sib in s1[1] for n in _collect_nodes(sib) if n.is_tip]
+                if s1
+                else []
+            )
+            right_sister_names = (
+                [n.name for sib in s2[1] for n in _collect_nodes(sib) if n.is_tip]
+                if s2
+                else []
+            )
+            mrca_subtree = _branch_overlay_trace(left_sx, left_sy, _MRCA_ACCENT)
+            tip_sister_right = _branch_overlay_trace(right_sx, right_sy, _TIP_SISTER_ACCENT)
+            tip_sister_tips_left = _highlight_overlay_trace(
+                tips1, left_sister_names, color=_MRCA_ACCENT, size=7, extra="G1 sister"
+            )
+            tip_sister_tips_right = _highlight_overlay_trace(
+                tips2, right_sister_names, color=_TIP_SISTER_ACCENT, size=7, extra="G2 sister"
+            )
+            mrca_marker = dict(
+                type="scatter",
+                x=[],
+                y=[],
+                mode="markers",
+                marker=dict(
+                    symbol="diamond",
+                    size=10,
+                    color=_MRCA_MARKER,
+                    line=dict(color="white", width=1.5),
+                ),
+                text=[],
+                hovertemplate="%{text}<extra></extra>",
+                showlegend=False,
+            )
             comp_tips = _complement_tips_trace(set(), tips1, tips2)
             comp_conn = _complement_connector_trace(tips1, tips2, set(), set())
+            tip_row = next(
+                (r for r in (cached.get("tip_rows") or []) if r["taxon"] == taxon),
+                None,
+            )
+            title_children = _tanglegram_tip_title_children(taxon, tip_row)
+            complement_disabled = True
+        else:
+            resolved = _resolved_clade(click_data, expected_pair=(uid1, uid2))
+            if resolved is None:
+                return no_update, no_update, no_update, no_update
+            column_j = int(resolved["column_j"])
+            highlight = set(resolved["tip_names"])
 
-        same_pair = current_pair == [uid1, uid2]
+            entry1 = state.get_consensus_tree_registry_entry(uid1)
+            entry2 = state.get_consensus_tree_registry_entry(uid2)
+            cols1 = set(entry1.get("cols_in_consensus_tree") or []) if entry1 else set()
+            cols2 = set(entry2.get("cols_in_consensus_tree") or []) if entry2 else set()
+            in_1 = column_j in cols1
+            in_2 = column_j in cols2
+            label1 = entry1["name"] if entry1 else "Group 1"
+            label2 = entry2["name"] if entry2 else "Group 2"
+
+            hl_left = _highlight_overlay_trace(tips1, highlight)
+            hl_right = _highlight_overlay_trace(tips2, highlight)
+            connectors = _connector_overlay_trace(tips1, tips2, highlight)
+            mrca_subtree, mrca_marker, complement_per_tree = _build_mrca_traces(
+                highlight, layout
+            )
+            tip_sister_right = _branch_overlay_trace([], [], _TIP_SISTER_ACCENT)
+            tip_sister_tips_left = _highlight_overlay_trace(
+                tips1, [], color=_MRCA_ACCENT, size=7, extra="G1 sister"
+            )
+            tip_sister_tips_right = _highlight_overlay_trace(
+                tips2, [], color=_TIP_SISTER_ACCENT, size=7, extra="G2 sister"
+            )
+            complement1 = complement_per_tree["tips1"]
+            complement2 = complement_per_tree["tips2"]
+            title_children = _tanglegram_title_children(
+                label1, label2, highlight, in_1=in_1, in_2=in_2,
+            )
+            if complement_on:
+                comp_tips = _complement_tips_trace(complement1 | complement2, tips1, tips2)
+                comp_conn = _complement_connector_trace(
+                    tips1, tips2, complement1, complement2,
+                )
+            else:
+                comp_tips = _complement_tips_trace(set(), tips1, tips2)
+                comp_conn = _complement_connector_trace(tips1, tips2, set(), set())
+            complement_disabled = False
+
         if same_pair:
-            # Patch only the dynamic overlays' geometry. The static
-            # skeleton (branches 0/1, grey tips 3/4) and the green
-            # overlays' styling are already in the figure, so the patch
-            # carries nothing but the x/y/text that actually changed.
             patch = Patch()
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["x"] = mrca_subtree["x"]
             patch["data"][_TANGLEGRAM_MRCA_SUBTREE]["y"] = mrca_subtree["y"]
+            patch["data"][_TANGLEGRAM_TIP_SISTER_RIGHT]["x"] = tip_sister_right["x"]
+            patch["data"][_TANGLEGRAM_TIP_SISTER_RIGHT]["y"] = tip_sister_right["y"]
             for idx, trace in (
-                (_TANGLEGRAM_HIGHLIGHT_LEFT,  hl_left),
-                (_TANGLEGRAM_HIGHLIGHT_RIGHT, hl_right),
-                (_TANGLEGRAM_CONNECTORS,      connectors),
-                (_TANGLEGRAM_MRCA_MARKER,     mrca_marker),
-                (_TANGLEGRAM_COMPLEMENT_TIPS, comp_tips),
-                (_TANGLEGRAM_COMPLEMENT_CONN, comp_conn),
+                (_TANGLEGRAM_TIP_SISTER_TIPS_LEFT,  tip_sister_tips_left),
+                (_TANGLEGRAM_TIP_SISTER_TIPS_RIGHT, tip_sister_tips_right),
+                (_TANGLEGRAM_HIGHLIGHT_LEFT,        hl_left),
+                (_TANGLEGRAM_HIGHLIGHT_RIGHT,       hl_right),
+                (_TANGLEGRAM_CONNECTORS,            connectors),
+                (_TANGLEGRAM_MRCA_MARKER,           mrca_marker),
+                (_TANGLEGRAM_COMPLEMENT_TIPS,       comp_tips),
+                (_TANGLEGRAM_COMPLEMENT_CONN,       comp_conn),
             ):
                 patch["data"][idx]["x"] = trace["x"]
                 patch["data"][idx]["y"] = trace["y"]
                 patch["data"][idx]["text"] = trace["text"]
-            return patch, no_update, title_children
+            return patch, no_update, title_children, complement_disabled
 
-        # ── First time this pair is rendered — build the full figure ─────
-        # Trace order must match the _TANGLEGRAM_* index constants:
-        # branches first (skeleton 0-1, MRCA subtree 2), then the tip
-        # markers (grey 3-4, red 5-6) so the dots draw over the branch
-        # colour, then connectors (7), MRCA markers (8), and finally the
-        # green complement overlays (9-10) on top. skel[1]/skel[3] are
-        # the full static grey-tip sets — the green markers simply draw
-        # over them. skeleton_traces is [L branch, L tips, R branch, R tips].
         skel = layout["skeleton_traces"]
         traces = [
-            skel[0], skel[2], mrca_subtree,
-            skel[1], skel[3], hl_left, hl_right,
-            connectors, mrca_marker,
+            skel[0], skel[2], mrca_subtree, tip_sister_right,
+            skel[1], skel[3], tip_sister_tips_left, tip_sister_tips_right,
+            hl_left, hl_right, connectors, mrca_marker,
             comp_tips, comp_conn,
         ]
         height = _tanglegram_height(px_per_tip, layout["max_y"])
@@ -1851,10 +2124,6 @@ def register_clade_explore_callbacks():
             t if isinstance(t, go.Scatter) else go.Scatter(**t)
             for t in traces
         ])
-        # Backbone (skeleton branch) colour follows the theme — an
-        # off-white reads against the dark canvas in dark mode. Set it on
-        # the built figure (traces 0/1) rather than the cached layout so
-        # the lru-cached skeleton dicts stay theme-agnostic.
         backbone = _backbone_color()
         fig.data[0].line.color = backbone
         fig.data[1].line.color = backbone
@@ -1862,12 +2131,11 @@ def register_clade_explore_callbacks():
             template=get_template(),
             height=height,
             margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(visible=False,
-                       range=[-0.05, right_start + 1.05]),
+            xaxis=dict(visible=False, range=[-0.05, right_start + 1.05]),
             yaxis=dict(visible=False),
             hovermode="closest",
         )
-        return fig, [uid1, uid2], title_children
+        return fig, [uid1, uid2], title_children, complement_disabled
 
     # ------ theme toggle → re-theme the Clade Exploration plots ------
     # Mirrors treespace's ``update_plot_theme``: rebuild with the active
@@ -1960,9 +2228,8 @@ def register_clade_explore_callbacks():
         them. Their styling was baked in at first render, so
         the patch never re-sends marker/line/mode.
         """
-        # Need a rendered tanglegram — a prior click plus a live layout
-        # — to patch against; otherwise there are no green traces yet.
-        if not click_data or not uid1 or not uid2:
+        # Need a rendered clade tanglegram — no-op in tip mode or before any click.
+        if not click_data or click_data.get("kind") == "tip" or not uid1 or not uid2:
             return no_update
         layout = _get_tanglegram_layout(uid1, uid2)
         if layout is None:

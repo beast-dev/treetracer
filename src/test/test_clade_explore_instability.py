@@ -281,8 +281,9 @@ def test_filter_patch_color_and_slider(monkeypatch):
 
     filter_cb = _registered_callback("filter_clade_freq_plot")
     # Clade size mode with min_clade_size=5 hides the size-2 jumping cherry.
-    patch_size, cleared_click = filter_cb("clade_size", 5, 0.0, False, records)
-    assert cleared_click is None
+    patch_size, banner_style, banner_text = filter_cb("clade_size", 5, 0.0, False, None, records, None)
+    assert banner_style == {"display": "none"}
+    assert banner_text == ""
     ops_size = _patch_ops(patch_size)
     assert ops_size[("data", 0, "x")] == [0.9]
     assert ops_size[("data", 0, "marker", "color")] == [12]
@@ -291,8 +292,8 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert ops_size[("data", 0, "marker", "colorbar", "title", "text")] == "Clade size"
 
     # Clade instability mode lifts the size-5 floor and fixes colorbar to [0.0, 1.0].
-    patch_instab, cleared_click = filter_cb("clade_instability", 5, 0.25, False, records)
-    assert cleared_click is None
+    patch_instab, banner_style_i, _ = filter_cb("clade_instability", 5, 0.25, False, None, records, None)
+    assert banner_style_i == {"display": "none"}
     ops_instab = _patch_ops(patch_instab)
     assert ops_instab[("data", 0, "x")] == [1.0]
     assert ops_instab[("data", 0, "marker", "color")] == [0.5625]
@@ -301,10 +302,11 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert ops_instab[("data", 0, "marker", "cmax")] == 1.0
     assert ops_instab[("data", 0, "marker", "colorbar", "title", "text")] == "Instability"
 
-    # Theme toggle (Viridis -> Turbo) preserves cauto=False, cmin=0.0, cmax=1.0.
+    # Theme toggle (Viridis -> Turbo) preserves cauto=False, cmin=0.0, cmax=1.0 and uirevision.
     import pandas as pd
 
     fig = clade_explore._build_scatter_fig(pd.DataFrame(records), "G1", "G2")
+    assert fig.layout.uirevision == "clade-freq-scatter"
     fig.data[0].marker.cauto = False
     fig.data[0].marker.cmin = 0.0
     fig.data[0].marker.cmax = 1.0
@@ -350,13 +352,16 @@ def test_sync_controls_auto_sort_and_unrooted_fallback():
         "k-rooted",
         {"has_instability": True, "tip_rows": _make_tip_rows(5, max_shift=0.8), "label_1": "G1", "label_2": "G2"},
     )
-    opts, val, tip_off, sort_by, search, limit, exp_dis, ctrl_style = sync_cb("k-rooted", "clade_instability")
+    opts, val, tip_off, sort_by, search, limit, tip_flt, exp_dis, ctrl_style = sync_cb(
+        "k-rooted", "clade_instability"
+    )
     assert opts[1]["disabled"] is False
     assert val == "clade_size"
     assert tip_off is True
     assert sort_by == "between_shift"
     assert search == ""
     assert limit == 50
+    assert tip_flt is None
     assert exp_dis is False
     assert ctrl_style == {}
 
@@ -365,7 +370,7 @@ def test_sync_controls_auto_sort_and_unrooted_fallback():
         "k-same",
         {"has_instability": True, "tip_rows": _make_tip_rows(5, max_shift=0.0), "label_1": "G1", "label_2": "G1"},
     )
-    _, _, _, sort_same, _, _, _, _ = sync_cb("k-same", "clade_size")
+    _, _, _, sort_same, _, _, _, _, _ = sync_cb("k-same", "clade_size")
     assert sort_same == "combined_instability"
 
     # Unrooted snapshot disables instability option, turns on tooltip, and hides table controls.
@@ -373,10 +378,13 @@ def test_sync_controls_auto_sort_and_unrooted_fallback():
         "k-unrooted",
         {"has_instability": False, "tip_rows": [], "label_1": "U1", "label_2": "U2"},
     )
-    opts_u, val_u, tip_off_u, _, _, _, exp_dis_u, ctrl_u = sync_cb("k-unrooted", "clade_instability")
+    opts_u, val_u, tip_off_u, _, _, _, tip_flt_u, exp_dis_u, ctrl_u = sync_cb(
+        "k-unrooted", "clade_instability"
+    )
     assert opts_u[1]["disabled"] is True
     assert val_u == "clade_size"
     assert tip_off_u is False
+    assert tip_flt_u is None
     assert exp_dis_u is True
     assert ctrl_u == {"display": "none"}
 
@@ -417,9 +425,9 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv():
     assert len(table_q.children[1].children) == 1
     assert table_q.children[1].children[0].children[0].children.children == "TAXON_059"
 
-    # Sort by combined_instability puts TAXON_002 (Comb.=0.75) first.
+    # Sort by combined_instability puts TAXON_002 (Comb.=0.75) first; active tip filter highlights TAXON_000.
     table_comb, _, _, _, _, footer_sel = render_cb(
-        "k-60", "", "combined_instability", 50, {"kind": "tip", "taxon": "TAXON_000"}
+        "k-60", "", "combined_instability", 50, {"taxon": "TAXON_000", "result_key": "k-60"}
     )
     assert table_comb.children[1].children[0].children[0].children.children == "TAXON_002"
     selected_rows = [tr for tr in table_comb.children[1].children if tr.className == "tt-tip-row-selected"]
@@ -442,21 +450,26 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv():
 
 
 def test_tip_click_filters_scatter_banner_and_dismiss():
-    """Tip selection filters data[0] to clades containing that tip; dismiss/clade click restores full scatter."""
+    """Tip filter stacks with scatter controls and clade dot clicks without resetting data[0]."""
     from dash import no_update
 
     store_click = _registered_callback("store_scatter_click")
     dismiss_cb = _registered_callback("dismiss_tip_selection_banner")
+    filter_cb = _registered_callback("filter_clade_freq_plot")
     marker_cb = _registered_callback("update_click_marker")
 
-    # Scatter click stamps kind="clade".
-    clade_payload = store_click(
-        {"points": [{"x": 0.8, "y": 0.2, "customdata": [0, 3, "G1 only", ""]}]},
+    # Scatter click stamps kind="clade" and clears clickData; banner dismiss clears click store only in tip mode.
+    clade_payload, cleared_click = store_click(
+        {"points": [{"x": 1.0, "y": 0.0, "customdata": [0, 3, "G1 only", ""]}]},
         "k-rings",
+        None,
+        None,
     )
+    assert cleared_click is None
     assert clade_payload["kind"] == "clade"
     assert clade_payload["split_id"] == 0
-    assert dismiss_cb(1) is None
+    assert dismiss_cb(1, {"kind": "tip", "taxon": "R", "result_key": "k-rings"}) == (None, None)
+    assert dismiss_cb(1, clade_payload) == (no_update, None)
 
     records = [
         {
@@ -504,57 +517,95 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
             "tip_rows": [],
         },
     )
+    tip_filter = {"taxon": "R", "result_key": "k-rings"}
 
-    # Tip R in clade_instability mode filters data[0] to splits 0 and 1 (excluding split 2) and leaves data[1] empty.
-    patch_tip, banner_style, banner_text = marker_cb(
-        {"kind": "tip", "taxon": "R", "result_key": "k-rings", "_t": 1},
-        records,
-        "clade_instability",
-        3,
-        0.0,
-        False,
+    # Active tip filter R in clade_instability mode filters data[0] to splits 0 and 1.
+    patch_tip, banner_style, banner_text = filter_cb(
+        "clade_instability", 3, 0.0, False, tip_filter, records, {"kind": "tip", "taxon": "R"}
     )
     ops = _patch_ops(patch_tip)
     assert ops[("data", 0, "x")] == [1.0, 0.0]
     assert ops[("data", 0, "y")] == [0.0, 0.5]
     assert ops[("data", 1, "x")] == []
-    assert ops[("data", 1, "y")] == []
     assert banner_style == {}
     assert banner_text == "Showing 2 clades containing R"
 
-    # Tip R in clade_size mode with min_clade_size=3 shows only split 0 (size 3).
-    patch_tip_sz, _, banner_sz = marker_cb(
-        {"kind": "tip", "taxon": "R", "result_key": "k-rings", "_t": 2},
-        records,
-        "clade_size",
-        3,
-        0.0,
-        False,
+    # Changing scatter controls (Clade size >= 3) stacks with tip filter R AND keeps visible clade ring.
+    patch_tip_sz, banner_sz_style, banner_sz = filter_cb(
+        "clade_size", 3, 0.0, False, tip_filter, records, clade_payload
     )
-    assert _patch_ops(patch_tip_sz)[("data", 0, "x")] == [1.0]
+    ops_tip_sz = _patch_ops(patch_tip_sz)
+    assert ops_tip_sz[("data", 0, "x")] == [1.0]
+    assert ops_tip_sz[("data", 1, "x")] == [1.0]
+    assert ops_tip_sz[("data", 1, "y")] == [0.0]
+    assert banner_sz_style == {}
     assert banner_sz == "Showing 1 clade containing R"
 
-    # Clade click restores all visible clades in data[0], places 1 ring on data[1], and hides banner.
-    patch_clade, clade_banner_style, _ = marker_cb(
-        clade_payload, records, "clade_size", 2, 0.0, False
+    # Filtering out the currently ringed clade (Clade size >= 4) clears the ring cleanly.
+    patch_filtered_out, _, _ = filter_cb(
+        "clade_size", 4, 0.0, False, tip_filter, records, clade_payload
     )
-    clade_ops = _patch_ops(patch_clade)
-    assert clade_ops[("data", 0, "x")] == [1.0, 0.0, 1.0]
-    assert clade_ops[("data", 1, "x")] == [0.8]
-    assert clade_banner_style == {"display": "none"}
+    assert _patch_ops(patch_filtered_out)[("data", 1, "x")] == []
 
-    # Dismissing (click_data=None) restores all visible clades in data[0], clears data[1], hides banner.
-    patch_clear, clear_style, clear_text = marker_cb(
-        None, records, "clade_size", 2, 0.0, False
+    # Clicking a clade dot inside the subselection only patches data[1] (never touches data[0]).
+    patch_clade = marker_cb(clade_payload, records)
+    clade_ops = _patch_ops(patch_clade)
+    assert ("data", 0, "x") not in clade_ops
+    assert clade_ops[("data", 1, "x")] == [1.0]
+    assert clade_ops[("data", 1, "y")] == [0.0]
+
+    # Clicking a tip clears the single-clade ring on data[1] without touching data[0].
+    patch_tip_ring = marker_cb({"kind": "tip", "taxon": "R", "result_key": "k-rings"}, records)
+    tip_ring_ops = _patch_ops(patch_tip_ring)
+    assert ("data", 0, "x") not in tip_ring_ops
+    assert tip_ring_ops[("data", 1, "x")] == []
+    assert marker_cb(None, None) is no_update
+
+    # Dismissing the tip filter (tip_filter=None) restores all clades in data[0], hides banner,
+    # and keeps the ring if a clade is currently focused.
+    patch_clear, clear_style, clear_text = filter_cb(
+        "clade_size", 2, 0.0, False, None, records, clade_payload
     )
     clear_ops = _patch_ops(patch_clear)
     assert clear_ops[("data", 0, "x")] == [1.0, 0.0, 1.0]
-    assert clear_ops[("data", 1, "x")] == []
+    assert clear_ops[("data", 1, "x")] == [1.0]
     assert clear_style == {"display": "none"}
     assert clear_text == ""
-    no_fig, no_style, _ = marker_cb(None, None, "clade_size", 2, 0.0, False)
-    assert no_fig is no_update
-    assert no_style == {"display": "none"}
+
+
+def test_click_selected_clade_toggles_off():
+    """Re-clicking the selected red circle clears selection or restores the active tip view."""
+    from dash import no_update
+
+    store_click = _registered_callback("store_scatter_click")
+    marker_cb = _registered_callback("update_click_marker")
+    click_evt = {"points": [{"x": 1.0, "y": 0.0, "customdata": [0, 3, "G1 only", ""]}]}
+    other_evt = {"points": [{"x": 0.0, "y": 0.5, "customdata": [1, 2, "G2 only", ""]}]}
+    tip_filter = {"taxon": "R", "result_key": "k-tog"}
+
+    # First click selects clade 0 and resets clickData to None so Dash fires on re-click.
+    selected, reset_1 = store_click(click_evt, "k-tog", None, None)
+    assert selected["kind"] == "clade" and selected["split_id"] == 0
+    assert reset_1 is None
+    assert store_click(None, "k-tog", selected, None) == (no_update, no_update)
+
+    # Clicking clade 0 again with no tip filter clears to None and resets clickData.
+    undone, reset_2 = store_click(click_evt, "k-tog", selected, None)
+    assert undone is None and reset_2 is None
+    assert _patch_ops(marker_cb(undone, [{"split_id": 0}]))[("data", 1, "x")] == []
+
+    # Clicking a different dot switches directly to clade 1.
+    sel_other, reset_3 = store_click(other_evt, "k-tog", selected, tip_filter)
+    assert sel_other["kind"] == "clade" and sel_other["split_id"] == 1
+    assert reset_3 is None
+
+    # Clicking the selected clade 1 again WITH an active tip filter returns to tip view.
+    back_to_tip, reset_4 = store_click(other_evt, "k-tog", sel_other, tip_filter)
+    assert back_to_tip["kind"] == "tip"
+    assert back_to_tip["taxon"] == "R"
+    assert back_to_tip["result_key"] == "k-tog"
+    assert reset_4 is None
+    assert _patch_ops(marker_cb(back_to_tip, [{"split_id": 1}]))[("data", 1, "x")] == []
 
 
 def test_tip_mode_tanglegram_consensus_sisters_complement_and_clear():

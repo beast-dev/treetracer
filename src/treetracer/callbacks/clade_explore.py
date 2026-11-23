@@ -957,6 +957,7 @@ def _build_scatter_fig(df_plot, label1, label2):
         # identical click payloads still propagate through dcc.Store.
         # dcc.Store.
         clickmode="event",
+        uirevision="clade-freq-scatter",
     )
     return fig
 
@@ -1003,7 +1004,7 @@ def _build_scatter_patch(
     exclusive_only,
     tip_taxon: str | None = None,
     resolution: dict[int, Any] | None = None,
-    ring_coords: tuple[list[float], list[float]] = ([], []),
+    click_data: dict[str, Any] | None = None,
 ) -> tuple[Patch, int]:
     """Build a Patch updating scatter trace 0 (points/color) and trace 1 (ring)."""
     df = pd.DataFrame(store_data)
@@ -1048,8 +1049,20 @@ def _build_scatter_patch(
         patch["data"][0]["marker"]["cauto"] = True
         patch["data"][0]["marker"]["cmin"] = None
         patch["data"][0]["marker"]["cmax"] = None
-    patch["data"][1]["x"] = ring_coords[0]
-    patch["data"][1]["y"] = ring_coords[1]
+    ring_x: list[float] = []
+    ring_y: list[float] = []
+    if (
+        isinstance(click_data, dict)
+        and click_data.get("kind", "clade") == "clade"
+        and click_data.get("split_id") is not None
+        and not df_plot.empty
+        and int(click_data["split_id"]) in set(df_plot["split_id"].astype(int))
+    ):
+        x, y = click_data.get("x"), click_data.get("y")
+        if x is not None and y is not None:
+            ring_x, ring_y = [x], [y]
+    patch["data"][1]["x"] = ring_x
+    patch["data"][1]["y"] = ring_y
     return patch, len(df_plot)
 
 
@@ -1467,12 +1480,15 @@ def register_clade_explore_callbacks():
 
     @callback(
         Output("clade-freq-scatter", "figure", allow_duplicate=True),
-        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Output("clade-freq-tip-filter-banner", "style"),
+        Output("clade-freq-tip-filter-banner-text", "children"),
         Input("clade-freq-color-by", "value"),
         Input("clade-freq-min-clade-size", "value"),
         Input("clade-freq-min-instability", "value"),
         Input("clade-freq-exclusive-only", "checked"),
+        Input("tip-instability-filter-store", "data"),
         State("clade-freq-data-store", "data"),
+        State("clade-freq-click-store", "data"),
         prevent_initial_call=True,
     )
     def filter_clade_freq_plot(
@@ -1480,20 +1496,43 @@ def register_clade_explore_callbacks():
         min_clade_size,
         min_instability,
         exclusive_only,
+        tip_filter,
         store_data,
+        click_data,
     ):
-        """Patch scatter ``data[0]`` on mode/slider/checkbox changes and clear selection."""
+        """Patch scatter ``data[0]`` and tip-filter banner, stacking tip + control filters."""
+        hide_banner = {"display": "none"}
         if not store_data:
-            return no_update, no_update
+            return no_update, hide_banner, ""
 
-        patch, _ = _build_scatter_patch(
+        tip_taxon = None
+        resolution = None
+        if isinstance(tip_filter, dict) and tip_filter.get("taxon"):
+            cached = state.get_clade_frequency_result(tip_filter.get("result_key"))
+            if cached is not None:
+                tip_taxon = str(tip_filter["taxon"])
+                resolution = cached.get("resolution", {})
+
+        patch, n_shown = _build_scatter_patch(
             store_data,
             color_by=color_by,
             min_clade_size=min_clade_size,
             min_instability=min_instability,
             exclusive_only=exclusive_only,
+            tip_taxon=tip_taxon,
+            resolution=resolution,
+            click_data=click_data,
         )
-        return patch, None
+        if tip_taxon is None:
+            return patch, hide_banner, ""
+        if n_shown:
+            banner_text = (
+                f"Showing {n_shown} clade"
+                f"{'s' if n_shown != 1 else ''} containing {tip_taxon}"
+            )
+        else:
+            banner_text = f"No clades contain {tip_taxon} under current filter"
+        return patch, {}, banner_text
 
     # ------ Tip Instability Table: reactive sync, render, pagination, TSV ------
 
@@ -1504,6 +1543,7 @@ def register_clade_explore_callbacks():
         Output("tip-instability-sort", "value"),
         Output("tip-instability-search", "value"),
         Output("tip-instability-limit-store", "data", allow_duplicate=True),
+        Output("tip-instability-filter-store", "data", allow_duplicate=True),
         Output("tip-instability-export-btn", "disabled"),
         Output("tip-instability-controls", "style"),
         Input("clade-freq-result-key-store", "data"),
@@ -1541,6 +1581,7 @@ def register_clade_explore_callbacks():
             default_sort,
             "",
             50,
+            None,
             not has_instab,
             controls_style,
         )
@@ -1567,7 +1608,7 @@ def register_clade_explore_callbacks():
         Input("tip-instability-search", "value"),
         Input("tip-instability-sort", "value"),
         Input("tip-instability-limit-store", "data"),
-        Input("clade-freq-click-store", "data"),
+        Input("tip-instability-filter-store", "data"),
         prevent_initial_call=True,
     )
     def render_tip_instability_table(
@@ -1575,7 +1616,7 @@ def register_clade_explore_callbacks():
         search_text,
         sort_by,
         limit,
-        click_data,
+        tip_filter,
     ):
         cached = state.get_clade_frequency_result(result_key) if result_key else None
         if cached is None:
@@ -1626,8 +1667,8 @@ def register_clade_explore_callbacks():
         shown = ordered[:cap]
 
         selected_taxon = (
-            click_data.get("taxon")
-            if isinstance(click_data, dict) and click_data.get("kind") == "tip"
+            tip_filter.get("taxon")
+            if isinstance(tip_filter, dict) and tip_filter.get("result_key") == result_key
             else None
         )
         selected_row = (
@@ -1992,7 +2033,7 @@ def register_clade_explore_callbacks():
                 output = dcc.Graph(
                     id="clade-freq-scatter",
                     figure=cached["figure"],
-                    config={"displayModeBar": False},
+                    config={"displayModeBar": False, "doubleClick": "reset"},
                     style={"width": "100%"},
                 )
 
@@ -2007,160 +2048,145 @@ def register_clade_explore_callbacks():
 
     @callback(
         Output("clade-freq-click-store", "data"),
+        Output("clade-freq-scatter", "clickData"),
         Input("clade-freq-scatter", "clickData"),
         State("clade-freq-result-key-store", "data"),
+        State("clade-freq-click-store", "data"),
+        State("tip-instability-filter-store", "data"),
         prevent_initial_call=True,
     )
-    def store_scatter_click(click_data, result_key):
-        """Forward a scatter plot click to the click store.
+    def store_scatter_click(click_data, result_key, current_click, tip_filter):
+        """Forward a scatter click to the click store; clicking the selected dot toggles it off.
 
-        ``customdata`` is ``[split_id, clade_size, membership]``. The
-        split ID and immutable result key let ``draw_tanglegram`` resolve the
-        actual tip names without decoding the full RF snapshot in the UI.
-
-        The ``_t`` nonce is set to a unique counter each time so
-        ``dcc.Store`` does not deduplicate identical click payloads
-        (e.g. clicking the same point twice). Without it, Plotly's
-        first click on a point sometimes appears to "do nothing"
-        because the store value matches the previous click.
+        Clears ``clade-freq-scatter.clickData`` back to ``None`` on every handled click
+        because Dash's renderer deep-equals ``clickData`` against the previous value and
+        otherwise swallows a second click on the exact same dot.
         """
         nonlocal _click_counter
         if not result_key or not click_data or not click_data.get("points"):
-            return no_update
-        point = click_data["points"][0]
+            return no_update, no_update
+        result_key_s = str(result_key)
+        points = click_data["points"]
+        point = points[0]
         custom = point.get("customdata")
         if custom is None:
-            return no_update
+            return no_update, None
         try:
-            _click_counter += 1
-            return {
-                "kind":       "clade",
-                "split_id":   int(custom[0]),
-                "clade_size": int(custom[1]),
-                "x":          float(point["x"]),
-                "y":          float(point["y"]),
-                "result_key": str(result_key),
-                "_t":         _click_counter,
-            }
+            clicked_split = int(custom[0])
+            clicked_size = int(custom[1])
+            clicked_x = float(point["x"])
+            clicked_y = float(point["y"])
         except (TypeError, ValueError, IndexError, KeyError):
-            return no_update
+            return no_update, None
+
+        if (
+            isinstance(current_click, dict)
+            and current_click.get("kind", "clade") == "clade"
+            and str(current_click.get("result_key") or "") == result_key_s
+            and current_click.get("split_id") is not None
+            and any(
+                pt.get("customdata")
+                and str(pt["customdata"][0]) == str(int(current_click["split_id"]))
+                for pt in points
+            )
+        ):
+            if (
+                isinstance(tip_filter, dict)
+                and tip_filter.get("taxon")
+                and str(tip_filter.get("result_key") or "") == result_key_s
+            ):
+                _click_counter += 1
+                return (
+                    {
+                        "kind": "tip",
+                        "taxon": str(tip_filter["taxon"]),
+                        "result_key": result_key_s,
+                        "_t": _click_counter,
+                    },
+                    None,
+                )
+            return None, None
+
+        _click_counter += 1
+        return (
+            {
+                "kind":       "clade",
+                "split_id":   clicked_split,
+                "clade_size": clicked_size,
+                "x":          clicked_x,
+                "y":          clicked_y,
+                "result_key": result_key_s,
+                "_t":         _click_counter,
+            },
+            None,
+        )
 
     @callback(
         Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Output("tip-instability-filter-store", "data", allow_duplicate=True),
         Input({"type": "tip-instability-focus", "taxon": ALL}, "n_clicks"),
         State("clade-freq-result-key-store", "data"),
+        State("tip-instability-filter-store", "data"),
+        prevent_initial_call=True,
+    )
+    def select_tip_instability_row(n_clicks_list, result_key, tip_filter):
+        """Filter the scatter to a tip and focus it in the tanglegram (or toggle off)."""
+        nonlocal _click_counter
+        if not n_clicks_list or not any(n_clicks_list) or not result_key:
+            return no_update, no_update
+        triggered = ctx.triggered_id
+        if not isinstance(triggered, dict) or triggered.get("type") != "tip-instability-focus":
+            return no_update, no_update
+        taxon = str(triggered["taxon"])
+        if isinstance(tip_filter, dict) and tip_filter.get("taxon") == taxon:
+            return None, None
+        _click_counter += 1
+        return (
+            {
+                "kind": "tip",
+                "taxon": taxon,
+                "result_key": str(result_key),
+                "_t": _click_counter,
+            },
+            {"taxon": taxon, "result_key": str(result_key)},
+        )
+
+    @callback(
+        Output("clade-freq-click-store", "data", allow_duplicate=True),
+        Output("tip-instability-filter-store", "data", allow_duplicate=True),
+        Input("clade-freq-tip-banner-dismiss", "n_clicks"),
         State("clade-freq-click-store", "data"),
         prevent_initial_call=True,
     )
-    def select_tip_instability_row(n_clicks_list, result_key, current_click):
-        """Select a tip from the Tip Instability Table (or toggle it off if active)."""
-        nonlocal _click_counter
-        if not n_clicks_list or not any(n_clicks_list) or not result_key:
-            return no_update
-        triggered = ctx.triggered_id
-        if not isinstance(triggered, dict) or triggered.get("type") != "tip-instability-focus":
-            return no_update
-        taxon = str(triggered["taxon"])
-        if (
-            isinstance(current_click, dict)
-            and current_click.get("kind") == "tip"
-            and current_click.get("taxon") == taxon
-        ):
-            return None
-        _click_counter += 1
-        return {
-            "kind": "tip",
-            "taxon": taxon,
-            "result_key": str(result_key),
-            "_t": _click_counter,
-        }
-
-    @callback(
-        Output("clade-freq-click-store", "data", allow_duplicate=True),
-        Input("clade-freq-tip-banner-dismiss", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def dismiss_tip_selection_banner(n_clicks):
+    def dismiss_tip_selection_banner(n_clicks, click_data):
         if not n_clicks:
-            return no_update
-        return None
+            return no_update, no_update
+        if isinstance(click_data, dict) and click_data.get("kind", "clade") == "clade":
+            return no_update, None
+        return None, None
 
     @callback(
         Output("clade-freq-scatter", "figure", allow_duplicate=True),
-        Output("clade-freq-tip-filter-banner", "style"),
-        Output("clade-freq-tip-filter-banner-text", "children"),
         Input("clade-freq-click-store", "data"),
         State("clade-freq-data-store", "data"),
-        State("clade-freq-color-by", "value"),
-        State("clade-freq-min-clade-size", "value"),
-        State("clade-freq-min-instability", "value"),
-        State("clade-freq-exclusive-only", "checked"),
         prevent_initial_call=True,
     )
-    def update_click_marker(
-        click_data,
-        store_data,
-        color_by,
-        min_clade_size,
-        min_instability,
-        exclusive_only,
-    ):
-        """Update scatter points/ring on clade click, tip filter selection, or clear."""
-        hide_banner = {"display": "none"}
-        if not click_data:
-            if not store_data:
-                return no_update, hide_banner, ""
-            patch, _ = _build_scatter_patch(
-                store_data,
-                color_by=color_by,
-                min_clade_size=min_clade_size,
-                min_instability=min_instability,
-                exclusive_only=exclusive_only,
-            )
-            return patch, hide_banner, ""
-
-        kind = click_data.get("kind", "clade")
-        if kind == "tip":
-            taxon = click_data.get("taxon")
-            cached = state.get_clade_frequency_result(click_data.get("result_key"))
-            if not store_data or not taxon or cached is None:
-                return no_update, hide_banner, ""
-            patch, n_shown = _build_scatter_patch(
-                store_data,
-                color_by=color_by,
-                min_clade_size=min_clade_size,
-                min_instability=min_instability,
-                exclusive_only=exclusive_only,
-                tip_taxon=str(taxon),
-                resolution=cached.get("resolution", {}),
-            )
-            if n_shown:
-                banner_text = (
-                    f"Showing {n_shown} clade"
-                    f"{'s' if n_shown != 1 else ''} containing {taxon}"
-                )
-            else:
-                banner_text = f"No clades contain {taxon} under current filter"
-            return patch, {}, banner_text
-
-        x = click_data.get("x")
-        y = click_data.get("y")
-        if x is None or y is None:
-            return no_update, hide_banner, ""
-        if store_data:
-            patch, _ = _build_scatter_patch(
-                store_data,
-                color_by=color_by,
-                min_clade_size=min_clade_size,
-                min_instability=min_instability,
-                exclusive_only=exclusive_only,
-                ring_coords=([x], [y]),
-            )
-            return patch, hide_banner, ""
+    def update_click_marker(click_data, store_data):
+        """Patch only scatter overlay trace 1 (single-clade ring) without altering data[0]."""
+        if not store_data:
+            return no_update
         patch = Patch()
-        patch["data"][1]["x"] = [x]
-        patch["data"][1]["y"] = [y]
-        return patch, hide_banner, ""
+        if isinstance(click_data, dict) and click_data.get("kind", "clade") == "clade":
+            x = click_data.get("x")
+            y = click_data.get("y")
+            if x is None or y is None:
+                return no_update
+            patch["data"][1]["x"] = [x]
+            patch["data"][1]["y"] = [y]
+            return patch
+        patch["data"][1]["x"] = []
+        patch["data"][1]["y"] = []
+        return patch
 
     @callback(
         Output("clade-freq-tanglegram", "figure"),
@@ -2361,6 +2387,7 @@ def register_clade_explore_callbacks():
             xaxis=dict(visible=False, range=[-0.05, right_start + 1.05]),
             yaxis=dict(visible=False),
             hovermode="closest",
+            uirevision="clade-freq-tanglegram",
         )
         return fig, [uid1, uid2], title_children, complement_disabled
 

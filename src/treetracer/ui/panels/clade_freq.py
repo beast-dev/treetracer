@@ -502,6 +502,7 @@ def _add_clade_freq_panel():
         ], gap="md", align="flex-start", wrap="nowrap"),
         dcc.Store(id="clade-freq-tanglegram-pair-store"),
         dcc.Store(id="tip-instability-limit-store", storage_type="memory", data=50),
+        dcc.Store(id="tip-instability-filter-store", storage_type="memory"),
     ], p="md", withBorder=True, radius="sm",
        # Hidden until ``compute_and_plot_clade_frequencies`` succeeds —
        # nothing useful to show before Compare has run. Cleared back to

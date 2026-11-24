@@ -23,11 +23,12 @@ from ..background_jobs import JobBusyError, JobRef, JobState, job_manager
 from ..clade_freq.layout import parse_nexus, build_tree_traces, _collect_nodes
 from ..clade_freq.sister_instability import format_tip_instability_tsv
 from ..icons import icon
-from ..logger import add_log
+from ..logger import add_log, notif_id
 from ..theme import get_template, DARK_TEMPLATE
 from ..plot_utils import retheme_figure
 from ..ui.widgets import stop_button
 from . import persistent_worker
+from ._helpers import _save_file_dialog
 from .compute import _get_executor
 from .job_reconcile import (
     is_compute_busy,
@@ -1768,7 +1769,7 @@ def register_clade_explore_callbacks():
         )
 
     @callback(
-        Output("tip-instability-download", "data"),
+        Output("notifications-container", "children", allow_duplicate=True),
         Input("tip-instability-export-btn", "n_clicks"),
         State("clade-freq-result-key-store", "data"),
         prevent_initial_call=True,
@@ -1784,9 +1785,32 @@ def register_clade_explore_callbacks():
             return no_update
         label_1 = str(cached.get("label_1", "G1")).replace("/", "_").replace(" ", "_")
         label_2 = str(cached.get("label_2", "G2")).replace("/", "_").replace(" ", "_")
-        return dcc.send_string(
-            format_tip_instability_tsv(tip_rows),
-            filename=f"{label_1}_vs_{label_2}_tip_instability.tsv",
+        path = _save_file_dialog(
+            default_filename=f"{label_1}_vs_{label_2}_tip_instability.tsv"
+        )
+        if not path:
+            return no_update
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(format_tip_instability_tsv(tip_rows))
+        except OSError as exc:
+            add_log(f"Failed to export tip instability TSV to {path}: {exc}", "ERROR")
+            return dmc.Notification(
+                title="Export Failed",
+                message=str(exc),
+                color="red",
+                action="show",
+                autoClose=4000,
+                id=notif_id(),
+            )
+        add_log(f"Exported tip instability ({len(tip_rows)} tips) to {path}")
+        return dmc.Notification(
+            title="Tip Instability Exported",
+            message=f"Saved {len(tip_rows)} tips to {path}",
+            color="green",
+            action="show",
+            autoClose=3000,
+            id=notif_id(),
         )
 
     # ------ Clade Frequency Comparison: enable Compare button ------

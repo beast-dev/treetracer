@@ -213,7 +213,6 @@ def _add_clade_freq_panel():
                                 justify="space-between",
                                 align="center",
                             ),
-                            dcc.Download(id="tip-instability-download"),
                             dmc.Group(
                                 [
                                     dmc.TextInput(

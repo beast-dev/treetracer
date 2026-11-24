@@ -389,8 +389,9 @@ def test_sync_controls_auto_sort_and_unrooted_fallback():
     assert ctrl_u == {"display": "none"}
 
 
-def test_tip_table_search_sort_pagination_unrooted_and_tsv():
+def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path):
     """Tip Table paginates at 50, searches across all L tips, sorts, renders unrooted fallback, and exports TSV."""
+    from dash import no_update
     render_cb = _registered_callback("render_tip_instability_table")
     bump_cb = _registered_callback("bump_tip_instability_limit")
     export_cb = _registered_callback("export_tip_instability_tsv")
@@ -434,10 +435,23 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv():
     assert len(selected_rows) == 1
     assert "TAXON_000" in str(footer_sel)
 
-    # TSV export writes header + all 60 tips.
-    dl = export_cb(1, "k-60")
-    assert dl["filename"] == "Run_1_vs_Run_2_tip_instability.tsv"
-    assert len(dl["content"].strip().splitlines()) == 61
+    # TSV export opens native save dialog and writes header + all 60 tips.
+    seen_default = []
+    out_file = tmp_path / "out.tsv"
+
+    def _fake_save(default_filename="output.tsv", **_kwargs):
+        seen_default.append(default_filename)
+        return str(out_file)
+
+    monkeypatch.setattr(clade_explore, "_save_file_dialog", _fake_save)
+    notif = export_cb(1, "k-60")
+    assert seen_default == ["Run_1_vs_Run_2_tip_instability.tsv"]
+    assert len(out_file.read_text(encoding="utf-8").strip().splitlines()) == 61
+    assert notif.color == "green"
+
+    # Cancelled dialog returns no_update.
+    monkeypatch.setattr(clade_explore, "_save_file_dialog", lambda **_kwargs: None)
+    assert export_cb(2, "k-60") is no_update
 
     # Unrooted empty-state card.
     state.store_clade_frequency_result(

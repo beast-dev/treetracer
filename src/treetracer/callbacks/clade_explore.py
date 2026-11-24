@@ -855,15 +855,30 @@ def clear_clade_freq_caches():
     _get_tanglegram_layout.cache_clear()
 
 
-def _format_instability_hover(clade_instab, between_shift) -> str:
+def _format_shift_sigfig(value: float) -> str:
+    """Format shift to 4 significant figures, snapping floating-point dust to 0."""
+    v = float(value)
+    return "0" if abs(v) < 1e-12 else f"{v:.4g}"
+
+
+def _format_instability_hover(
+    clade_instab,
+    between_shift,
+    instab_1=None,
+    instab_2=None,
+) -> str:
     if clade_instab is None:
         return ""
-    if between_shift is not None:
-        return (
-            f"<br>Sister instability: {float(clade_instab):.3f} "
-            f"(Shift: {float(between_shift):.3f})"
+    if instab_1 is not None and instab_2 is not None:
+        text = (
+            f"<br>Instab: {float(clade_instab):.2f} "
+            f"(G1 {float(instab_1):.2f}, G2 {float(instab_2):.2f})"
         )
-    return f"<br>Sister instability: {float(clade_instab):.3f}"
+    else:
+        text = f"<br>Instab: {float(clade_instab):.2f}"
+    if between_shift is not None:
+        text += f"<br>Shift: {_format_shift_sigfig(between_shift)}"
+    return text
 
 
 def _scatter_customdata(df_plot: pd.DataFrame) -> list[list[Any]]:
@@ -1234,7 +1249,10 @@ def _finalize_clade_comparison_job(
                     float(between_shift) if between_shift is not None else None
                 ),
                 "instability_hover": _format_instability_hover(
-                    clade_instab, between_shift
+                    clade_instab,
+                    between_shift,
+                    instab_1=instab_1,
+                    instab_2=instab_2,
                 ),
             }
         )

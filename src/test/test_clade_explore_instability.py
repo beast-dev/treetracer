@@ -212,9 +212,16 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
     # Singleton column 0 was excluded globally; only clade_size >= 2 remain.
     assert [r["clade_size"] for r in cached["records"]] == [2, 3]
     assert cached["records"][0]["clade_instability"] == pytest.approx(0.5)
-    assert "(Shift: 1.000)" in cached["records"][0]["instability_hover"]
-    assert "Shift:" not in cached["records"][1]["instability_hover"]
-    assert "Sister instability: 0.000" in cached["records"][1]["instability_hover"]
+    assert cached["records"][0]["instability_hover"] == (
+        "<br>Instab: 0.50 (G1 0.00, G2 0.00)<br>Shift: 1"
+    )
+    assert cached["records"][1]["instability_hover"] == "<br>Instab: 0.00"
+    assert clade_explore._format_instability_hover(0.75, 0.0023456, 0.74, 0.76) == (
+        "<br>Instab: 0.75 (G1 0.74, G2 0.76)<br>Shift: 0.002346"
+    )
+    assert clade_explore._format_instability_hover(0.75, 1e-16, 0.75, 0.75) == (
+        "<br>Instab: 0.75 (G1 0.75, G2 0.75)<br>Shift: 0"
+    )
     # Explicit dict title ensures downstream Patch on colorbar.title.text works.
     assert cached["figure"]["data"][0]["marker"]["colorbar"]["title"] == {"text": "Clade size"}
 

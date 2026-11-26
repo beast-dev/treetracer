@@ -31,6 +31,9 @@ _LOWEST_BIT = np.array(
 _TSV_COLUMNS = (
     "taxon",
     "d_sis",
+    "n_eff_1",
+    "n_eff_2",
+    "n_eff_comb",
     "instab_1",
     "instab_2",
     "combined_instability",
@@ -52,6 +55,14 @@ class CladeInstabilityMetrics:
     instab_1: float | None
     instab_2: float | None
     d_sis: float | None
+    n_eff_comb: float = 1.0
+    n_eff_1: float | None = None
+    n_eff_2: float | None = None
+
+
+def _effective_sisters(similarity: float) -> float:
+    """Convert expected pairwise Jaccard similarity s = p^T J p to N_eff = 1 / s."""
+    return float(max(1.0, 1.0 / max(float(similarity), 1e-12)))
 
 
 def _normalise_leaf_names(raw: Sequence[object]) -> tuple[str, ...]:
@@ -319,16 +330,33 @@ def compute_sister_instability_from_arrays(
 
         if len(sisters) <= 1:
             i_comb = 0.0
+            n_eff_comb = 1.0
             i1 = 0.0 if p1 is not None else None
+            n_eff_1 = 1.0 if p1 is not None else None
             i2 = 0.0 if p2 is not None else None
+            n_eff_2 = 1.0 if p2 is not None else None
             d_sis = 0.0 if (p1 is not None and p2 is not None) else None
         else:
             jaccard = _pairwise_jaccard(
                 packed_clades, sizes, sisters, n_taxa, packed_threshold=packed_threshold
             )
-            i_comb = float(np.clip(1.0 - p_comb @ jaccard @ p_comb, 0.0, 1.0))
-            i1 = float(np.clip(1.0 - p1 @ jaccard @ p1, 0.0, 1.0)) if p1 is not None else None
-            i2 = float(np.clip(1.0 - p2 @ jaccard @ p2, 0.0, 1.0)) if p2 is not None else None
+            s_comb = float(p_comb @ jaccard @ p_comb)
+            i_comb = float(np.clip(1.0 - s_comb, 0.0, 1.0))
+            n_eff_comb = _effective_sisters(s_comb)
+            if p1 is not None:
+                s1 = float(p1 @ jaccard @ p1)
+                i1 = float(np.clip(1.0 - s1, 0.0, 1.0))
+                n_eff_1 = _effective_sisters(s1)
+            else:
+                i1 = None
+                n_eff_1 = None
+            if p2 is not None:
+                s2 = float(p2 @ jaccard @ p2)
+                i2 = float(np.clip(1.0 - s2, 0.0, 1.0))
+                n_eff_2 = _effective_sisters(s2)
+            else:
+                i2 = None
+                n_eff_2 = None
             if p1 is not None and p2 is not None:
                 diff = p1 - p2
                 d_sis = float(np.clip(0.5 * (diff @ jaccard @ diff), 0.0, 1.0))
@@ -336,7 +364,9 @@ def compute_sister_instability_from_arrays(
                 d_sis = None
 
         if target_col in cons_cols:
-            clade_metrics[target_col] = CladeInstabilityMetrics(i_comb, i1, i2, d_sis)
+            clade_metrics[target_col] = CladeInstabilityMetrics(
+                i_comb, i1, i2, d_sis, n_eff_comb, n_eff_1, n_eff_2
+            )
 
         taxon_index = col_to_taxon.get(target_col)
         if taxon_index is not None:
@@ -347,6 +377,9 @@ def compute_sister_instability_from_arrays(
                     "taxon": leaves[taxon_index],
                     "column_j": target_col,
                     "d_sis": float(d_sis or 0.0),
+                    "n_eff_1": float(n_eff_1 if n_eff_1 is not None else 1.0),
+                    "n_eff_2": float(n_eff_2 if n_eff_2 is not None else 1.0),
+                    "n_eff_comb": n_eff_comb,
                     "instab_1": float(i1 or 0.0),
                     "instab_2": float(i2 or 0.0),
                     "combined_instability": i_comb,
@@ -392,6 +425,13 @@ def compute_sister_instability_from_npz(
     )
 
 
+def _row_n_eff(row: dict[str, Any], neff_key: str, instab_key: str) -> float:
+    val = row.get(neff_key)
+    if val is not None:
+        return float(val)
+    return _effective_sisters(1.0 - float(row.get(instab_key, 0.0)))
+
+
 def format_tip_instability_tsv(tip_rows: Sequence[dict[str, Any]]) -> str:
     """Serialize all tip instability rows to a tab-separated string."""
     clean = lambda v: str(v).replace("\t", " ").replace("\r", " ").replace("\n", " ")
@@ -402,6 +442,9 @@ def format_tip_instability_tsv(tip_rows: Sequence[dict[str, Any]]) -> str:
                 (
                     clean(row["taxon"]),
                     f"{float(row['d_sis']):.6f}",
+                    f"{_row_n_eff(row, 'n_eff_1', 'instab_1'):.6f}",
+                    f"{_row_n_eff(row, 'n_eff_2', 'instab_2'):.6f}",
+                    f"{_row_n_eff(row, 'n_eff_comb', 'combined_instability'):.6f}",
                     f"{float(row['instab_1']):.6f}",
                     f"{float(row['instab_2']):.6f}",
                     f"{float(row['combined_instability']):.6f}",

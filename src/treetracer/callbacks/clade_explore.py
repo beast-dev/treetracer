@@ -864,21 +864,48 @@ def _format_dsis_sigfig(value: float) -> str:
     return "0" if abs(v) < 1e-12 else f"{v:.4g}"
 
 
+def _resolve_neff(n_eff, instab) -> float | None:
+    """Return effective disjoint sisters N_eff = 1/(1 - I), preferring direct value."""
+    if n_eff is not None:
+        return max(1.0, float(n_eff))
+    if instab is None:
+        return None
+    return max(1.0, 1.0 / max(1.0 - float(instab), 1e-12))
+
+
+def _format_neff(value: float) -> str:
+    """Format effective disjoint sisters compactly for table cells and hover text."""
+    v = max(1.0, float(value))
+    if v >= 100.0:
+        return f"{v:.0f}"
+    if v >= 10.0:
+        return f"{v:.1f}"
+    return f"{v:.2f}"
+
+
 def _format_instability_hover(
     clade_instab,
     d_sis,
     instab_1=None,
     instab_2=None,
+    *,
+    n_eff_comb=None,
+    n_eff_1=None,
+    n_eff_2=None,
 ) -> str:
     if clade_instab is None:
         return ""
-    if instab_1 is not None and instab_2 is not None:
+    ne_comb = _resolve_neff(n_eff_comb, clade_instab)
+    ne_1 = _resolve_neff(n_eff_1, instab_1)
+    ne_2 = _resolve_neff(n_eff_2, instab_2)
+    if ne_1 is not None and ne_2 is not None:
         text = (
             f"<br>Instab: {float(clade_instab):.2f} "
-            f"(G1 {float(instab_1):.2f}, G2 {float(instab_2):.2f})"
+            f"(N<sub>eff</sub>: {_format_neff(ne_comb)}; "
+            f"G1 {_format_neff(ne_1)}, G2 {_format_neff(ne_2)})"
         )
     else:
-        text = f"<br>Instab: {float(clade_instab):.2f}"
+        text = f"<br>Instab: {float(clade_instab):.2f} (N<sub>eff</sub>: {_format_neff(ne_comb)})"
     if d_sis is not None:
         text += f"<br>D<sub>sis</sub>: {_format_dsis_sigfig(d_sis)}"
     return text
@@ -1124,6 +1151,9 @@ def _tip_detail_footer(selected_row: dict[str, Any] | None):
     p1_pct = round(float(selected_row.get("p_cherry_1", 0.0)) * 100)
     p2_pct = round(float(selected_row.get("p_cherry_2", 0.0)) * 100)
     n_sis = int(selected_row.get("n_sisters_comb", 0))
+    n_eff_comb = _resolve_neff(
+        selected_row.get("n_eff_comb"), selected_row.get("combined_instability", 0.0)
+    )
     return html.Div(
         [
             dmc.Group(
@@ -1138,7 +1168,8 @@ def _tip_detail_footer(selected_row: dict[str, Any] | None):
                         ]
                     ),
                     dmc.Text(
-                        f"{n_sis} distinct sisters · Cherry: {p1_pct}% (G1) / {p2_pct}% (G2)",
+                        f"{n_sis} distinct sisters ({_format_neff(n_eff_comb)} eff.) · "
+                        f"Cherry: {p1_pct}% (G1) / {p2_pct}% (G2)",
                         size="xs",
                         c="dimmed",
                     ),
@@ -1232,6 +1263,9 @@ def _finalize_clade_comparison_job(
         instab_1 = row.get("instab_1")
         instab_2 = row.get("instab_2")
         d_sis = row.get("d_sis")
+        n_eff_comb = _resolve_neff(row.get("n_eff_comb"), clade_instab)
+        n_eff_1 = _resolve_neff(row.get("n_eff_1"), instab_1)
+        n_eff_2 = _resolve_neff(row.get("n_eff_2"), instab_2)
 
         split_id = len(records)
         records.append(
@@ -1251,11 +1285,17 @@ def _finalize_clade_comparison_job(
                 "d_sis": (
                     float(d_sis) if d_sis is not None else None
                 ),
+                "n_eff_comb": n_eff_comb,
+                "n_eff_1": n_eff_1,
+                "n_eff_2": n_eff_2,
                 "instability_hover": _format_instability_hover(
                     clade_instab,
                     d_sis,
                     instab_1=instab_1,
                     instab_2=instab_2,
+                    n_eff_comb=n_eff_comb,
+                    n_eff_1=n_eff_1,
+                    n_eff_2=n_eff_2,
                 ),
             }
         )
@@ -1704,6 +1744,9 @@ def register_clade_explore_callbacks():
             taxon = str(row["taxon"])
             is_selected = taxon == selected_taxon
             dsis_val = float(row["d_sis"])
+            neff_1 = _resolve_neff(row.get("n_eff_1"), row.get("instab_1", 0.0))
+            neff_2 = _resolve_neff(row.get("n_eff_2"), row.get("instab_2", 0.0))
+            neff_comb = _resolve_neff(row.get("n_eff_comb"), row.get("combined_instability", 0.0))
             body_rows.append(
                 dmc.TableTr(
                     [
@@ -1718,15 +1761,15 @@ def register_clade_explore_callbacks():
                             className="tt-tip-col-dsis",
                         ),
                         dmc.TableTd(
-                            f"{float(row['instab_1']):.2f}",
+                            _format_neff(neff_1),
                             className="tt-tip-col-num",
                         ),
                         dmc.TableTd(
-                            f"{float(row['instab_2']):.2f}",
+                            _format_neff(neff_2),
                             className="tt-tip-col-num",
                         ),
                         dmc.TableTd(
-                            f"{float(row['combined_instability']):.2f}",
+                            _format_neff(neff_comb),
                             className="tt-tip-col-num",
                         ),
                         dmc.TableTd(
@@ -1755,13 +1798,31 @@ def register_clade_explore_callbacks():
                                 dmc.TableTh(
                                     html.Span(
                                         ["D", html.Sub("sis")],
-                                        title="Net Sister Dissimilarity Coefficient",
+                                        title="Net Sister Dissimilarity Coefficient (0–1)",
                                     ),
                                     className="tt-tip-col-dsis",
                                 ),
-                                dmc.TableTh("G1", className="tt-tip-col-num"),
-                                dmc.TableTh("G2", className="tt-tip-col-num"),
-                                dmc.TableTh("Comb.", className="tt-tip-col-num"),
+                                dmc.TableTh(
+                                    html.Span(
+                                        ["N", html.Sub("G1")],
+                                        title="Effective disjoint sisters in Group 1: 1 / (1 - I_1)",
+                                    ),
+                                    className="tt-tip-col-num",
+                                ),
+                                dmc.TableTh(
+                                    html.Span(
+                                        ["N", html.Sub("G2")],
+                                        title="Effective disjoint sisters in Group 2: 1 / (1 - I_2)",
+                                    ),
+                                    className="tt-tip-col-num",
+                                ),
+                                dmc.TableTh(
+                                    html.Span(
+                                        ["N", html.Sub("comb")],
+                                        title="Effective disjoint sisters in pooled union: 1 / (1 - I_comb)",
+                                    ),
+                                    className="tt-tip-col-num",
+                                ),
                                 dmc.TableTh("", className="tt-tip-col-action"),
                             ]
                         )
@@ -1773,7 +1834,7 @@ def register_clade_explore_callbacks():
             )
             summary = (
                 f"Showing {len(shown)} of {len(ordered)} tips · "
-                f"{n_dsis} with D_sis > 0.05 · {n_unstable} with Comb. > 0.05"
+                f"{n_dsis} with D_sis > 0.05 · {n_unstable} with N_comb > 1.05"
             )
         else:
             table = dmc.Text(

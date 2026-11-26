@@ -234,15 +234,15 @@ def _add_clade_freq_panel():
                                             },
                                             {
                                                 "value": "combined_instability",
-                                                "label": "Combined (desc)",
+                                                "label": "N_comb (desc)",
                                             },
                                             {
                                                 "value": "instab_1",
-                                                "label": "Group 1 (desc)",
+                                                "label": "N_G1 (desc)",
                                             },
                                             {
                                                 "value": "instab_2",
-                                                "label": "Group 2 (desc)",
+                                                "label": "N_G2 (desc)",
                                             },
                                             {
                                                 "value": "taxon",

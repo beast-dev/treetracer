@@ -94,6 +94,9 @@ def test_6taxon_toy_exact(tmp_path):
         assert row["instab_2"] == pytest.approx(e_i2, abs=1e-12)
         assert row["combined_instability"] == pytest.approx(e_icomb, abs=1e-12)
         assert row["d_sis"] == pytest.approx(e_d, abs=1e-12)
+        assert row["n_eff_1"] == pytest.approx(1.0 / (1.0 - e_i1), abs=1e-12)
+        assert row["n_eff_2"] == pytest.approx(1.0 / (1.0 - e_i2), abs=1e-12)
+        assert row["n_eff_comb"] == pytest.approx(1.0 / (1.0 - e_icomb), abs=1e-12)
         # Exact variance-like decomposition for equal disjoint groups (w1=w2=0.5).
         assert row["combined_instability"] == pytest.approx(
             0.5 * row["instab_1"] + 0.5 * row["instab_2"] + 0.5 * row["d_sis"],
@@ -121,14 +124,19 @@ def test_6taxon_toy_exact(tmp_path):
     for clade, (e_i1, e_i2, e_icomb, e_d) in expected_clades.items():
         m = clade_metrics[col_by_taxa[clade]]
         assert m.clade_instability == pytest.approx(e_icomb, abs=1e-12)
+        assert m.n_eff_comb == pytest.approx(1.0 / (1.0 - e_icomb), abs=1e-12)
         if e_i1 is None:
             assert m.instab_1 is None
+            assert m.n_eff_1 is None
         else:
             assert m.instab_1 == pytest.approx(e_i1, abs=1e-12)
+            assert m.n_eff_1 == pytest.approx(1.0 / (1.0 - e_i1), abs=1e-12)
         if e_i2 is None:
             assert m.instab_2 is None
+            assert m.n_eff_2 is None
         else:
             assert m.instab_2 == pytest.approx(e_i2, abs=1e-12)
+            assert m.n_eff_2 == pytest.approx(1.0 / (1.0 - e_i2), abs=1e-12)
         if e_d is None:
             assert m.d_sis is None
         else:
@@ -210,11 +218,17 @@ def test_polytomy_vs_switcher_ranking():
     assert by_tip["X"]["instab_1"] == pytest.approx(0.75, abs=1e-12)
     assert by_tip["X"]["instab_2"] == pytest.approx(0.75, abs=1e-12)
     assert by_tip["X"]["combined_instability"] == pytest.approx(0.75, abs=1e-12)
+    assert by_tip["X"]["n_eff_1"] == pytest.approx(4.0, abs=1e-12)
+    assert by_tip["X"]["n_eff_2"] == pytest.approx(4.0, abs=1e-12)
+    assert by_tip["X"]["n_eff_comb"] == pytest.approx(4.0, abs=1e-12)
     assert by_tip["X"]["d_sis"] == pytest.approx(0.0, abs=1e-12)
 
     assert by_tip["R"]["instab_1"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["R"]["instab_2"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["R"]["combined_instability"] == pytest.approx(0.5, abs=1e-12)
+    assert by_tip["R"]["n_eff_1"] == pytest.approx(1.0, abs=1e-12)
+    assert by_tip["R"]["n_eff_2"] == pytest.approx(1.0, abs=1e-12)
+    assert by_tip["R"]["n_eff_comb"] == pytest.approx(2.0, abs=1e-12)
     assert by_tip["R"]["d_sis"] == pytest.approx(1.0, abs=1e-12)
     assert tip_rows[0]["taxon"] == "R"
 
@@ -407,7 +421,7 @@ def test_packed_vs_matmul_parity():
 
     t0_packed = next(row for row in tips_packed if row["taxon"] == "T0")
     t0_matmul = next(row for row in tips_matmul if row["taxon"] == "T0")
-    for field in ("instab_1", "instab_2", "combined_instability", "d_sis"):
+    for field in ("instab_1", "instab_2", "combined_instability", "n_eff_1", "n_eff_2", "n_eff_comb", "d_sis"):
         assert t0_packed[field] == pytest.approx(t0_matmul[field], abs=1e-12)
     assert t0_matmul["n_sisters_comb"] == k_sisters
     # Every sister in Group 1 has p = 1/150 (~0.67%), so top 1 formats compactly at (1%).
@@ -507,5 +521,7 @@ def test_npz_selective_reads_preloaded_reuse_and_tsv():
     tsv = format_tip_instability_tsv(tip_rows_default)
     lines = tsv.strip().splitlines()
     assert len(lines) == 1 + len(tip_rows_default)
-    assert lines[0].startswith("taxon\td_sis\tinstab_1\tinstab_2\tcombined_instability\t")
-    assert lines[1].startswith("R\t1.000000\t")
+    assert lines[0].startswith(
+        "taxon\td_sis\tn_eff_1\tn_eff_2\tn_eff_comb\tinstab_1\tinstab_2\tcombined_instability\t"
+    )
+    assert lines[1].startswith("R\t1.000000\t1.000000\t1.000000\t2.000000\t")

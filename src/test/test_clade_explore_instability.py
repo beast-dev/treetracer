@@ -212,16 +212,20 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
     # Singleton column 0 was excluded globally; only clade_size >= 2 remain.
     assert [r["clade_size"] for r in cached["records"]] == [2, 3]
     assert cached["records"][0]["clade_instability"] == pytest.approx(0.5)
+    assert cached["records"][0]["n_eff_comb"] == pytest.approx(2.0)
     assert cached["records"][0]["instability_hover"] == (
-        "<br>Instab: 0.50 (G1 0.00, G2 0.00)<br>D<sub>sis</sub>: 1"
+        "<br>Instab: 0.50 (N<sub>eff</sub>: 2.00; G1 1.00, G2 1.00)<br>D<sub>sis</sub>: 1"
     )
-    assert cached["records"][1]["instability_hover"] == "<br>Instab: 0.00"
+    assert cached["records"][1]["instability_hover"] == "<br>Instab: 0.00 (N<sub>eff</sub>: 1.00)"
     assert clade_explore._format_instability_hover(0.75, 0.0023456, 0.74, 0.76) == (
-        "<br>Instab: 0.75 (G1 0.74, G2 0.76)<br>D<sub>sis</sub>: 0.002346"
+        "<br>Instab: 0.75 (N<sub>eff</sub>: 4.00; G1 3.85, G2 4.17)<br>D<sub>sis</sub>: 0.002346"
     )
     assert clade_explore._format_instability_hover(0.75, 1e-16, 0.75, 0.75) == (
-        "<br>Instab: 0.75 (G1 0.75, G2 0.75)<br>D<sub>sis</sub>: 0"
+        "<br>Instab: 0.75 (N<sub>eff</sub>: 4.00; G1 4.00, G2 4.00)<br>D<sub>sis</sub>: 0"
     )
+    assert clade_explore._format_neff(1.0) == "1.00"
+    assert clade_explore._format_neff(12.34) == "12.3"
+    assert clade_explore._format_neff(124.4) == "124"
     # Explicit dict title ensures downstream Patch on colorbar.title.text works.
     assert cached["figure"]["data"][0]["marker"]["colorbar"]["title"] == {"text": "Clade size"}
 
@@ -416,16 +420,25 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path
     assert badge_style == {}
     assert "Showing 50 of 60 tips" in summary
     assert "2 with D_sis > 0.05" in summary
+    assert "N_comb > 1.05" in summary
     assert more_style == {}
-    # Column header renders D_sis with Net Sister Dissimilarity Coefficient tooltip.
-    dsis_th = table.children[0].children.children[1].children
-    assert dsis_th.title == "Net Sister Dissimilarity Coefficient"
+    # Column headers render D_sis, N_G1, N_G2, N_comb with explanatory tooltips.
+    header_cells = table.children[0].children.children
+    dsis_th = header_cells[1].children
+    assert dsis_th.title == "Net Sister Dissimilarity Coefficient (0–1)"
     assert dsis_th.children[0] == "D"
     assert dsis_th.children[1].children == "sis"
-    # tbody holds 50 rows, first row is TAXON_000 (D_sis 0.90).
+    assert header_cells[2].children.children[0] == "N"
+    assert header_cells[2].children.children[1].children == "G1"
+    assert header_cells[3].children.children[1].children == "G2"
+    assert header_cells[4].children.children[1].children == "comb"
+    # tbody holds 50 rows; TAXON_000 (D_sis 0.90, I1=0, I2=0.25, Icomb=0.5) shows N_eff = 1.00, 1.33, 2.00.
     tbody_rows = table.children[1].children
     assert len(tbody_rows) == 50
     assert tbody_rows[0].children[0].children.children == "TAXON_000"
+    assert tbody_rows[0].children[2].children == "1.00"
+    assert tbody_rows[0].children[3].children == "1.33"
+    assert tbody_rows[0].children[4].children == "2.00"
 
     # Pagination bump -> 100 hides Show more.
     assert bump_cb(1, 50) == 100
@@ -447,6 +460,7 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path
     selected_rows = [tr for tr in table_comb.children[1].children if tr.className == "tt-tip-row-selected"]
     assert len(selected_rows) == 1
     assert "TAXON_000" in str(footer_sel)
+    assert "(2.00 eff.)" in str(footer_sel)
 
     # TSV export opens native save dialog and writes header + all 60 tips.
     seen_default = []

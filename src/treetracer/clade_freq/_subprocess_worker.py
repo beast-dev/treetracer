@@ -179,8 +179,8 @@ def compute_clade_frequencies_worker_entry(
                     ),
                     "instab_1": metrics.instab_1 if metrics is not None else None,
                     "instab_2": metrics.instab_2 if metrics is not None else None,
-                    "between_shift": (
-                        metrics.between_shift if metrics is not None else None
+                    "d_sis": (
+                        metrics.d_sis if metrics is not None else None
                     ),
                 }
             )

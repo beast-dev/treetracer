@@ -262,7 +262,7 @@
   vertical-align: middle;
 }
 
-.tt-tip-col-shift {
+.tt-tip-col-dsis {
   width: 60px;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -289,7 +289,7 @@
   font-size: 12px;
 }
 
-.tt-shift-pill {
+.tt-dsis-pill {
   display: inline-block;
   min-width: 42px;
   padding: 1px 6px;
@@ -300,17 +300,17 @@
   font-size: 11px;
 }
 
-.tt-shift-neutral {
+.tt-dsis-neutral {
   background: rgba(134, 142, 150, 0.14);
   color: var(--mantine-color-dimmed);
 }
 
-.tt-shift-amber {
+.tt-dsis-amber {
   background: rgba(245, 159, 0, 0.18);
   color: #b45309;
 }
 
-.tt-shift-red {
+.tt-dsis-red {
   background: rgba(230, 57, 70, 0.16);
   color: #c92a2a;
 }
@@ -357,17 +357,17 @@
   white-space: nowrap;
 }
 
-[data-mantine-color-scheme="dark"] .tt-shift-neutral {
+[data-mantine-color-scheme="dark"] .tt-dsis-neutral {
   background: rgba(134, 142, 150, 0.22);
   color: #adb5bd;
 }
 
-[data-mantine-color-scheme="dark"] .tt-shift-amber {
+[data-mantine-color-scheme="dark"] .tt-dsis-amber {
   background: rgba(250, 176, 5, 0.22);
   color: #ffd43b;
 }
 
-[data-mantine-color-scheme="dark"] .tt-shift-red {
+[data-mantine-color-scheme="dark"] .tt-dsis-red {
   background: rgba(255, 107, 107, 0.24);
   color: #ff8787;
 }

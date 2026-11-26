@@ -66,7 +66,7 @@ def test_worker_rooted_vs_unrooted(tmp_path):
     assert rooted["has_instability"] is True
     assert len(rooted["tip_rows"]) == 6
     assert rooted["tip_rows"][0]["taxon"] == "R"
-    assert rooted["tip_rows"][0]["between_shift"] == pytest.approx(0.875, abs=1e-12)
+    assert rooted["tip_rows"][0]["d_sis"] == pytest.approx(0.875, abs=1e-12)
     assert all(row["clade_instability"] is not None for row in rooted["rows"])
 
     # Omitting row_indices preserves backward compatibility and disables instability cleanly.
@@ -138,7 +138,7 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
                 "clade_instability": 0.5625,
                 "instab_1": 0.0,
                 "instab_2": 0.25,
-                "between_shift": 0.875,
+                "d_sis": 0.875,
             },
             {
                 "split_key": (0, 1),
@@ -149,7 +149,7 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
                 "clade_instability": 0.5,
                 "instab_1": 0.0,
                 "instab_2": 0.0,
-                "between_shift": 1.0,
+                "d_sis": 1.0,
             },
             {
                 "split_key": (0, 1, 2),
@@ -160,7 +160,7 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
                 "clade_instability": 0.0,
                 "instab_1": 0.0,
                 "instab_2": None,
-                "between_shift": None,
+                "d_sis": None,
             },
         ],
         "leaf_names": ["A", "B", "C"],
@@ -170,7 +170,7 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
                 "taxon_index": 0,
                 "taxon": "A",
                 "column_j": 0,
-                "between_shift": 0.875,
+                "d_sis": 0.875,
                 "instab_1": 0.0,
                 "instab_2": 0.25,
                 "combined_instability": 0.5625,
@@ -213,14 +213,14 @@ def test_finalizer_excludes_singletons_and_caches_instability(monkeypatch):
     assert [r["clade_size"] for r in cached["records"]] == [2, 3]
     assert cached["records"][0]["clade_instability"] == pytest.approx(0.5)
     assert cached["records"][0]["instability_hover"] == (
-        "<br>Instab: 0.50 (G1 0.00, G2 0.00)<br>Shift: 1"
+        "<br>Instab: 0.50 (G1 0.00, G2 0.00)<br>D<sub>sis</sub>: 1"
     )
     assert cached["records"][1]["instability_hover"] == "<br>Instab: 0.00"
     assert clade_explore._format_instability_hover(0.75, 0.0023456, 0.74, 0.76) == (
-        "<br>Instab: 0.75 (G1 0.74, G2 0.76)<br>Shift: 0.002346"
+        "<br>Instab: 0.75 (G1 0.74, G2 0.76)<br>D<sub>sis</sub>: 0.002346"
     )
     assert clade_explore._format_instability_hover(0.75, 1e-16, 0.75, 0.75) == (
-        "<br>Instab: 0.75 (G1 0.75, G2 0.75)<br>Shift: 0"
+        "<br>Instab: 0.75 (G1 0.75, G2 0.75)<br>D<sub>sis</sub>: 0"
     )
     # Explicit dict title ensures downstream Patch on colorbar.title.text works.
     assert cached["figure"]["data"][0]["marker"]["colorbar"]["title"] == {"text": "Clade size"}
@@ -271,7 +271,7 @@ def test_filter_patch_color_and_slider(monkeypatch):
             "in_consensus_tree_2": True,
             "consensus_tree_membership": "both consensus trees",
             "clade_instability": 0.5625,
-            "instability_hover": "<br>Sister instability: 0.563 (Shift: 0.875)",
+            "instability_hover": "<br>Sister instability: 0.563 (D<sub>sis</sub>: 0.875)",
         },
         {
             "split_id": 1,
@@ -325,19 +325,19 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert rethemed.data[0].marker.cmax == 1.0
 
 
-def _make_tip_rows(n, *, max_shift=0.8):
+def _make_tip_rows(n, *, max_dsis=0.8):
     rows = []
     for i in range(n):
-        shift = max_shift if i == 0 else (0.2 if i == 1 and max_shift > 0 else 0.0)
-        comb = 0.75 if i == 2 else (0.5 if shift > 0 else 0.0)
+        d_sis = max_dsis if i == 0 else (0.2 if i == 1 and max_dsis > 0 else 0.0)
+        comb = 0.75 if i == 2 else (0.5 if d_sis > 0 else 0.0)
         rows.append(
             {
                 "taxon_index": i,
                 "taxon": f"TAXON_{i:03d}",
                 "column_j": i,
-                "between_shift": shift,
+                "d_sis": d_sis,
                 "instab_1": 0.75 if i == 2 else 0.0,
-                "instab_2": 0.75 if i == 2 else 0.25 * (shift > 0),
+                "instab_2": 0.75 if i == 2 else 0.25 * (d_sis > 0),
                 "combined_instability": comb,
                 "n_sisters_1": 1,
                 "n_sisters_2": 2,
@@ -352,12 +352,12 @@ def _make_tip_rows(n, *, max_shift=0.8):
 
 
 def test_sync_controls_auto_sort_and_unrooted_fallback():
-    """Reactive sync enables/disables instability, resets to clade_size, and auto-sorts when Shift==0."""
+    """Reactive sync enables/disables instability, resets to clade_size, and auto-sorts when D_sis==0."""
     sync_cb = _registered_callback("sync_instability_controls_on_result")
 
     state.store_clade_frequency_result(
         "k-rooted",
-        {"has_instability": True, "tip_rows": _make_tip_rows(5, max_shift=0.8), "label_1": "G1", "label_2": "G2"},
+        {"has_instability": True, "tip_rows": _make_tip_rows(5, max_dsis=0.8), "label_1": "G1", "label_2": "G2"},
     )
     opts, val, tip_off, sort_by, search, limit, tip_flt, exp_dis, ctrl_style = sync_cb(
         "k-rooted", "clade_instability"
@@ -365,17 +365,17 @@ def test_sync_controls_auto_sort_and_unrooted_fallback():
     assert opts[1]["disabled"] is False
     assert val == "clade_size"
     assert tip_off is True
-    assert sort_by == "between_shift"
+    assert sort_by == "d_sis"
     assert search == ""
     assert limit == 50
     assert tip_flt is None
     assert exp_dis is False
     assert ctrl_style == {}
 
-    # Identical selections (max Shift == 0) auto-switch default sort to combined_instability.
+    # Identical selections (max D_sis == 0) auto-switch default sort to combined_instability.
     state.store_clade_frequency_result(
         "k-same",
-        {"has_instability": True, "tip_rows": _make_tip_rows(5, max_shift=0.0), "label_1": "G1", "label_2": "G1"},
+        {"has_instability": True, "tip_rows": _make_tip_rows(5, max_dsis=0.0), "label_1": "G1", "label_2": "G1"},
     )
     _, _, _, sort_same, _, _, _, _, _ = sync_cb("k-same", "clade_size")
     assert sort_same == "combined_instability"
@@ -403,33 +403,39 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path
     bump_cb = _registered_callback("bump_tip_instability_limit")
     export_cb = _registered_callback("export_tip_instability_tsv")
 
-    tip_rows = _make_tip_rows(60, max_shift=0.9)
+    tip_rows = _make_tip_rows(60, max_dsis=0.9)
     state.store_clade_frequency_result(
         "k-60",
         {"has_instability": True, "tip_rows": tip_rows, "label_1": "Run 1", "label_2": "Run 2"},
     )
 
     table, badge, badge_style, summary, more_style, _footer = render_cb(
-        "k-60", "", "between_shift", 50, None
+        "k-60", "", "d_sis", 50, None
     )
-    assert badge == "2 shifting"
+    assert badge == "2 D_sis > 0.05"
     assert badge_style == {}
     assert "Showing 50 of 60 tips" in summary
+    assert "2 with D_sis > 0.05" in summary
     assert more_style == {}
-    # tbody holds 50 rows, first row is TAXON_000 (Shift 0.90).
+    # Column header renders D_sis with Net Sister Dissimilarity Coefficient tooltip.
+    dsis_th = table.children[0].children.children[1].children
+    assert dsis_th.title == "Net Sister Dissimilarity Coefficient"
+    assert dsis_th.children[0] == "D"
+    assert dsis_th.children[1].children == "sis"
+    # tbody holds 50 rows, first row is TAXON_000 (D_sis 0.90).
     tbody_rows = table.children[1].children
     assert len(tbody_rows) == 50
     assert tbody_rows[0].children[0].children.children == "TAXON_000"
 
     # Pagination bump -> 100 hides Show more.
     assert bump_cb(1, 50) == 100
-    table_all, _, _, summary_all, more_all, _ = render_cb("k-60", "", "between_shift", 100, None)
+    table_all, _, _, summary_all, more_all, _ = render_cb("k-60", "", "d_sis", 100, None)
     assert len(table_all.children[1].children) == 60
     assert "Showing 60 of 60 tips" in summary_all
     assert more_all == {"display": "none"}
 
     # Search finds taxon #59 beyond initial 50-row cap.
-    table_q, _, _, _, _, _ = render_cb("k-60", "059", "between_shift", 50, None)
+    table_q, _, _, _, _, _ = render_cb("k-60", "059", "d_sis", 50, None)
     assert len(table_q.children[1].children) == 1
     assert table_q.children[1].children[0].children[0].children.children == "TAXON_059"
 
@@ -465,7 +471,7 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path
         "k-unr",
         {"has_instability": False, "tip_rows": [], "label_1": "U1", "label_2": "U2"},
     )
-    empty_body, _, empty_badge_style, _, _, _ = render_cb("k-unr", "", "between_shift", 50, None)
+    empty_body, _, empty_badge_style, _, _, _ = render_cb("k-unr", "", "d_sis", 50, None)
     assert "Tip Instability Unavailable" in str(empty_body)
     assert empty_badge_style == {"display": "none"}
 
@@ -679,7 +685,7 @@ def test_tip_mode_tanglegram_consensus_sisters_complement_and_clear():
                 "tip_rows": [
                     {
                         "taxon": "R",
-                        "between_shift": 0.875,
+                        "d_sis": 0.875,
                         "top_sister_1": "2-tip sister (100%)",
                         "top_sister_2": "1-tip cherry (50%), 2-tip sister (50%)",
                     }

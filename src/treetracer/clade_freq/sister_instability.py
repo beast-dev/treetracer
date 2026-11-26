@@ -30,7 +30,7 @@ _LOWEST_BIT = np.array(
 
 _TSV_COLUMNS = (
     "taxon",
-    "between_shift",
+    "d_sis",
     "instab_1",
     "instab_2",
     "combined_instability",
@@ -51,7 +51,7 @@ class CladeInstabilityMetrics:
     clade_instability: float
     instab_1: float | None
     instab_2: float | None
-    between_shift: float | None
+    d_sis: float | None
 
 
 def _normalise_leaf_names(raw: Sequence[object]) -> tuple[str, ...]:
@@ -321,7 +321,7 @@ def compute_sister_instability_from_arrays(
             i_comb = 0.0
             i1 = 0.0 if p1 is not None else None
             i2 = 0.0 if p2 is not None else None
-            d_shift = 0.0 if (p1 is not None and p2 is not None) else None
+            d_sis = 0.0 if (p1 is not None and p2 is not None) else None
         else:
             jaccard = _pairwise_jaccard(
                 packed_clades, sizes, sisters, n_taxa, packed_threshold=packed_threshold
@@ -331,12 +331,12 @@ def compute_sister_instability_from_arrays(
             i2 = float(np.clip(1.0 - p2 @ jaccard @ p2, 0.0, 1.0)) if p2 is not None else None
             if p1 is not None and p2 is not None:
                 diff = p1 - p2
-                d_shift = float(np.clip(0.5 * (diff @ jaccard @ diff), 0.0, 1.0))
+                d_sis = float(np.clip(0.5 * (diff @ jaccard @ diff), 0.0, 1.0))
             else:
-                d_shift = None
+                d_sis = None
 
         if target_col in cons_cols:
-            clade_metrics[target_col] = CladeInstabilityMetrics(i_comb, i1, i2, d_shift)
+            clade_metrics[target_col] = CladeInstabilityMetrics(i_comb, i1, i2, d_sis)
 
         taxon_index = col_to_taxon.get(target_col)
         if taxon_index is not None:
@@ -346,7 +346,7 @@ def compute_sister_instability_from_arrays(
                     "taxon_index": taxon_index,
                     "taxon": leaves[taxon_index],
                     "column_j": target_col,
-                    "between_shift": float(d_shift or 0.0),
+                    "d_sis": float(d_sis or 0.0),
                     "instab_1": float(i1 or 0.0),
                     "instab_2": float(i2 or 0.0),
                     "combined_instability": i_comb,
@@ -361,7 +361,7 @@ def compute_sister_instability_from_arrays(
             )
 
     tip_rows.sort(
-        key=lambda row: (-row["between_shift"], -row["combined_instability"], row["taxon"])
+        key=lambda row: (-row["d_sis"], -row["combined_instability"], row["taxon"])
     )
     return clade_metrics, tip_rows
 
@@ -401,7 +401,7 @@ def format_tip_instability_tsv(tip_rows: Sequence[dict[str, Any]]) -> str:
             "\t".join(
                 (
                     clean(row["taxon"]),
-                    f"{float(row['between_shift']):.6f}",
+                    f"{float(row['d_sis']):.6f}",
                     f"{float(row['instab_1']):.6f}",
                     f"{float(row['instab_2']):.6f}",
                     f"{float(row['combined_instability']):.6f}",

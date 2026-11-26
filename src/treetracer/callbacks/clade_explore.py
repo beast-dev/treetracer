@@ -766,7 +766,7 @@ def _g1_g2_sister_spans(sister_1: str, sister_2: str) -> list:
 
 
 def _tanglegram_tip_title_children(taxon, tip_row):
-    """Sticky tanglegram title for a selected tip showing Shift and color-coded G1 -> G2 sisters."""
+    """Sticky tanglegram title for a selected tip showing D_sis and color-coded G1 -> G2 sisters."""
     parts = [
         html.Span("Tip ", style={"fontWeight": 500}),
         dmc.Badge(
@@ -785,7 +785,10 @@ def _tanglegram_tip_title_children(taxon, tip_row):
         parts.append(
             html.Span(
                 [
-                    html.Span(f"   Shift: {float(tip_row['between_shift']):.2f} · "),
+                    html.Span(
+                        ["   ", "D", html.Sub("sis"), f": {float(tip_row['d_sis']):.2f} · "],
+                        title="Net Sister Dissimilarity Coefficient",
+                    ),
                     *_g1_g2_sister_spans(
                         str(tip_row.get("top_sister_1", "—")),
                         str(tip_row.get("top_sister_2", "—")),
@@ -855,15 +858,15 @@ def clear_clade_freq_caches():
     _get_tanglegram_layout.cache_clear()
 
 
-def _format_shift_sigfig(value: float) -> str:
-    """Format shift to 4 significant figures, snapping floating-point dust to 0."""
+def _format_dsis_sigfig(value: float) -> str:
+    """Format D_sis to 4 significant figures, snapping floating-point dust to 0."""
     v = float(value)
     return "0" if abs(v) < 1e-12 else f"{v:.4g}"
 
 
 def _format_instability_hover(
     clade_instab,
-    between_shift,
+    d_sis,
     instab_1=None,
     instab_2=None,
 ) -> str:
@@ -876,8 +879,8 @@ def _format_instability_hover(
         )
     else:
         text = f"<br>Instab: {float(clade_instab):.2f}"
-    if between_shift is not None:
-        text += f"<br>Shift: {_format_shift_sigfig(between_shift)}"
+    if d_sis is not None:
+        text += f"<br>D<sub>sis</sub>: {_format_dsis_sigfig(d_sis)}"
     return text
 
 
@@ -1082,36 +1085,36 @@ def _build_scatter_patch(
     return patch, len(df_plot)
 
 
-def _shift_pill_class(value: float) -> str:
+def _dsis_pill_class(value: float) -> str:
     if value >= 0.40:
-        return "tt-shift-pill tt-shift-red"
+        return "tt-dsis-pill tt-dsis-red"
     if value >= 0.10:
-        return "tt-shift-pill tt-shift-amber"
-    return "tt-shift-pill tt-shift-neutral"
+        return "tt-dsis-pill tt-dsis-amber"
+    return "tt-dsis-pill tt-dsis-neutral"
 
 
 def _sort_tip_rows(tip_rows: list[dict[str, Any]], sort_by: str | None) -> list[dict[str, Any]]:
-    key = sort_by or "between_shift"
+    key = sort_by or "d_sis"
     if key == "taxon":
         return sorted(tip_rows, key=lambda r: str(r["taxon"]).lower())
     if key == "combined_instability":
         return sorted(
             tip_rows,
-            key=lambda r: (-float(r["combined_instability"]), -float(r["between_shift"]), str(r["taxon"])),
+            key=lambda r: (-float(r["combined_instability"]), -float(r["d_sis"]), str(r["taxon"])),
         )
     if key == "instab_1":
         return sorted(
             tip_rows,
-            key=lambda r: (-float(r["instab_1"]), -float(r["between_shift"]), str(r["taxon"])),
+            key=lambda r: (-float(r["instab_1"]), -float(r["d_sis"]), str(r["taxon"])),
         )
     if key == "instab_2":
         return sorted(
             tip_rows,
-            key=lambda r: (-float(r["instab_2"]), -float(r["between_shift"]), str(r["taxon"])),
+            key=lambda r: (-float(r["instab_2"]), -float(r["d_sis"]), str(r["taxon"])),
         )
     return sorted(
         tip_rows,
-        key=lambda r: (-float(r["between_shift"]), -float(r["combined_instability"]), str(r["taxon"])),
+        key=lambda r: (-float(r["d_sis"]), -float(r["combined_instability"]), str(r["taxon"])),
     )
 
 
@@ -1228,7 +1231,7 @@ def _finalize_clade_comparison_job(
         clade_instab = row.get("clade_instability")
         instab_1 = row.get("instab_1")
         instab_2 = row.get("instab_2")
-        between_shift = row.get("between_shift")
+        d_sis = row.get("d_sis")
 
         split_id = len(records)
         records.append(
@@ -1245,12 +1248,12 @@ def _finalize_clade_comparison_job(
                 ),
                 "instab_1": float(instab_1) if instab_1 is not None else None,
                 "instab_2": float(instab_2) if instab_2 is not None else None,
-                "between_shift": (
-                    float(between_shift) if between_shift is not None else None
+                "d_sis": (
+                    float(d_sis) if d_sis is not None else None
                 ),
                 "instability_hover": _format_instability_hover(
                     clade_instab,
-                    between_shift,
+                    d_sis,
                     instab_1=instab_1,
                     instab_2=instab_2,
                 ),
@@ -1585,11 +1588,11 @@ def register_clade_explore_callbacks():
         color_value = no_update if current_color_by == "clade_size" else "clade_size"
         tooltip_disabled = has_instab or cached is None
 
-        default_sort = "between_shift"
+        default_sort = "d_sis"
         if has_instab:
             tip_rows = cached.get("tip_rows") or []
-            max_shift = max((float(r["between_shift"]) for r in tip_rows), default=0.0)
-            if max_shift <= 1e-12:
+            max_dsis = max((float(r["d_sis"]) for r in tip_rows), default=0.0)
+            if max_dsis <= 1e-12:
                 default_sort = "combined_instability"
 
         controls_style = {} if has_instab else {"display": "none"}
@@ -1666,10 +1669,10 @@ def register_clade_explore_callbacks():
             return empty, "", {"display": "none"}, "", {"display": "none"}, ""
 
         tip_rows = cached.get("tip_rows") or []
-        n_shifting = sum(1 for r in tip_rows if float(r["between_shift"]) > 0.05)
+        n_dsis = sum(1 for r in tip_rows if float(r["d_sis"]) > 0.05)
         n_unstable = sum(1 for r in tip_rows if float(r["combined_instability"]) > 0.05)
-        if n_shifting:
-            badge_text = f"{n_shifting} shifting"
+        if n_dsis:
+            badge_text = f"{n_dsis} D_sis > 0.05"
         elif n_unstable:
             badge_text = f"{n_unstable} unstable"
         else:
@@ -1700,7 +1703,7 @@ def register_clade_explore_callbacks():
         for row in shown:
             taxon = str(row["taxon"])
             is_selected = taxon == selected_taxon
-            shift_val = float(row["between_shift"])
+            dsis_val = float(row["d_sis"])
             body_rows.append(
                 dmc.TableTr(
                     [
@@ -1709,10 +1712,10 @@ def register_clade_explore_callbacks():
                         ),
                         dmc.TableTd(
                             html.Span(
-                                f"{shift_val:.2f}",
-                                className=_shift_pill_class(shift_val),
+                                f"{dsis_val:.2f}",
+                                className=_dsis_pill_class(dsis_val),
                             ),
-                            className="tt-tip-col-shift",
+                            className="tt-tip-col-dsis",
                         ),
                         dmc.TableTd(
                             f"{float(row['instab_1']):.2f}",
@@ -1749,7 +1752,13 @@ def register_clade_explore_callbacks():
                         dmc.TableTr(
                             [
                                 dmc.TableTh("Taxon"),
-                                dmc.TableTh("Shift", className="tt-tip-col-shift"),
+                                dmc.TableTh(
+                                    html.Span(
+                                        ["D", html.Sub("sis")],
+                                        title="Net Sister Dissimilarity Coefficient",
+                                    ),
+                                    className="tt-tip-col-dsis",
+                                ),
                                 dmc.TableTh("G1", className="tt-tip-col-num"),
                                 dmc.TableTh("G2", className="tt-tip-col-num"),
                                 dmc.TableTh("Comb.", className="tt-tip-col-num"),
@@ -1764,7 +1773,7 @@ def register_clade_explore_callbacks():
             )
             summary = (
                 f"Showing {len(shown)} of {len(ordered)} tips · "
-                f"{n_shifting} with Shift > 0.05 · {n_unstable} with Comb. > 0.05"
+                f"{n_dsis} with D_sis > 0.05 · {n_unstable} with Comb. > 0.05"
             )
         else:
             table = dmc.Text(

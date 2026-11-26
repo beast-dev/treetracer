@@ -226,11 +226,11 @@ def _add_clade_freq_panel():
                                         size="xs",
                                         w=150,
                                         allowDeselect=False,
-                                        value="between_shift",
+                                        value="d_sis",
                                         data=[
                                             {
-                                                "value": "between_shift",
-                                                "label": "Shift (desc)",
+                                                "value": "d_sis",
+                                                "label": "D_sis (desc)",
                                             },
                                             {
                                                 "value": "combined_instability",

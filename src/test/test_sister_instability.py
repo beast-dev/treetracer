@@ -76,7 +76,7 @@ def test_6taxon_toy_exact(tmp_path):
         )
 
     assert len(tip_rows) == 6
-    # R must rank #1 under default (Shift desc, Comb desc, Taxon asc) ordering.
+    # R must rank #1 under default (D_sis desc, Comb desc, Taxon asc) ordering.
     assert tip_rows[0]["taxon"] == "R"
 
     by_tip = {row["taxon"]: row for row in tip_rows}
@@ -93,10 +93,10 @@ def test_6taxon_toy_exact(tmp_path):
         assert row["instab_1"] == pytest.approx(e_i1, abs=1e-12)
         assert row["instab_2"] == pytest.approx(e_i2, abs=1e-12)
         assert row["combined_instability"] == pytest.approx(e_icomb, abs=1e-12)
-        assert row["between_shift"] == pytest.approx(e_d, abs=1e-12)
+        assert row["d_sis"] == pytest.approx(e_d, abs=1e-12)
         # Exact variance-like decomposition for equal disjoint groups (w1=w2=0.5).
         assert row["combined_instability"] == pytest.approx(
-            0.5 * row["instab_1"] + 0.5 * row["instab_2"] + 0.5 * row["between_shift"],
+            0.5 * row["instab_1"] + 0.5 * row["instab_2"] + 0.5 * row["d_sis"],
             abs=1e-12,
         )
 
@@ -130,13 +130,13 @@ def test_6taxon_toy_exact(tmp_path):
         else:
             assert m.instab_2 == pytest.approx(e_i2, abs=1e-12)
         if e_d is None:
-            assert m.between_shift is None
+            assert m.d_sis is None
         else:
-            assert m.between_shift == pytest.approx(e_d, abs=1e-12)
+            assert m.d_sis == pytest.approx(e_d, abs=1e-12)
 
 
 def test_7taxon_jumping_cherry():
-    """Tips R1/R2 score 0.0 while their cherry {R1, R2} scores I_comb=0.5625, Shift=0.875."""
+    """Tips R1/R2 score 0.0 while their cherry {R1, R2} scores I_comb=0.5625, D_sis=0.875."""
     t1 = "((((A:1,B:1):1,(R1:1,R2:1):1):1,C:1):1,(D:1,E:1):1);"
     t2 = "((((A:1,B:1):1,(R1:1,R2:1):1):1,C:1):1,(D:1,E:1):1);"
     t3 = "(((A:1,B:1):1,C:1):1,((D:1,E:1):1,(R1:1,R2:1):1):1);"
@@ -164,7 +164,7 @@ def test_7taxon_jumping_cherry():
         assert by_tip[tip]["instab_1"] == 0.0
         assert by_tip[tip]["instab_2"] == 0.0
         assert by_tip[tip]["combined_instability"] == 0.0
-        assert by_tip[tip]["between_shift"] == 0.0
+        assert by_tip[tip]["d_sis"] == 0.0
         assert by_tip[tip]["p_cherry_1"] == pytest.approx(1.0, abs=1e-12)
         assert by_tip[tip]["p_cherry_2"] == pytest.approx(1.0, abs=1e-12)
 
@@ -172,19 +172,19 @@ def test_7taxon_jumping_cherry():
     assert cherry.instab_1 == pytest.approx(0.0, abs=1e-12)
     assert cherry.instab_2 == pytest.approx(0.25, abs=1e-12)
     assert cherry.clade_instability == pytest.approx(0.5625, abs=1e-12)
-    assert cherry.between_shift == pytest.approx(0.875, abs=1e-12)
+    assert cherry.d_sis == pytest.approx(0.875, abs=1e-12)
 
     ab = clade_metrics[col_by_taxa[frozenset({"A", "B"})]]
     assert ab.clade_instability == pytest.approx(0.5, abs=1e-12)
-    assert ab.between_shift == pytest.approx(1.0, abs=1e-12)
+    assert ab.d_sis == pytest.approx(1.0, abs=1e-12)
 
     de = clade_metrics[col_by_taxa[frozenset({"D", "E"})]]
     assert de.clade_instability == pytest.approx(4.0 / 15.0, abs=1e-12)
-    assert de.between_shift == pytest.approx(0.6, abs=1e-12)
+    assert de.d_sis == pytest.approx(0.6, abs=1e-12)
 
 
 def test_polytomy_vs_switcher_ranking():
-    """Shared 4-way polytomy scores Comb.=0.75, Shift=0.0; clean switcher ranks #1 by Shift=1.0."""
+    """Shared 4-way uncertainty scores Comb.=0.75, D_sis=0.0; clean switcher ranks #1 by D_sis=1.0."""
     # Polytomy subtrees where X pairs uniformly with P1, P2, P3, P4 (4 disjoint singletons).
     poly = [
         "(((X:1,P1:1):1,P2:1):1,(P3:1,P4:1):1)",
@@ -210,12 +210,12 @@ def test_polytomy_vs_switcher_ranking():
     assert by_tip["X"]["instab_1"] == pytest.approx(0.75, abs=1e-12)
     assert by_tip["X"]["instab_2"] == pytest.approx(0.75, abs=1e-12)
     assert by_tip["X"]["combined_instability"] == pytest.approx(0.75, abs=1e-12)
-    assert by_tip["X"]["between_shift"] == pytest.approx(0.0, abs=1e-12)
+    assert by_tip["X"]["d_sis"] == pytest.approx(0.0, abs=1e-12)
 
     assert by_tip["R"]["instab_1"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["R"]["instab_2"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["R"]["combined_instability"] == pytest.approx(0.5, abs=1e-12)
-    assert by_tip["R"]["between_shift"] == pytest.approx(1.0, abs=1e-12)
+    assert by_tip["R"]["d_sis"] == pytest.approx(1.0, abs=1e-12)
     assert tip_rows[0]["taxon"] == "R"
 
 
@@ -290,13 +290,13 @@ def test_rare_clade_no_stray_spike():
     expected_icomb = 2.0 * (990.0 / 991.0) * (1.0 / 991.0)
     assert m.instab_1 == pytest.approx(0.0, abs=1e-12)
     assert m.instab_2 == pytest.approx(0.0, abs=1e-12)
-    assert m.between_shift == pytest.approx(1.0, abs=1e-12)
+    assert m.d_sis == pytest.approx(1.0, abs=1e-12)
     assert m.clade_instability == pytest.approx(expected_icomb, abs=1e-12)
     assert m.clade_instability < 0.003
 
 
 def test_overlapping_rows_deduplicated():
-    """Subset R2 <= R1 gives I_comb == I_1 with zero double-counting; R1 == R2 gives Shift == 0."""
+    """Subset R2 <= R1 gives I_comb == I_1 with zero double-counting; R1 == R2 gives D_sis == 0."""
     t1 = "((((A:1,B:1):1,R:1):1,C:1):1,(D:1,E:1):1);"
     t2 = "(((A:1,B:1):1,C:1):1,((D:1,E:1):1,R:1):1);"
     t3 = "(((A:1,B:1):1,C:1):1,(D:1,(E:1,R:1):1):1);"
@@ -320,7 +320,7 @@ def test_overlapping_rows_deduplicated():
         clade_metrics[ab_col].instab_1, abs=1e-12
     )
 
-    # Identical selections R1 == R2 -> Shift == 0 everywhere, I_1 == I_2 == I_comb.
+    # Identical selections R1 == R2 -> D_sis == 0 everywhere, I_1 == I_2 == I_comb.
     clade_same, tips_same = compute_sister_instability_from_arrays(
         packed_clades=facts.packed_clades,
         split_table=facts.split_table,
@@ -331,10 +331,10 @@ def test_overlapping_rows_deduplicated():
         clade_columns=[ab_col],
     )
     for row in tips_same:
-        assert row["between_shift"] == pytest.approx(0.0, abs=1e-12)
+        assert row["d_sis"] == pytest.approx(0.0, abs=1e-12)
         assert row["instab_1"] == pytest.approx(row["combined_instability"], abs=1e-12)
         assert row["instab_2"] == pytest.approx(row["combined_instability"], abs=1e-12)
-    assert clade_same[ab_col].between_shift == pytest.approx(0.0, abs=1e-12)
+    assert clade_same[ab_col].d_sis == pytest.approx(0.0, abs=1e-12)
 
 
 def test_packed_vs_matmul_parity():
@@ -407,7 +407,7 @@ def test_packed_vs_matmul_parity():
 
     t0_packed = next(row for row in tips_packed if row["taxon"] == "T0")
     t0_matmul = next(row for row in tips_matmul if row["taxon"] == "T0")
-    for field in ("instab_1", "instab_2", "combined_instability", "between_shift"):
+    for field in ("instab_1", "instab_2", "combined_instability", "d_sis"):
         assert t0_packed[field] == pytest.approx(t0_matmul[field], abs=1e-12)
     assert t0_matmul["n_sisters_comb"] == k_sisters
     # Every sister in Group 1 has p = 1/150 (~0.67%), so top 1 formats compactly at (1%).
@@ -435,8 +435,8 @@ def test_root_stem_and_quoted_names():
     assert set(by_tip.keys()) == {"T_root", "T_a", "B", "C"}
 
     # T_root switches from sister {T_a, B, C} (size 3) in G1 to {T_a} (size 1) in G2.
-    # J = 1/3 -> Shift = 1 - 1/3 = 2/3, I_comb = 2 * 0.5 * 0.5 * (2/3) = 1/3.
-    assert by_tip["T_root"]["between_shift"] == pytest.approx(2.0 / 3.0, abs=1e-12)
+    # J = 1/3 -> D_sis = 1 - 1/3 = 2/3, I_comb = 2 * 0.5 * 0.5 * (2/3) = 1/3.
+    assert by_tip["T_root"]["d_sis"] == pytest.approx(2.0 / 3.0, abs=1e-12)
     assert by_tip["T_root"]["combined_instability"] == pytest.approx(1.0 / 3.0, abs=1e-12)
     assert by_tip["T_root"]["p_cherry_1"] == pytest.approx(0.0, abs=1e-12)
     assert by_tip["T_root"]["p_cherry_2"] == pytest.approx(1.0, abs=1e-12)
@@ -507,5 +507,5 @@ def test_npz_selective_reads_preloaded_reuse_and_tsv():
     tsv = format_tip_instability_tsv(tip_rows_default)
     lines = tsv.strip().splitlines()
     assert len(lines) == 1 + len(tip_rows_default)
-    assert lines[0].startswith("taxon\tbetween_shift\tinstab_1\tinstab_2\tcombined_instability\t")
+    assert lines[0].startswith("taxon\td_sis\tinstab_1\tinstab_2\tcombined_instability\t")
     assert lines[1].startswith("R\t1.000000\t")

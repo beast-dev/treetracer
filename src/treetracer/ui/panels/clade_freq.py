@@ -67,15 +67,18 @@ def _add_clade_freq_panel():
                         html.Div(
                             dmc.Stack(
                                 [
-                                    dmc.Text("Minimum clade size", size="sm", fw=500),
-                                    dmc.Slider(
+                                    dmc.Text("Clade size range", size="sm", fw=500),
+                                    dmc.RangeSlider(
                                         id="clade-freq-min-clade-size",
                                         min=2,
                                         max=50,
                                         step=1,
-                                        value=5,
+                                        minRange=0,
+                                        value=[5, 50],
                                         w=260,
                                         size="md",
+                                        thumbFromLabel="Minimum clade size",
+                                        thumbToLabel="Maximum clade size",
                                         marks=[
                                             {"value": 2, "label": "2"},
                                             {"value": 10, "label": "10"},
@@ -93,18 +96,22 @@ def _add_clade_freq_panel():
                             dmc.Stack(
                                 [
                                     dmc.Text(
-                                        "Minimum clade instability",
+                                        "Clade instability range",
                                         size="sm",
                                         fw=500,
                                     ),
-                                    dmc.Slider(
+                                    dmc.RangeSlider(
                                         id="clade-freq-min-instability",
                                         min=0.0,
                                         max=1.0,
                                         step=0.05,
-                                        value=0.0,
+                                        minRange=0.0,
+                                        precision=2,
+                                        value=[0.0, 1.0],
                                         w=260,
                                         size="md",
+                                        thumbFromLabel="Minimum clade instability",
+                                        thumbToLabel="Maximum clade instability",
                                         marks=[
                                             {"value": 0.0, "label": "0.0"},
                                             {"value": 0.25, "label": "0.25"},

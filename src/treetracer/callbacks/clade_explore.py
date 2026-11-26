@@ -1008,6 +1008,48 @@ def _build_scatter_fig(df_plot, label1, label2):
     return fig
 
 
+def _parse_slider_range(
+    value: Any,
+    *,
+    default_min: int | float,
+    default_max: int | float | None,
+    cast: type[int] | type[float],
+) -> tuple[int | float, int | float | None]:
+    """Normalize a RangeSlider ``[lo, hi]`` pair (or scalar fallback) to ``(lo, hi)``."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            lo = cast(value[0]) if value[0] is not None else default_min
+            hi = cast(value[1]) if value[1] is not None else default_max
+        except (TypeError, ValueError):
+            return default_min, default_max
+        if hi is not None and lo > hi:
+            return hi, lo
+        return lo, hi
+    if value is not None:
+        try:
+            return cast(value), default_max
+        except (TypeError, ValueError):
+            return default_min, default_max
+    return default_min, default_max
+
+
+def _clade_size_slider_marks(max_size: int) -> list[dict[str, Any]]:
+    """Build evenly spaced, non-overlapping integer marks for ``[2, max_size]``."""
+    hi = max(3, int(max_size))
+    if hi <= 6:
+        ticks = [2, hi]
+    elif hi <= 15:
+        ticks = [2, round((2 + hi) / 2), hi]
+    else:
+        ticks = [
+            2,
+            round(2 + (hi - 2) / 3),
+            round(2 + 2 * (hi - 2) / 3),
+            hi,
+        ]
+    return [{"value": v, "label": str(v)} for v in ticks]
+
+
 def _filter_clade_frequency_frame(
     frame: pd.DataFrame,
     *,
@@ -1015,19 +1057,26 @@ def _filter_clade_frequency_frame(
     exclusive_only: bool,
     color_by: str = "clade_size",
     min_instability: float = 0.0,
+    max_clade_size: int | None = None,
+    max_instability: float | None = None,
 ) -> pd.DataFrame:
     """Apply the user-facing scatter filters to comparison records."""
     if frame.empty:
         return frame
     if color_by == "clade_instability" and "clade_instability" in frame.columns:
         instab = pd.to_numeric(frame["clade_instability"], errors="coerce")
+        lo = float(min_instability)
         visible = (
             (frame["clade_size"] >= 2)
             & instab.notna()
-            & (instab >= float(min_instability))
+            & (instab >= lo - 1e-9)
         )
+        if max_instability is not None:
+            visible &= instab <= float(max_instability) + 1e-9
     else:
-        visible = frame["clade_size"] >= min_clade_size
+        visible = frame["clade_size"] >= int(min_clade_size)
+        if max_clade_size is not None:
+            visible &= frame["clade_size"] <= int(max_clade_size)
     if exclusive_only:
         visible &= frame["in_consensus_tree_1"].ne(
             frame["in_consensus_tree_2"]
@@ -1045,8 +1094,8 @@ def _build_scatter_patch(
     store_data,
     *,
     color_by,
-    min_clade_size,
-    min_instability,
+    clade_size_range,
+    instability_range,
     exclusive_only,
     tip_taxon: str | None = None,
     resolution: dict[int, Any] | None = None,
@@ -1063,12 +1112,20 @@ def _build_scatter_patch(
         if color_by == "clade_instability" and has_instab_col
         else "clade_size"
     )
+    min_size, max_size = _parse_slider_range(
+        clade_size_range, default_min=2, default_max=None, cast=int
+    )
+    min_instab, max_instab = _parse_slider_range(
+        instability_range, default_min=0.0, default_max=1.0, cast=float
+    )
     df_plot = _filter_clade_frequency_frame(
         df,
-        min_clade_size=int(min_clade_size or 2),
+        min_clade_size=int(min_size),
+        max_clade_size=int(max_size) if max_size is not None else None,
         exclusive_only=bool(exclusive_only),
         color_by=mode,
-        min_instability=float(min_instability or 0.0),
+        min_instability=float(min_instab),
+        max_instability=float(max_instab) if max_instab is not None else None,
     )
     if tip_taxon is not None and resolution is not None and not df_plot.empty:
         keep = [
@@ -1200,6 +1257,7 @@ class _CladeComparisonFinalizationContext:
     consensus_columns_2: frozenset[int]
     min_clade_size: int
     exclusive_only: bool
+    max_clade_size: int | None = None
 
 
 def _cached_counts_for_columns(entry, columns):
@@ -1313,6 +1371,7 @@ def _finalize_clade_comparison_job(
     plotted = _filter_clade_frequency_frame(
         frame,
         min_clade_size=context.min_clade_size,
+        max_clade_size=context.max_clade_size,
         exclusive_only=context.exclusive_only,
     )
     figure = _build_scatter_fig(plotted, context.label_1, context.label_2)
@@ -1555,8 +1614,8 @@ def register_clade_explore_callbacks():
     )
     def filter_clade_freq_plot(
         color_by,
-        min_clade_size,
-        min_instability,
+        clade_size_range,
+        instability_range,
         exclusive_only,
         tip_filter,
         store_data,
@@ -1578,8 +1637,8 @@ def register_clade_explore_callbacks():
         patch, n_shown = _build_scatter_patch(
             store_data,
             color_by=color_by,
-            min_clade_size=min_clade_size,
-            min_instability=min_instability,
+            clade_size_range=clade_size_range,
+            instability_range=instability_range,
             exclusive_only=exclusive_only,
             tip_taxon=tip_taxon,
             resolution=resolution,
@@ -1595,6 +1654,47 @@ def register_clade_explore_callbacks():
         else:
             banner_text = f"No clades contain {tip_taxon} under current filter"
         return patch, {}, banner_text
+
+    @callback(
+        Output("clade-freq-min-clade-size", "max"),
+        Output("clade-freq-min-clade-size", "marks"),
+        Output("clade-freq-min-clade-size", "value"),
+        Input("clade-freq-result-key-store", "data"),
+        State("clade-freq-min-clade-size", "value"),
+        State("clade-freq-min-clade-size", "max"),
+        prevent_initial_call=True,
+    )
+    def sync_clade_size_slider_bounds(result_key, current_value, current_max):
+        """Fit the clade-size RangeSlider ceiling to the active comparison's largest clade."""
+        cached = state.get_clade_frequency_result(result_key) if result_key else None
+        records = (cached or {}).get("records") or []
+        if not records:
+            return no_update, no_update, no_update
+
+        data_max = max(int(r["clade_size"]) for r in records)
+        new_max = max(3, data_max)
+        marks = _clade_size_slider_marks(new_max)
+
+        cur_lo, cur_hi = _parse_slider_range(
+            current_value, default_min=2, default_max=new_max, cast=int
+        )
+        old_max = int(current_max) if current_max is not None else new_max
+        at_ceiling = cur_hi is None or cur_hi >= old_max
+
+        new_lo = max(2, int(cur_lo))
+        if new_lo > data_max:
+            new_lo = 2
+        new_hi = new_max if at_ceiling else min(max(new_lo, int(cur_hi)), new_max)
+        new_value = [new_lo, new_hi]
+
+        out_max = no_update if current_max == new_max else new_max
+        out_val = (
+            no_update
+            if isinstance(current_value, (list, tuple))
+            and list(current_value) == new_value
+            else new_value
+        )
+        return out_max, marks, out_val
 
     # ------ Tip Instability Table: reactive sync, render, pagination, TSV ------
 
@@ -1928,14 +2028,16 @@ def register_clade_explore_callbacks():
         State("clade-freq-consensus-tree-select-2", "value"),
         State("clade-freq-min-clade-size", "value"),
         State("clade-freq-exclusive-only", "checked"),
+        State("clade-freq-min-clade-size", "max"),
         prevent_initial_call=True,
     )
     def compute_and_plot_clade_frequencies(
         n_clicks,
         uid1,
         uid2,
-        min_clade_size,
+        clade_size_range,
         exclusive_only,
+        clade_size_slider_max=None,
     ):
         """Prepare and submit a selective, process-isolated comparison."""
         if not n_clicks or not uid1 or not uid2:
@@ -2001,10 +2103,18 @@ def register_clade_explore_callbacks():
         except (KeyError, ValueError, FileNotFoundError) as exc:
             return error(f"Error preparing clade comparison: {exc}")
 
-        try:
-            min_size = max(1, int(min_clade_size or 2))
-        except (TypeError, ValueError):
-            min_size = 2
+        min_size, max_size = _parse_slider_range(
+            clade_size_range, default_min=2, default_max=None, cast=int
+        )
+        min_size = max(1, int(min_size))
+        if (
+            max_size is not None
+            and clade_size_slider_max is not None
+            and int(max_size) >= int(clade_size_slider_max)
+        ):
+            # Right handle sits at the slider ceiling — don't clip larger clades
+            # on a newly compared dataset before bounds sync.
+            max_size = None
         context = _CladeComparisonFinalizationContext(
             source_distmat=source_1,
             uid_1=str(uid1),
@@ -2015,6 +2125,7 @@ def register_clade_explore_callbacks():
             consensus_columns_2=columns_2,
             min_clade_size=min_size,
             exclusive_only=bool(exclusive_only),
+            max_clade_size=int(max_size) if max_size is not None else None,
         )
 
         try:

@@ -291,8 +291,8 @@ def test_filter_patch_color_and_slider(monkeypatch):
     ]
 
     filter_cb = _registered_callback("filter_clade_freq_plot")
-    # Clade size mode with min_clade_size=5 hides the size-2 jumping cherry.
-    patch_size, banner_style, banner_text = filter_cb("clade_size", 5, 0.0, False, None, records, None)
+    # Clade size mode with [5, 50] hides the size-2 jumping cherry.
+    patch_size, banner_style, banner_text = filter_cb("clade_size", [5, 50], [0.0, 1.0], False, None, records, None)
     assert banner_style == {"display": "none"}
     assert banner_text == ""
     ops_size = _patch_ops(patch_size)
@@ -302,8 +302,14 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert ops_size[("data", 0, "marker", "cmin")] is None
     assert ops_size[("data", 0, "marker", "colorbar", "title", "text")] == "Clade size"
 
-    # Clade instability mode lifts the size-5 floor and fixes colorbar to [0.0, 1.0].
-    patch_instab, banner_style_i, _ = filter_cb("clade_instability", 5, 0.25, False, None, records, None)
+    # Clade size upper bound isolates cherries ([2, 2]) and hides the size-12 clade.
+    patch_size_hi, _, _ = filter_cb("clade_size", [2, 2], [0.0, 1.0], False, None, records, None)
+    ops_size_hi = _patch_ops(patch_size_hi)
+    assert ops_size_hi[("data", 0, "x")] == [1.0]
+    assert ops_size_hi[("data", 0, "marker", "color")] == [2]
+
+    # Clade instability mode lifts the size-5 floor, applies [lo, hi], and fixes colorbar to [0.0, 1.0].
+    patch_instab, banner_style_i, _ = filter_cb("clade_instability", [5, 50], [0.25, 1.0], False, None, records, None)
     assert banner_style_i == {"display": "none"}
     ops_instab = _patch_ops(patch_instab)
     assert ops_instab[("data", 0, "x")] == [1.0]
@@ -312,6 +318,12 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert ops_instab[("data", 0, "marker", "cmin")] == 0.0
     assert ops_instab[("data", 0, "marker", "cmax")] == 1.0
     assert ops_instab[("data", 0, "marker", "colorbar", "title", "text")] == "Instability"
+
+    # Instability upper bound ([0.0, 0.25]) keeps only the low-instability clade.
+    patch_instab_hi, _, _ = filter_cb("clade_instability", [5, 50], [0.0, 0.25], False, None, records, None)
+    ops_instab_hi = _patch_ops(patch_instab_hi)
+    assert ops_instab_hi[("data", 0, "x")] == [0.9]
+    assert ops_instab_hi[("data", 0, "marker", "color")] == [0.05]
 
     # Theme toggle (Viridis -> Turbo) preserves cauto=False, cmin=0.0, cmax=1.0 and uirevision.
     import pandas as pd
@@ -327,6 +339,66 @@ def test_filter_patch_color_and_slider(monkeypatch):
     assert rethemed.data[0].marker.cauto is False
     assert rethemed.data[0].marker.cmin == 0.0
     assert rethemed.data[0].marker.cmax == 1.0
+
+
+def test_range_sliders_layout_and_dynamic_size_bounds():
+    """Both scatter filters are RangeSliders with minRange=0 and clade-size ceiling syncs to data."""
+    import dash_mantine_components as dmc
+    from dash import no_update
+    from treetracer.ui.panels.clade_freq import _add_clade_freq_panel
+
+    def _walk(node):
+        if node is None or isinstance(node, (str, int, float, bool)):
+            return
+        yield node
+        children = getattr(node, "children", None)
+        if isinstance(children, (list, tuple)):
+            for child in children:
+                yield from _walk(child)
+        elif children is not None:
+            yield from _walk(children)
+
+    panel = _add_clade_freq_panel()
+    by_id = {getattr(c, "id", None): c for c in _walk(panel) if getattr(c, "id", None)}
+    size_slider = by_id["clade-freq-min-clade-size"]
+    instab_slider = by_id["clade-freq-min-instability"]
+    assert isinstance(size_slider, dmc.RangeSlider)
+    assert size_slider.min == 2
+    assert size_slider.max == 50
+    assert size_slider.minRange == 0
+    assert list(size_slider.value) == [5, 50]
+    assert isinstance(instab_slider, dmc.RangeSlider)
+    assert instab_slider.min == 0.0
+    assert instab_slider.max == 1.0
+    assert instab_slider.minRange == 0.0
+    assert list(instab_slider.value) == [0.0, 1.0]
+
+    sync_bounds = _registered_callback("sync_clade_size_slider_bounds")
+
+    # Larger tree (max clade size 120): expands ceiling and lifts top handle parked at old max.
+    state.store_clade_frequency_result(
+        "k-big",
+        {"records": [{"clade_size": 2}, {"clade_size": 120}]},
+    )
+    new_max, marks, new_val = sync_bounds("k-big", [5, 50], 50)
+    assert new_max == 120
+    assert marks[0]["value"] == 2 and marks[-1]["value"] == 120
+    assert new_val == [5, 120]
+
+    # Explicit user upper cap (< old_max) is preserved across same-size comparisons.
+    out_max, _, out_val = sync_bounds("k-big", [5, 20], 120)
+    assert out_max is no_update
+    assert out_val is no_update
+
+    # Switching to a tiny 3-tip tree (data_max == 2) resets lo to 2 and keeps max >= 3.
+    state.store_clade_frequency_result("k-tiny", {"records": [{"clade_size": 2}]})
+    tiny_max, tiny_marks, tiny_val = sync_bounds("k-tiny", [5, 120], 120)
+    assert tiny_max == 3
+    assert [m["value"] for m in tiny_marks] == [2, 3]
+    assert tiny_val == [2, 3]
+
+    # Missing/empty records returns no_update cleanly.
+    assert sync_bounds(None, [5, 50], 50) == (no_update, no_update, no_update)
 
 
 def _make_tip_rows(n, *, max_dsis=0.8):
@@ -562,7 +634,7 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
 
     # Active tip filter R in clade_instability mode filters data[0] to splits 0 and 1.
     patch_tip, banner_style, banner_text = filter_cb(
-        "clade_instability", 3, 0.0, False, tip_filter, records, {"kind": "tip", "taxon": "R"}
+        "clade_instability", [3, 50], [0.0, 1.0], False, tip_filter, records, {"kind": "tip", "taxon": "R"}
     )
     ops = _patch_ops(patch_tip)
     assert ops[("data", 0, "x")] == [1.0, 0.0]
@@ -571,9 +643,9 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
     assert banner_style == {}
     assert banner_text == "Showing 2 clades containing R"
 
-    # Changing scatter controls (Clade size >= 3) stacks with tip filter R AND keeps visible clade ring.
+    # Changing scatter controls (Clade size in [3, 50]) stacks with tip filter R AND keeps visible clade ring.
     patch_tip_sz, banner_sz_style, banner_sz = filter_cb(
-        "clade_size", 3, 0.0, False, tip_filter, records, clade_payload
+        "clade_size", [3, 50], [0.0, 1.0], False, tip_filter, records, clade_payload
     )
     ops_tip_sz = _patch_ops(patch_tip_sz)
     assert ops_tip_sz[("data", 0, "x")] == [1.0]
@@ -582,9 +654,9 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
     assert banner_sz_style == {}
     assert banner_sz == "Showing 1 clade containing R"
 
-    # Filtering out the currently ringed clade (Clade size >= 4) clears the ring cleanly.
+    # Filtering out the currently ringed clade (Clade size in [4, 50]) clears the ring cleanly.
     patch_filtered_out, _, _ = filter_cb(
-        "clade_size", 4, 0.0, False, tip_filter, records, clade_payload
+        "clade_size", [4, 50], [0.0, 1.0], False, tip_filter, records, clade_payload
     )
     assert _patch_ops(patch_filtered_out)[("data", 1, "x")] == []
 
@@ -605,7 +677,7 @@ def test_tip_click_filters_scatter_banner_and_dismiss():
     # Dismissing the tip filter (tip_filter=None) restores all clades in data[0], hides banner,
     # and keeps the ring if a clade is currently focused.
     patch_clear, clear_style, clear_text = filter_cb(
-        "clade_size", 2, 0.0, False, None, records, clade_payload
+        "clade_size", [2, 50], [0.0, 1.0], False, None, records, clade_payload
     )
     clear_ops = _patch_ops(patch_clear)
     assert clear_ops[("data", 0, "x")] == [1.0, 0.0, 1.0]

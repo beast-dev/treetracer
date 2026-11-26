@@ -289,7 +289,7 @@ def test_stage_four_submit_callbacks_have_matching_idle_output_shapes():
     )
 
     assert len(rf_submit(None, None, None, None, None, None)) == 5
-    assert len(clade_submit(None, None, None, None, False)) == 7
+    assert len(clade_submit(None, None, None, [5, 50], False, 50)) == 7
 
 
 def test_clade_scatter_filter_keeps_only_exclusive_consensus_membership():
@@ -332,9 +332,16 @@ def test_clade_scatter_filter_keeps_only_exclusive_consensus_membership():
         min_clade_size=5,
         exclusive_only=True,
     )
+    bounded_membership = clade_explore._filter_clade_frequency_frame(
+        frame,
+        min_clade_size=5,
+        max_clade_size=6,
+        exclusive_only=False,
+    )
 
     assert unfiltered_membership["split_id"].tolist() == [0, 1, 2]
     assert exclusive_membership["split_id"].tolist() == [1, 2]
+    assert bounded_membership["split_id"].tolist() == [0, 1]
 
 
 def test_clade_terminal_keeps_rows_server_side_and_keys_click_resolution(

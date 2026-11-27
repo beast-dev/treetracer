@@ -198,6 +198,7 @@ def main():
                 # 300px + the "sm" (768px) collapse breakpoint.
                 min_size=(1100, 720),
                 js_api=peartree_view.peartree_api,
+                text_select=True,
             )
             # The api needs a handle on this window so it can re-focus
             # it when a peartree sibling window closes (Cocoa otherwise

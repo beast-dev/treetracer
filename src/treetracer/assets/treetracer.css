@@ -274,6 +274,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+.tt-tip-col-r2 {
+  width: 58px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-r2-muted {
+  color: var(--mantine-color-dimmed);
+}
+
 .tt-tip-col-action {
   width: 32px;
   text-align: center;

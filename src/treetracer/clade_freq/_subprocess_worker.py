@@ -182,6 +182,9 @@ def compute_clade_frequencies_worker_entry(
                     "d_sis": (
                         metrics.d_sis if metrics is not None else None
                     ),
+                    "r2_sis": (
+                        metrics.r2_sis if metrics is not None else None
+                    ),
                     "n_eff_comb": metrics.n_eff_comb if metrics is not None else None,
                     "n_eff_1": metrics.n_eff_1 if metrics is not None else None,
                     "n_eff_2": metrics.n_eff_2 if metrics is not None else None,

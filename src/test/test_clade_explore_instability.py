@@ -494,23 +494,39 @@ def test_tip_table_search_sort_pagination_unrooted_and_tsv(monkeypatch, tmp_path
     assert "2 with D_sis > 0.05" in summary
     assert "N_comb > 1.05" in summary
     assert more_style == {}
-    # Column headers render D_sis, N_G1, N_G2, N_comb with explanatory tooltips.
+    # Column headers render N_G1, N_G2, D_sis, Group % with explanatory tooltips.
     header_cells = table.children[0].children.children
-    dsis_th = header_cells[1].children
+    assert header_cells[1].children.children[0] == "N"
+    assert header_cells[1].children.children[1].children == "G1"
+    assert header_cells[2].children.children[0] == "N"
+    assert header_cells[2].children.children[1].children == "G2"
+    dsis_th = header_cells[3].children
     assert dsis_th.title == "Net Sister Dissimilarity Coefficient (0–1)"
     assert dsis_th.children[0] == "D"
     assert dsis_th.children[1].children == "sis"
-    assert header_cells[2].children.children[0] == "N"
-    assert header_cells[2].children.children[1].children == "G1"
-    assert header_cells[3].children.children[1].children == "G2"
-    assert header_cells[4].children.children[1].children == "comb"
-    # tbody holds 50 rows; TAXON_000 (D_sis 0.90, I1=0, I2=0.25, Icomb=0.5) shows N_eff = 1.00, 1.33, 2.00.
+    r2_th = header_cells[4].children
+    assert r2_th.children == "Group %"
+    assert "ANOVA R²" in r2_th.title
+    # tbody holds 50 rows; TAXON_000 (I1=0, I2=0.25, D_sis=0.90) -> N_G1=1.00, N_G2=1.33, D_sis=0.90, R^2=78%.
     tbody_rows = table.children[1].children
     assert len(tbody_rows) == 50
     assert tbody_rows[0].children[0].children.children == "TAXON_000"
-    assert tbody_rows[0].children[2].children == "1.00"
-    assert tbody_rows[0].children[3].children == "1.33"
-    assert tbody_rows[0].children[4].children == "2.00"
+    assert tbody_rows[0].children[1].children == "1.00"
+    assert tbody_rows[0].children[2].children == "1.33"
+    assert tbody_rows[0].children[3].children.children == "0.90"
+    assert tbody_rows[0].children[4].children == "78%"
+    assert tbody_rows[0].children[4].className == "tt-tip-col-r2"
+    # TAXON_001 (I1=0, I2=0.25, D_sis=0.20) -> R^2=44% (unmuted).
+    assert tbody_rows[1].children[4].children == "44%"
+    assert tbody_rows[1].children[4].className == "tt-tip-col-r2"
+    # TAXON_002 (shared rogue: I1=I2=0.75, D_sis=0) -> R^2=0% (muted).
+    assert tbody_rows[2].children[0].children.children == "TAXON_002"
+    assert tbody_rows[2].children[4].children == "0%"
+    assert tbody_rows[2].children[4].className == "tt-tip-col-r2 tt-r2-muted"
+    # TAXON_003 (completely stable: I1=I2=D_sis=0) -> R^2="—" (muted).
+    assert tbody_rows[3].children[0].children.children == "TAXON_003"
+    assert tbody_rows[3].children[4].children == "—"
+    assert tbody_rows[3].children[4].className == "tt-tip-col-r2 tt-r2-muted"
 
     # Pagination bump -> 100 hides Show more.
     assert bump_cb(1, 50) == 100

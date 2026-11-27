@@ -31,6 +31,7 @@ _LOWEST_BIT = np.array(
 _TSV_COLUMNS = (
     "taxon",
     "d_sis",
+    "r2_sis",
     "n_eff_1",
     "n_eff_2",
     "n_eff_comb",
@@ -58,11 +59,31 @@ class CladeInstabilityMetrics:
     n_eff_comb: float = 1.0
     n_eff_1: float | None = None
     n_eff_2: float | None = None
+    r2_sis: float | None = None
 
 
 def _effective_sisters(similarity: float) -> float:
     """Convert expected pairwise Jaccard similarity s = p^T J p to N_eff = 1 / s."""
     return float(max(1.0, 1.0 / max(float(similarity), 1e-12)))
+
+
+def _between_r2(
+    d_sis: float | None,
+    i1: float | None,
+    i2: float | None,
+    m1: int,
+    m2: int,
+) -> float | None:
+    """ANOVA between-group share of instability: 2*w1*w2*D_sis / (w1*I1 + w2*I2 + 2*w1*w2*D_sis)."""
+    if d_sis is None or i1 is None or i2 is None or m1 <= 0 or m2 <= 0:
+        return None
+    total = float(m1 + m2)
+    w1, w2 = float(m1) / total, float(m2) / total
+    between = 2.0 * w1 * w2 * float(d_sis)
+    denom = w1 * float(i1) + w2 * float(i2) + between
+    if denom <= 1e-12:
+        return 0.0
+    return float(np.clip(between / denom, 0.0, 1.0))
 
 
 def _normalise_leaf_names(raw: Sequence[object]) -> tuple[str, ...]:
@@ -363,9 +384,11 @@ def compute_sister_instability_from_arrays(
             else:
                 d_sis = None
 
+        r2_sis = _between_r2(d_sis, i1, i2, m1, m2)
+
         if target_col in cons_cols:
             clade_metrics[target_col] = CladeInstabilityMetrics(
-                i_comb, i1, i2, d_sis, n_eff_comb, n_eff_1, n_eff_2
+                i_comb, i1, i2, d_sis, n_eff_comb, n_eff_1, n_eff_2, r2_sis
             )
 
         taxon_index = col_to_taxon.get(target_col)
@@ -377,6 +400,7 @@ def compute_sister_instability_from_arrays(
                     "taxon": leaves[taxon_index],
                     "column_j": target_col,
                     "d_sis": float(d_sis or 0.0),
+                    "r2_sis": float(r2_sis or 0.0),
                     "n_eff_1": float(n_eff_1 if n_eff_1 is not None else 1.0),
                     "n_eff_2": float(n_eff_2 if n_eff_2 is not None else 1.0),
                     "n_eff_comb": n_eff_comb,
@@ -432,6 +456,20 @@ def _row_n_eff(row: dict[str, Any], neff_key: str, instab_key: str) -> float:
     return _effective_sisters(1.0 - float(row.get(instab_key, 0.0)))
 
 
+def _row_r2_sis(row: dict[str, Any]) -> float:
+    val = row.get("r2_sis")
+    if val is not None:
+        return float(val)
+    r2 = _between_r2(
+        float(row.get("d_sis", 0.0)),
+        float(row.get("instab_1", 0.0)),
+        float(row.get("instab_2", 0.0)),
+        1,
+        1,
+    )
+    return float(r2 or 0.0)
+
+
 def format_tip_instability_tsv(tip_rows: Sequence[dict[str, Any]]) -> str:
     """Serialize all tip instability rows to a tab-separated string."""
     clean = lambda v: str(v).replace("\t", " ").replace("\r", " ").replace("\n", " ")
@@ -442,6 +480,7 @@ def format_tip_instability_tsv(tip_rows: Sequence[dict[str, Any]]) -> str:
                 (
                     clean(row["taxon"]),
                     f"{float(row['d_sis']):.6f}",
+                    f"{_row_r2_sis(row):.6f}",
                     f"{_row_n_eff(row, 'n_eff_1', 'instab_1'):.6f}",
                     f"{_row_n_eff(row, 'n_eff_2', 'instab_2'):.6f}",
                     f"{_row_n_eff(row, 'n_eff_comb', 'combined_instability'):.6f}",

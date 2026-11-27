@@ -94,6 +94,8 @@ def test_6taxon_toy_exact(tmp_path):
         assert row["instab_2"] == pytest.approx(e_i2, abs=1e-12)
         assert row["combined_instability"] == pytest.approx(e_icomb, abs=1e-12)
         assert row["d_sis"] == pytest.approx(e_d, abs=1e-12)
+        expected_r2 = (0.5 * e_d / e_icomb) if e_icomb > 0 else 0.0
+        assert row["r2_sis"] == pytest.approx(expected_r2, abs=1e-12)
         assert row["n_eff_1"] == pytest.approx(1.0 / (1.0 - e_i1), abs=1e-12)
         assert row["n_eff_2"] == pytest.approx(1.0 / (1.0 - e_i2), abs=1e-12)
         assert row["n_eff_comb"] == pytest.approx(1.0 / (1.0 - e_icomb), abs=1e-12)
@@ -139,8 +141,10 @@ def test_6taxon_toy_exact(tmp_path):
             assert m.n_eff_2 == pytest.approx(1.0 / (1.0 - e_i2), abs=1e-12)
         if e_d is None:
             assert m.d_sis is None
+            assert m.r2_sis is None
         else:
             assert m.d_sis == pytest.approx(e_d, abs=1e-12)
+            assert m.r2_sis == pytest.approx(1.0, abs=1e-12)
 
 
 def test_7taxon_jumping_cherry():
@@ -330,6 +334,7 @@ def test_overlapping_rows_deduplicated():
     )
     for row in tip_rows:
         assert row["combined_instability"] == pytest.approx(row["instab_1"], abs=1e-12)
+        assert 0.0 <= row["r2_sis"] <= 1.0
     assert clade_metrics[ab_col].clade_instability == pytest.approx(
         clade_metrics[ab_col].instab_1, abs=1e-12
     )
@@ -346,6 +351,7 @@ def test_overlapping_rows_deduplicated():
     )
     for row in tips_same:
         assert row["d_sis"] == pytest.approx(0.0, abs=1e-12)
+        assert row["r2_sis"] == pytest.approx(0.0, abs=1e-12)
         assert row["instab_1"] == pytest.approx(row["combined_instability"], abs=1e-12)
         assert row["instab_2"] == pytest.approx(row["combined_instability"], abs=1e-12)
     assert clade_same[ab_col].d_sis == pytest.approx(0.0, abs=1e-12)
@@ -522,6 +528,6 @@ def test_npz_selective_reads_preloaded_reuse_and_tsv():
     lines = tsv.strip().splitlines()
     assert len(lines) == 1 + len(tip_rows_default)
     assert lines[0].startswith(
-        "taxon\td_sis\tn_eff_1\tn_eff_2\tn_eff_comb\tinstab_1\tinstab_2\tcombined_instability\t"
+        "taxon\td_sis\tr2_sis\tn_eff_1\tn_eff_2\tn_eff_comb\tinstab_1\tinstab_2\tcombined_instability\t"
     )
-    assert lines[1].startswith("R\t1.000000\t1.000000\t1.000000\t2.000000\t")
+    assert lines[1].startswith("R\t1.000000\t1.000000\t1.000000\t1.000000\t2.000000\t")

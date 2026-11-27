@@ -883,6 +883,28 @@ def _format_neff(value: float) -> str:
     return f"{v:.2f}"
 
 
+def _resolve_r2_sis(row: dict[str, Any]) -> float | None:
+    """Return between-group share of instability R^2 in [0, 1], or None if total instability is 0."""
+    i1 = float(row.get("instab_1") or 0.0)
+    i2 = float(row.get("instab_2") or 0.0)
+    d = float(row.get("d_sis") or 0.0)
+    if max(i1, i2, d) <= 1e-12:
+        return None
+    direct = row.get("r2_sis")
+    if direct is not None:
+        return min(1.0, max(0.0, float(direct)))
+    between = 0.5 * d
+    denom = 0.5 * i1 + 0.5 * i2 + between
+    return 0.0 if denom <= 1e-12 else min(1.0, max(0.0, between / denom))
+
+
+def _format_r2_pct(r2: float | None) -> str:
+    """Format ANOVA R^2 share as an integer percentage, or em-dash when no instability exists."""
+    if r2 is None:
+        return "—"
+    return f"{round(100.0 * float(r2))}%"
+
+
 def _format_instability_hover(
     clade_instab,
     d_sis,
@@ -1321,6 +1343,7 @@ def _finalize_clade_comparison_job(
         instab_1 = row.get("instab_1")
         instab_2 = row.get("instab_2")
         d_sis = row.get("d_sis")
+        r2_sis = row.get("r2_sis")
         n_eff_comb = _resolve_neff(row.get("n_eff_comb"), clade_instab)
         n_eff_1 = _resolve_neff(row.get("n_eff_1"), instab_1)
         n_eff_2 = _resolve_neff(row.get("n_eff_2"), instab_2)
@@ -1342,6 +1365,9 @@ def _finalize_clade_comparison_job(
                 "instab_2": float(instab_2) if instab_2 is not None else None,
                 "d_sis": (
                     float(d_sis) if d_sis is not None else None
+                ),
+                "r2_sis": (
+                    float(r2_sis) if r2_sis is not None else None
                 ),
                 "n_eff_comb": n_eff_comb,
                 "n_eff_1": n_eff_1,
@@ -1846,19 +1872,17 @@ def register_clade_explore_callbacks():
             dsis_val = float(row["d_sis"])
             neff_1 = _resolve_neff(row.get("n_eff_1"), row.get("instab_1", 0.0))
             neff_2 = _resolve_neff(row.get("n_eff_2"), row.get("instab_2", 0.0))
-            neff_comb = _resolve_neff(row.get("n_eff_comb"), row.get("combined_instability", 0.0))
+            r2_val = _resolve_r2_sis(row)
+            r2_cls = (
+                "tt-tip-col-r2 tt-r2-muted"
+                if (r2_val is None or dsis_val <= 0.05)
+                else "tt-tip-col-r2"
+            )
             body_rows.append(
                 dmc.TableTr(
                     [
                         dmc.TableTd(
                             html.Span(taxon, className="tt-tip-taxon-text", title=taxon)
-                        ),
-                        dmc.TableTd(
-                            html.Span(
-                                f"{dsis_val:.2f}",
-                                className=_dsis_pill_class(dsis_val),
-                            ),
-                            className="tt-tip-col-dsis",
                         ),
                         dmc.TableTd(
                             _format_neff(neff_1),
@@ -1869,8 +1893,15 @@ def register_clade_explore_callbacks():
                             className="tt-tip-col-num",
                         ),
                         dmc.TableTd(
-                            _format_neff(neff_comb),
-                            className="tt-tip-col-num",
+                            html.Span(
+                                f"{dsis_val:.2f}",
+                                className=_dsis_pill_class(dsis_val),
+                            ),
+                            className="tt-tip-col-dsis",
+                        ),
+                        dmc.TableTd(
+                            _format_r2_pct(r2_val),
+                            className=r2_cls,
                         ),
                         dmc.TableTd(
                             dmc.ActionIcon(
@@ -1897,13 +1928,6 @@ def register_clade_explore_callbacks():
                                 dmc.TableTh("Taxon"),
                                 dmc.TableTh(
                                     html.Span(
-                                        ["D", html.Sub("sis")],
-                                        title="Net Sister Dissimilarity Coefficient (0–1)",
-                                    ),
-                                    className="tt-tip-col-dsis",
-                                ),
-                                dmc.TableTh(
-                                    html.Span(
                                         ["N", html.Sub("G1")],
                                         title="Effective disjoint sisters in Group 1: 1 / (1 - I_1)",
                                     ),
@@ -1918,10 +1942,21 @@ def register_clade_explore_callbacks():
                                 ),
                                 dmc.TableTh(
                                     html.Span(
-                                        ["N", html.Sub("comb")],
-                                        title="Effective disjoint sisters in pooled union: 1 / (1 - I_comb)",
+                                        ["D", html.Sub("sis")],
+                                        title="Net Sister Dissimilarity Coefficient (0–1)",
                                     ),
-                                    className="tt-tip-col-num",
+                                    className="tt-tip-col-dsis",
+                                ),
+                                dmc.TableTh(
+                                    html.Span(
+                                        "Group %",
+                                        title=(
+                                            "Between-group share of instability (ANOVA R²): "
+                                            "% of wobble from G1 vs G2 differing rather than "
+                                            "within-group noise"
+                                        ),
+                                    ),
+                                    className="tt-tip-col-r2",
                                 ),
                                 dmc.TableTh("", className="tt-tip-col-action"),
                             ]
